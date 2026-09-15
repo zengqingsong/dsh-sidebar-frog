@@ -46,6 +46,39 @@ Then restart the DSH service and hard-refresh the browser (`Ctrl/Cmd+Shift+R`). 
 
 To update, run the same `add` command again. To remove it, `dsh plugin --profile web remove dsh-sidebar-frog`.
 
+## Install from a local checkout
+
+To read the source, change it, and see the change in the running GUI without publishing anything, install the checkout itself rather than the repository:
+
+```sh
+git clone https://github.com/zengqingsong/dsh-sidebar-frog
+cd dsh-sidebar-frog
+dsh plugin --profile web add .
+```
+
+Then restart DSH and hard-refresh the browser, the same as above.
+
+`dsh plugin` is a thin forwarder to `pnpm`, which it runs in the profile directory — so a relative spec like `.` is rewritten against the directory you invoked it from. `add .` from the checkout is what you want; an absolute path (`add D:\src\dsh-sidebar-frog`) works too. pnpm records the result as `link:…` in the profile's `package.json`, so the profile loads **your working tree through a symlink** instead of a copy, and an edit needs no reinstall.
+
+Both bundle halves are generated, so the loop after changing anything under `src/` is:
+
+```sh
+npm run build       # regenerate src/host.js and src/client.js
+npm run check:fast  # assertions only, no browser
+npm run check       # assertions plus the real-browser suite
+```
+
+then restart DSH and hard-refresh the browser. The host prints the build id on startup and the popout page carries it in a `meta` tag, which is how you tell whether the restart took. Host changes need the process restarted; client changes need the page reloaded as well.
+
+Nothing on this path runs a build script at install time, so pnpm never stops to ask you to approve one — that prompt belongs to git-hosted specs.
+
+To go back to the released build:
+
+```sh
+dsh plugin --profile web remove dsh-sidebar-frog
+dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
+```
+
 ## Features
 
 - **Popout page.** `/dsh-sidebar-frog` is a standalone two-column page — preview on the left, ledger or file tree on the right, with a draggable divider. It is a normal tab, so you can drag it to another monitor, and it stays in sync with the sidebar through a `storage` bridge. The `@` button on the popout page writes the reference straight into the main window's composer; if that window is gone, it falls back to the clipboard.

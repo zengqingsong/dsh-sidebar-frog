@@ -46,6 +46,39 @@ dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
 
 升级就是再执行一次同样的 `add` 命令；卸载用 `dsh plugin --profile web remove dsh-sidebar-frog`。
 
+## 本地源码安装
+
+想把源码读一遍、边改边在真实界面里看效果，而不用每次都发一轮版本，那就装这份 checkout 本身，而不是装仓库：
+
+```sh
+git clone https://github.com/zengqingsong/dsh-sidebar-frog
+cd dsh-sidebar-frog
+dsh plugin --profile web add .
+```
+
+装完同样重启 DSH 服务，再强制刷新浏览器。
+
+`dsh plugin` 只是转发给 `pnpm`，而 pnpm 是在 profile 目录里执行的；所以像 `.` 这样的相对路径会被换算成**你执行命令时所在的目录**——在 checkout 根目录下 `add .` 就是想要的结果，写绝对路径（`add D:\src\dsh-sidebar-frog`）也一样。pnpm 最终在 profile 的 `package.json` 里把它记成 `link:…`，也就是 profile 通过软链直接加载**你的工作区**，而不是拷一份进去：改完源码不需要重新安装。
+
+`src/host.js` 和 `src/client.js` 都是生成物，所以改动 `src/` 下任何文件之后，循环是这样的：
+
+```sh
+npm run build       # 重新生成 src/host.js 和 src/client.js
+npm run check:fast  # 只跑断言，不启动浏览器
+npm run check       # 断言加上真实浏览器测试
+```
+
+然后重启 DSH 服务并强制刷新浏览器。宿主端启动时会打印构建 id，弹出页把它放在 `meta` 标签里，靠它就能确认重启到底有没有生效。改宿主端要重启进程，改客户端还要额外刷新页面。
+
+这条路上安装时不执行任何构建脚本，所以 pnpm 不会停下来要求你批准脚本——那是从 git 仓库安装时才会遇到的事。
+
+想切回发布版本：
+
+```sh
+dsh plugin --profile web remove dsh-sidebar-frog
+dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
+```
+
 ## 功能
 
 - **弹出页。** `/dsh-sidebar-frog` 是一个独立的两栏页面：左边预览，右边是台账或文件树，中间的分隔条可以拖动。它就是个普通标签页，能拖到另一块屏幕上，并通过 `storage` 事件和侧边栏保持同步。弹出页上的 `@` 按钮会把引用直接写进主窗口的输入框；主窗口不在了才退回剪贴板。
