@@ -47,6 +47,21 @@ const CONTENT = 'const a = 1\nconst b = 2\n'
 // two deliberate rules (numeric-aware sorting, blanks pinned last) are only
 // observable on data that has both.
 const CSV = 'name,qty\nbanana,10\napple,2\ncherry,\n'
+// A quote holding blocks rather than a run of text: a list, inline emphasis, and
+// a line after the quote so the assertion can tell the quote ended. Inside a
+// quote these are blocks, and the panel used to paint their markers as literal
+// characters — the failure mode is visible in the document, so it belongs in the
+// suite that renders one.
+const GUIDE_MD = [
+  '# guide',
+  '',
+  '> **Note** — the ledger keeps the before/after text.',
+  '>',
+  '> - Ctrl+S saves in place',
+  '> - Undo joins the same history as the agent',
+  '',
+  'after the quote',
+].join('\n')
 // A binary container, as the host would send it: no bytes unless the caller asks
 // for them with text=1.
 const DOCX_BYTES = 'PK\u0003\u0004docx-bytes-as-text'
@@ -356,6 +371,7 @@ export async function startHost() {
       const p = String(u.searchParams.get('path') || '').toLowerCase()
       const wantText = u.searchParams.get('text') === '1'
       if (p.endsWith('data.csv')) return json({ ok: true, type: 'table', content: CSV, truncated: false, size: CSV.length, version: 'v1' })
+      if (p.endsWith('guide.md')) return json({ ok: true, type: 'markdown', content: GUIDE_MD, truncated: false, size: GUIDE_MD.length, version: 'v1' })
       const type = extType(p)
       if (type === 'office') return json({ ok: true, type: type, content: '', truncated: false, size: 0, version: 'v1' })
       if (type === 'document') return json({ ok: true, type: type, content: wantText ? DOCX_BYTES : '', truncated: false, size: 0, version: 'v1' })
@@ -874,6 +890,24 @@ async function run(s, shots, host) {
     '[...document.querySelectorAll("#previewArea .tabletd")].filter((_, i) => i % ' + step + ' === 0).map(e => e.textContent)'
   )
   const attr = (sel, name) => s.evaluate('(() => { const el = document.querySelector(' + JSON.stringify(sel) + '); return el ? el.getAttribute(' + JSON.stringify(name) + ') : null })()')
+
+  await test('a quoted list renders as a list, not as its own markers', async () => {
+    await openDoc('guide.md')
+    await s.waitFor('document.querySelectorAll("#previewArea blockquote ul li").length === 2', { label: 'the quoted list to render', timeout: 4000 })
+    const shape = await s.evaluate(`(() => {
+      const q = document.querySelector('#previewArea blockquote')
+      return {
+        items: [...document.querySelectorAll('#previewArea blockquote ul li')].map((li) => li.textContent.trim()),
+        strong: !!document.querySelector('#previewArea blockquote strong'),
+        text: q ? q.textContent : '',
+      }
+    })()`)
+    eq(shape.items.join('|'), 'Ctrl+S saves in place|Undo joins the same history as the agent', 'the quoted list items')
+    // Inline formatting inside the quote still applies — the fix must not trade
+    // block parsing for inline parsing.
+    assert(shape.strong, 'inline emphasis inside the quote was lost')
+    assert(shape.text.indexOf('- ') === -1, 'the list marker is still painted as text: ' + JSON.stringify(shape.text))
+  })
 
   await test('a .csv renders a sortable table', async () => {
     await openDoc('data.csv')
