@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img">
+  <title>sidebar-frog</title>
+  <g fill="#12A06B">
+    <rect x="5" y="25" width="54" height="27" rx="10"/>
+    <circle cx="19" cy="22" r="8.5"/>
+    <circle cx="45" cy="22" r="8.5"/>
+  </g>
+  <g fill="#0B1220">
+    <rect x="16.3" y="17.3" width="5.4" height="5.4" rx="1.5"/>
+    <rect x="42.3" y="17.3" width="5.4" height="5.4" rx="1.5"/>
+  </g>
+  <g stroke="#0B1220">
+    <path d="M23.5 37 Q32 44 40.5 37" fill="none" stroke-width="2.8" stroke-linecap="round"/>
+  </g>
+</svg>

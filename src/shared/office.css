@@ -1,0 +1,128 @@
+/* Office widgets (src/shared/office.js) — one stylesheet for BOTH faces.
+   Splice points: the client bundle's styles.insert(...) (src/client/body.js) and
+   the popout page's <style> block (src/host/page.js), so the same .docx looks
+   the same in the shell's preview and in the standalone tab.
+
+   The palette is a fallback chain because the two faces sit in different design
+   systems: inside the shell the DSH tokens (--dsw-alias-*) are defined, in the
+   standalone page this plugin's own popout tokens (--p-*) are. Declaring the
+   widget's colours ONCE here means neither face has to know which pair it is. */
+.office-view,
+.office-state {
+  --office-bg: var(--dsw-alias-bg-base, var(--p-bg, transparent));
+  --office-layer: var(--dsw-alias-bg-layer-1, var(--p-bg-layer-1, rgba(127, 127, 127, 0.08)));
+  --office-border: var(--dsw-alias-border-l2, var(--p-border-l2, rgba(127, 127, 127, 0.32)));
+  --office-text: var(--dsw-alias-label-primary, var(--p-text, inherit));
+  --office-muted: var(--dsw-alias-label-tertiary, var(--p-text-tertiary, rgba(127, 127, 127, 0.95)));
+  --office-hover: var(--dsw-alias-interactive-bg-hover, var(--p-hover, rgba(127, 127, 127, 0.14)));
+  --office-accent: var(--dsw-alias-state-business-primary, var(--p-accent, #3b82f6));
+  --office-error: var(--dsw-alias-state-error-primary, var(--p-error, #ef4444));
+}
+
+.office-view {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  color: var(--office-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.office-view *,
+.office-view *::before,
+.office-view *::after { box-sizing: border-box; }
+
+/* Loading / failure lines. Both faces draw these while a library is fetched and
+   when one refuses the file, so "why is it blank" always has an answer. */
+.office-state { padding: 14px 16px; color: var(--office-muted); font-size: 12px; line-height: 1.7; }
+.office-state.is-error { color: var(--office-error); white-space: pre-wrap; }
+
+/* Toolbar band: sheet tabs for a workbook, page navigation for a deck. */
+.office-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--office-layer);
+  border-bottom: 1px solid var(--office-border);
+  overflow-x: auto;
+}
+.office-bar.is-empty { display: none; }
+.office-tab {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--office-muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.office-tab:hover { background: var(--office-hover); color: var(--office-text); }
+.office-tab.is-active { background: var(--office-bg); border-color: var(--office-border); color: var(--office-text); font-weight: 600; }
+.office-tab:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 1px; }
+.office-count { margin-left: auto; color: var(--office-muted); font-size: 12px; white-space: nowrap; }
+.office-page { min-width: 58px; text-align: center; color: var(--office-muted); font-size: 12px; white-space: nowrap; }
+.office-nav {
+  flex: none;
+  width: 26px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--office-border);
+  background: var(--office-bg);
+  color: var(--office-text);
+  font: inherit;
+  cursor: pointer;
+}
+.office-nav:hover:not(:disabled) { background: var(--office-hover); }
+.office-nav:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 1px; }
+.office-nav:disabled { opacity: 0.45; cursor: default; }
+
+.office-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.office-note { padding: 8px 10px; color: var(--office-muted); font-size: 12px; }
+
+/* The box a widget is mounted in (the popout page's caller). The React face has
+   its own equivalent in src/client/styles.js, where the surrounding panel owns
+   the naming; this one exists so the page does not have to invent a height. */
+.office-host { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.office-host > .office-view { flex: 1 1 auto; min-height: 0; }
+
+/* ── Word: docx-preview draws stacked pages on a gray desk ─────────────────
+   That IS what a document looks like, so only the palette is ours: the desk
+   becomes the panel's layer colour and the pages stay paper-white (the
+   renderer writes black-on-white inline styles; a dark page would hide them).
+   !important because docx-preview injects its own <style> next to the pages. */
+.office-view.office-docx { display: block; overflow: auto; }
+.office-docx-page-wrapper {
+  background: var(--office-layer) !important;
+  padding: 16px !important;
+  display: flex;
+  flex-flow: column;
+  align-items: center;
+}
+.office-docx-page-wrapper > section.office-docx-page {
+  background: #fff;
+  color: #111;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+  margin-bottom: 16px;
+}
+
+/* ── Excel: a real grid, so column alignment means something ───────────────*/
+.office-grid-wrap { display: inline-block; min-width: 100%; }
+.office-grid { border-collapse: collapse; font-size: 12px; color: var(--office-text); }
+.office-grid td {
+  border: 1px solid var(--office-border);
+  padding: 2px 8px;
+  white-space: pre;
+  vertical-align: top;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.office-grid-head { position: sticky; top: 0; z-index: 1; background: var(--office-layer); font-weight: 600; }
+
+/* ── PowerPoint: the renderer owns the slides, this is their desk ──────────*/
+.office-pptx-stage { display: block; background: var(--office-layer); }

@@ -1,0 +1,66 @@
+{
+  "name": "dsh-sidebar-frog",
+  "version": "1.2.0",
+  "description": "可弹出侧边栏 · A DeepSeek Harness sidebar that shows artifacts and pops out into a larger web tab.",
+  "license": "MIT",
+  "author": "曾青松 <pypzengqs@126.com> (https://github.com/zengqingsong)",
+  "type": "module",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "sidebar",
+    "artifacts",
+    "file-tree",
+    "preview",
+    "office",
+    "plugin"
+  ],
+  "main": "src/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zengqingsong/dsh-sidebar-frog.git"
+  },
+  "homepage": "https://github.com/zengqingsong/dsh-sidebar-frog#readme",
+  "bugs": {
+    "url": "https://github.com/zengqingsong/dsh-sidebar-frog/issues"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "check": "node scripts/check.js",
+    "check:fast": "node scripts/check.js --no-browser",
+    "test:browser": "node scripts/browser-tests.js",
+    "logo": "node scripts/logo.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  }
+}

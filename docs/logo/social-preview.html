@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>sidebar-frog — social preview</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1280px; height: 640px; overflow: hidden; position: relative;
+    background: #0B1220; color: #F2F5F7;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+    background-image: radial-gradient(rgba(255,255,255,.055) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+  /* Depth without competing with the mark: two off-canvas panel silhouettes. */
+  .ghost { position: absolute; right: -120px; top: -60px; width: 420px; height: 760px; border: 1px solid rgba(18,160,107,.30); border-radius: 28px; }
+  .ghost.two { right: -60px; top: 40px; width: 300px; height: 560px; border-color: rgba(18,160,107,.16); }
+  .glow { position: absolute; left: -90px; top: -160px; width: 720px; height: 720px; background: radial-gradient(circle, rgba(18,160,107,.30), rgba(18,160,107,0) 62%); }
+  .body { position: absolute; inset: 0; padding: 88px 96px; box-sizing: border-box; }
+  .head { display: flex; align-items: center; gap: 34px; }
+  .head img { display: block; width: 132px; height: 132px; flex: none; }
+  h1 { margin: 0; font-size: 78px; line-height: 1; font-weight: 600; letter-spacing: -2.5px; }
+  h1 .pop { color: #F2B01E; font-weight: 400; }
+  .tag { margin: 16px 0 0; font-size: 18px; letter-spacing: 4.6px; color: #8A94A0; }
+  .value { margin: 44px 0 0; max-width: 1020px; font-family: Georgia, 'Iowan Old Style', 'Times New Roman', serif; font-size: 21px; line-height: 1.6; color: #B9C2CE; }
+  .rule { margin: 42px 0 0; height: 1px; background: rgba(255,255,255,.10); }
+  .chips { margin: 34px 0 0; display: flex; gap: 12px; }
+  .chip { border: 1px solid rgba(18,160,107,.55); color: #12A06B; border-radius: 999px; padding: 9px 18px; font-size: 13px; letter-spacing: 2.4px; }
+  .foot { position: absolute; left: 96px; right: 96px; bottom: 40px; display: flex; justify-content: space-between; font-size: 15px; color: #6E7783; letter-spacing: .6px; }
+</style>
+</head>
+<body>
+  <div class="ghost"></div><div class="ghost two"></div><div class="glow"></div>
+  <div class="body">
+    <div class="head">
+      <img src="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%222%2011%2060%2042%22%20width%3D%2260%22%20height%3D%2242%22%20role%3D%22img%22%3E%20%3Ctitle%3Esidebar-frog%3C%2Ftitle%3E%20%3Cg%20fill%3D%22%2312A06B%22%3E%20%3Crect%20x%3D%225%22%20y%3D%2225%22%20width%3D%2254%22%20height%3D%2227%22%20rx%3D%2210%22%2F%3E%20%3Ccircle%20cx%3D%2219%22%20cy%3D%2222%22%20r%3D%228.5%22%2F%3E%20%3Ccircle%20cx%3D%2245%22%20cy%3D%2222%22%20r%3D%228.5%22%2F%3E%20%3C%2Fg%3E%20%3Cg%20fill%3D%22%230B1220%22%3E%20%3Crect%20x%3D%2216.3%22%20y%3D%2217.3%22%20width%3D%225.4%22%20height%3D%225.4%22%20rx%3D%221.5%22%2F%3E%20%3Crect%20x%3D%2242.3%22%20y%3D%2217.3%22%20width%3D%225.4%22%20height%3D%225.4%22%20rx%3D%221.5%22%2F%3E%20%3C%2Fg%3E%20%3Cg%20stroke%3D%22%230B1220%22%3E%20%3Cpath%20d%3D%22M23.5%2037%20Q32%2044%2040.5%2037%22%20fill%3D%22none%22%20stroke-width%3D%222.8%22%20stroke-linecap%3D%22round%22%2F%3E%20%3C%2Fg%3E%20%3C%2Fsvg%3E" alt="sidebar-frog" />
+      <div>
+        <h1>sidebar-frog <span class="pop">&#8599;</span></h1>
+        <p class="tag">A POP-OUT SIDEBAR FOR DEEPSEEK HARNESS</p>
+      </div>
+    </div>
+    <p class="value">Artifacts, an IDE file tree and offline previews — Markdown, PDF, Office, media — in your right sidebar. One click pops it out into its own browser tab for a second monitor.</p>
+    <div class="rule"></div>
+    <div class="chips"><span class="chip">POP-OUT TAB</span><span class="chip">FILE TREE</span><span class="chip">OFFLINE PREVIEWS</span><span class="chip">MULTI-TAB</span><span class="chip">@REFERENCE</span></div>
+  </div>
+  <div class="foot">
+    <span>github.com/zengqingsong/dsh-sidebar-frog</span>
+    <span>Unofficial community plugin &middot; MIT</span>
+  </div>
+</body>
+</html>
