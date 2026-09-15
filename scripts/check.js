@@ -206,6 +206,27 @@ console.log('package manifest')
     for (const need of ['src/host.js', 'src/client.js', 'src/index.js', 'cordis.patch.yml', 'README.md', 'README.zh-CN.md']) {
       if (!covered(need)) throw new Error(`files[] does not cover ${need} — a packed install would omit a file the runtime reads`)
     }
+    // Covering the runtime is only half of what `files[]` decides. The READMEs
+    // are also rendered by consumers that have nothing but the tarball — mirrors,
+    // private registries, offline installs — and those have no path back to the
+    // repository, so an image a README shows has to be inside the package too.
+    // It was not: `files[]` named no `docs/` entry at all, so all three logo
+    // references shipped as broken images there while looking perfect on GitHub,
+    // where the file is simply present. `.gitignore` ignoring `/docs` does not
+    // save this — `files[]` is an allowlist that wins over it, which is exactly
+    // why the omission was invisible from the repository side.
+    for (const edition of ['README.md', 'README.zh-CN.md']) {
+      const refs = new Set()
+      for (const m of read(edition).matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)) refs.add(m[1])
+      for (const m of read(edition).matchAll(/(?:src|srcset)="([^"]+)"/g)) {
+        for (const part of m[1].split(',')) refs.add(part.trim().split(/\s+/).pop())
+      }
+      for (const raw of refs) {
+        if (/^(https?:|#|mailto:)/.test(raw)) continue
+        const rel = raw.replace(/^\.\//, '').split('#')[0]
+        if (!covered(rel)) throw new Error(`${edition} renders ${raw}, which files[] does not cover — a consumer reading the README out of the packed tarball would render it broken`)
+      }
+    }
     const patchRel = pkg.dsh && pkg.dsh.bundle && pkg.dsh.bundle.patch
     if (typeof patchRel !== 'string') throw new Error('dsh.bundle.patch is missing — the CLI would install this as a plain dependency and never mount it as a profile layer')
     const patch = read(patchRel.replace(/^\.\//, ''))
