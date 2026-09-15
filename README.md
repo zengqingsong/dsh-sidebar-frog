@@ -121,7 +121,7 @@ The plugin ships as two committed halves and needs no build at install time.
 
 ## Compatibility and risk
 
-- Built and tested against **DSH `0.1.5-rc.2`** on the `web` profile, which is the profile that has a browser UI.
+- Built and tested against **DSH `0.1.5-rc.2`** on the `web` profile, which is the profile that has a browser UI. DSH's `latest` tag currently resolves to `0.1.5-rc.1`; the two releases publish the same files with the same contents and differ only in the version string, so either works.
 - On a build whose right-sidebar tab registry is missing or has changed shape, the plugin falls back to its floating panel instead of failing to load.
 - It reads and writes only paths inside the session workspace. Writes are limited to the edit-and-save feature and to removing an artifact entry, and both are checked against the workspace root before anything touches disk.
 - It makes no outbound network request of any kind, and it reports nothing anywhere.
