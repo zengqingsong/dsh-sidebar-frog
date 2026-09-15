@@ -163,7 +163,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '39b6eabc'
+          const BUILD = '69165802'
 
               // Cross-window bridge between the two halves of the plugin.
     //

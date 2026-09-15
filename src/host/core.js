@@ -547,7 +547,18 @@
         const cap = 200000
         return { ok: true, type: type, content: text.slice(0, cap), truncated: text.length > cap, size: info.size, version: version }
       } catch (e) {
-        return { ok: false, error: e && e.message ? String(e.message) : 'read failed' }
+        // A file that is not UTF-8 throws out of the read rather than coming back
+        // as replacement characters: the filesystem service decodes strictly
+        // (TextDecoder with fatal:true), so the reader ends up looking at
+        // "The encoded data was not valid for encoding utf-8" — a sentence about
+        // an encoding they never chose, and nothing about the file they opened.
+        // Chinese workspaces still hold plenty of GBK/GB18030 documents, so name
+        // the likely cause instead of forwarding the codec's complaint.
+        const msg = e && e.message ? String(e.message) : ''
+        if (/not valid for encoding|invalid.*utf-?8|encoded data/i.test(msg)) {
+          return { ok: false, error: 'not valid UTF-8 — this file is probably GBK/GB18030 or another legacy encoding, and the preview cannot decode it (the bytes are left alone)' }
+        }
+        return { ok: false, error: msg || 'read failed' }
       }
     }
 

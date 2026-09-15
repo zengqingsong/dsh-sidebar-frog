@@ -1804,7 +1804,14 @@ const bootHost = (rejection, options) => {
       { name: 'a', type: 'directory', target: target + '/a' },
     ],
     processPath: (t) => String(t).replace(/\//g, '\\'),
-    readText: async () => file.text,
+    readText: async () => {
+      // The filesystem service decodes strictly (TextDecoder with fatal:true), so
+      // a file that is not UTF-8 throws out of the read instead of arriving as
+      // mojibake. `file.notUtf8` drives that path; the message is V8's own, which
+      // is the point — the host has to recognise it.
+      if (file.notUtf8) throw new TypeError('The encoded data was not valid for encoding utf-8')
+      return file.text
+    },
     readBytes: async () => new Uint8Array([1, 2, 3]),
     // The media route's byte-range path. The stub answers with exactly the window
     // it was asked for, so the route's Content-Range/Length maths is what is
@@ -1936,7 +1943,7 @@ const callPost = async (route, url, obj, raw) => {
 }
 
 try {
-  const { routes, calls, logs } = bootHost(undefined)
+  const { routes, calls, logs, file } = bootHost(undefined)
   const missing = [...DATA_ROUTES, ...ASSET_ROUTES].filter((p) => !routes[p])
   if (missing.length) throw new Error('routes not registered: ' + missing.join(', '))
   ok('route inventory', `${Object.keys(routes).length} routes`)
@@ -2078,6 +2085,25 @@ try {
   const badEscape = await call(routes['/dsh-sidebar-frog/content'], '/dsh-sidebar-frog/content?path=%E0%A4%A')
   if (badEscape.status !== 200) throw new Error('malformed escape answered ' + badEscape.status)
   ok('/content', 'malformed percent escape tolerated')
+
+  // A file that is not UTF-8 comes back as a decode failure, and what the reader
+  // is told is the whole assertion: the raw TypeError names an encoding they
+  // never chose and says nothing about their file, and a Chinese workspace still
+  // holds plenty of GBK documents. The answer must name the likely cause and make
+  // clear that nothing was rewritten.
+  file.notUtf8 = true
+  const notUtf8 = JSON.parse((await call(routes['/dsh-sidebar-frog/content'], '/dsh-sidebar-frog/content?path=D:/ws/legacy.txt')).body)
+  file.notUtf8 = false
+  if (notUtf8.ok !== false) throw new Error('a non-UTF-8 file was answered as ok: ' + JSON.stringify(notUtf8))
+  if (!/UTF-8/.test(notUtf8.error)) throw new Error('the decode failure does not say what is wrong: ' + JSON.stringify(notUtf8.error))
+  if (!/GBK|GB18030/.test(notUtf8.error)) throw new Error('the decode failure does not name the likely encoding: ' + JSON.stringify(notUtf8.error))
+  if (!/left alone/.test(notUtf8.error)) throw new Error('the decode failure does not say the file was not touched: ' + JSON.stringify(notUtf8.error))
+  // …and a plain read failure must NOT be relabelled as an encoding problem.
+  const plain = await call(routes['/dsh-sidebar-frog/content'], '/dsh-sidebar-frog/content?path=D:/ws/gone.txt')
+  const plainBody = JSON.parse(plain.body)
+  if (plainBody.ok === true) throw new Error('a missing file was answered as ok')
+  if (/GBK|UTF-8/.test(plainBody.error)) throw new Error('an ordinary read failure was mislabelled as an encoding problem: ' + JSON.stringify(plainBody.error))
+  ok('/content (not UTF-8)', notUtf8.error)
 
   const search = await call(routes['/dsh-sidebar-frog/search'], '/dsh-sidebar-frog/search?q=zz&limit=5')
   if (search.status !== 200 || !Array.isArray(JSON.parse(search.body).results)) throw new Error('/search payload malformed')
