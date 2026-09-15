@@ -155,3 +155,9 @@ The bundled renderers are third-party work, used under their own licenses, with 
 ## License
 
 [MIT](./LICENSE) — including the original upstream copyright notice.
+
+<p align="center">
+  <img src="docs/logo/gzpu.jpg" alt="Guangzhou Polytechnic University" width="150" />
+</p>
+
+Developed and maintained at **Guangzhou Polytechnic University** ([gzpyp.edu.cn](https://www.gzpyp.edu.cn/)) by [曾青松 (Zeng Qingsong)](https://github.com/zengqingsong).

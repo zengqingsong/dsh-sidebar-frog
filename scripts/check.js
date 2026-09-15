@@ -4631,7 +4631,12 @@ console.log('brand assets (LOGO)')
   // vendored libraries). Tracked-ness is a property only git can answer, so ask
   // it, and skip silently where there is no repository to ask.
   try {
-    const needs = [...Object.keys(generatedAssets()), ...RASTERS.map((r) => r.file)]
+    // The university mark in the License section is supplied artwork rather
+    // than something scripts/logo.js generates, so it is named here instead of
+    // arriving through RASTERS. It is the one brand asset a reader sees on the
+    // copyright line, and a JPEG that only exists in the working tree is a
+    // broken image on the listing page.
+    const needs = [...Object.keys(generatedAssets()), ...RASTERS.map((r) => r.file), 'docs/logo/gzpu.jpg']
     const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, encoding: 'utf8' })
     if (probe.status !== 0) {
       ok('brand assets tracked', 'skipped (not a git work tree)')

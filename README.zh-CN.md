@@ -155,3 +155,9 @@ npm run check:fast  # 同上，但不启动浏览器
 ## 许可证
 
 [MIT](./LICENSE)，包含上游原始的版权声明。
+
+<p align="center">
+  <img src="docs/logo/gzpu.jpg" alt="广州职业技术大学" width="150" />
+</p>
+
+由 [曾青松](https://github.com/zengqingsong) 在**广州职业技术大学**（[gzpyp.edu.cn](https://www.gzpyp.edu.cn/)）开发与维护。
