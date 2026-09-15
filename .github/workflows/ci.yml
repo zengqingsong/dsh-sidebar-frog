@@ -1,0 +1,59 @@
+# CI — the same guard suite the README tells contributors to run, on every push.
+#
+# Why this exists at all, given `npm run check` is one command a contributor can
+# run themselves: the suite is the project's whole claim to trustworthiness, and
+# a claim nobody re-runs is a claim that rots. Two consumers depend on it.
+#
+#   1. A reader deciding whether to install a third-party plugin. "It has tests"
+#      means nothing; a green run on the exact commit they are looking at means
+#      something, and it is checkable without cloning anything.
+#   2. The publish workflow's gate. `publish.yml` runs `npm run check:fast`
+#      immediately before `npm publish`, and until this file existed that command
+#      had only ever run on one Windows machine. A gate that has never executed on
+#      the platform that will run it is a landmine with a release date on it.
+#
+# Two operating systems, for the same reason: the Windows path is what this
+# machine develops on, and the Linux path is what the release job runs on. The
+# browser suite needs Chrome, which both runner images ship; `scripts/cdp.js`
+# finds it through the same candidate list it uses locally, with DSH_TEST_BROWSER
+# as the escape hatch if an image ever moves it.
+#
+# No install step: this package declares no dependencies, runtime or development.
+# The suite reads the repository, assembles the bundles in memory and drives a
+# real browser — nothing to fetch.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both platforms report, even when the first one fails: "works on Linux,
+      # breaks on Windows" is the failure mode this matrix exists to see, and
+      # fail-fast hides exactly that shape.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22, not the 20 in `engines`: the browser driver uses the global
+      # `WebSocket` (see scripts/cdp.js), which Node 20 does not have. The
+      # manifest's floor is about what the *plugin* needs to run under DSH; this
+      # is about what the *suite* needs to drive a page.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The full suite, browser included — the fast half is a subset, and the
+      # twenty-five real-engine assertions are the ones worth a badge.
+      - run: npm run check
