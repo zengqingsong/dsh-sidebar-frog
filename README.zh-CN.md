@@ -127,6 +127,17 @@ dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
 - 安装时不执行构建脚本，所以包管理器不会要求你批准脚本。
 - 这是非官方插件，未经 DeepSeek 审核或背书。安装任何插件前，都建议先看一眼源码。
 
+## 运行时验证
+
+宿主半边通过了 [`dsh-plugin-verify`](https://github.com/qing3a/dsh-plugin-verify)——它用 mock LLM 跑一整轮 agent 循环，全程监听 harness 的 waterfall 链：
+
+```sh
+npx dsh-plugin-verify . --repo <dsh-checkout>
+# ✅ 通过 | 捕获事件: 13 | waterfall: 7/7 | tools/result: 是
+```
+
+七个 waterfall 事件全部触发，`tools/result` 正常收尾，静态规则也没扫出裸 `child_process` spawn 或 `single` 槽注册。对侧边栏插件来说，真正有意义的是它在**你没跑的那个 profile** 上的表现：宿主端**没有声明任何静态 `inject`**，所以在 headless 装配下插件照样加载、照样追踪产物，缺的只是 HTTP 路由。如果写成静态的 `inject: ['webServer']`，整个插件在那里会被**悄悄关掉**——连 waterfall 一起。
+
 ## 开发
 
 ```sh

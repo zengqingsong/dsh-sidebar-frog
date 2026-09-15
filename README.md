@@ -127,6 +127,18 @@ The plugin ships as two committed halves and needs no build at install time.
 - Installing it runs no build script, so package managers will not ask you to approve one.
 - It is an unofficial plugin: it is not reviewed or endorsed by DeepSeek, and you should read the source of any plugin before installing it.
 
+## Verification
+
+The host half passes [`dsh-plugin-verify`](https://github.com/qing3a/dsh-plugin-verify) — a full agent loop against a mock LLM, with the harness's waterfall chain watched end to end:
+
+```sh
+npx dsh-plugin-verify . --repo <dsh-checkout>
+# the CLI answers, verbatim: "✅ 通过 | 捕获事件: 13 | waterfall: 7/7 | tools/result: 是"
+#                       i.e.  pass | events: 13 | waterfall: 7/7 | tools/result: yes
+```
+
+All seven waterfall events fire and `tools/result` closes cleanly, with no bare `child_process` spawn and no `single`-slot registration. The part that matters for a sidebar plugin is what the check says about the profile you are *not* running: the host declares **no static `inject`**, so on a headless assembly the plugin still applies and still tracks artifacts, and only the HTTP routes are missing. A static `inject: ['webServer']` would have switched the whole plugin off there, waterfalls included — silently.
+
 ## Development
 
 ```sh
