@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = '1c00fd29'
+    const BUILD = 'ded74eb7'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -1696,7 +1696,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="1c00fd29" />
+<meta name="dsh-sidebar-frog-build" content="ded74eb7" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -4322,7 +4322,25 @@ return {
         if (/^\s*>\s?/.test(line)) {
           var q = [];
           while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, '')); i += 1; }
-          out.push('<blockquote>' + mdInline(mdEscape(q.join(' ')), mdOpts) + '</blockquote>');
+          // A quote holds BLOCKS, not a run of inline text. Stripping the marker and
+          // running the remainder through mdInline — which is what this did — drew
+          // a quoted "- a" as the literal characters "- a": every list, heading,
+          // fence, table and nested quote inside a quote came out as text, which is
+          // the marker showing up in the document rather than a subtle drift.
+          // Re-entering the block renderer on the stripped lines fixes all of them
+          // at once, and nesting needs no special handling because each level strips
+          // exactly one marker before recursing.
+          //
+          // A quote whose body is a single paragraph keeps its previous shape (the
+          // p wrapper is dropped), so nothing already written looks different. The
+          // test is deliberately literal — starts with the p opener, ends with its
+          // closer, and the first closer is the last four characters — because a
+          // greedy /^<p>([\s\S]*)<\/p>$/ matches from the first opener to the LAST
+          // closer and would tear the tags out of a two-paragraph quote.
+          var quoted = mdToHtml(q.join('\n'), mdOpts);
+          var oneParagraph = quoted.slice(0, 3) === '<p>' && quoted.slice(-4) === '</p>' &&
+            quoted.indexOf('</p>') === quoted.length - 4;
+          out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
           continue;
         }
         if (/^\s*[-*+]\s+/.test(line)) {

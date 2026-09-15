@@ -621,6 +621,45 @@ if (shared) {
   }
 }
 
+// A quote is a container for BLOCKS, and the renderer used to treat it as a run
+// of inline text: it stripped the `>` and sent the remainder through the inline
+// pass, so `> - a` painted the literal characters "- a". Every list, heading,
+// fence, table and nested quote inside a quote came out as text, which is not a
+// subtle drift — it is the marker showing up in the document.
+//
+// Loaded with `highlight.js` beside it, because a fenced block inside a quote
+// reaches for `highlightCode`, which lives there rather than in markdown.js.
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') + '\nreturn { mdToHtml }',
+    )()
+    const cases = [
+      ['a bullet list', '> - a\n> - b', (h) => h === '<blockquote><ul><li>a</li><li>b</li></ul></blockquote>'],
+      ['an ordered list', '> 1. a\n> 2. b', (h) => h === '<blockquote><ol><li>a</li><li>b</li></ol></blockquote>'],
+      ['a task list', '> - [x] done', (h) => h.includes('task-list-item') && h.includes('checked')],
+      ['a heading', '> # Title', (h) => h === '<blockquote><h1>Title</h1></blockquote>'],
+      ['a nested quote', '> > inner', (h) => h === '<blockquote><blockquote>inner</blockquote></blockquote>'],
+      ['a table', '> | a | b |\n> |---|---|\n> | 1 | 2 |', (h) => h.startsWith('<blockquote><table>') && h.endsWith('</table></blockquote>')],
+      ['a fenced block', '> ```js\n> const a = 1\n> ```', (h) => h.startsWith('<blockquote><pre><code>') && h.endsWith('</code></pre></blockquote>')],
+      // The shape a plain quote already had must not move: no wrapper <p>, and
+      // inline formatting still applied.
+      ['a plain quote', '> hello', (h) => h === '<blockquote>hello</blockquote>'],
+      ['inline inside a quote', '> **b** and `c`', (h) => h === '<blockquote><strong>b</strong> and <code>c</code></blockquote>'],
+      // Two source lines are two paragraphs, exactly as they are outside a quote
+      // — and the `</p>` must not be torn out of the middle of the run.
+      ['two lines', '> one\n> two', (h) => h === '<blockquote><p>one</p>\n<p>two</p></blockquote>'],
+    ]
+    const wrong = cases
+      .filter(([, src, want]) => !want(md.mdToHtml(src)))
+      .map(([name, src]) => `${name} rendered as ${JSON.stringify(md.mdToHtml(src))}`)
+    if (wrong.length) throw new Error(wrong.join(' | '))
+    ok('markdown in blockquotes', `${cases.length} shapes: ${cases.map(([n]) => n).join(', ')}`)
+  } catch (e) {
+    bad('markdown in blockquotes', e && e.message ? e.message : String(e))
+  }
+}
+
 // ── 3. popout page inline scripts ──────────────────────────────────────────
 // The popout page is a String.raw template holding HTML with inline <script>
 // blocks. As far as the host bundle is concerned that inline JS is just text

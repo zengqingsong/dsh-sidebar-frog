@@ -163,7 +163,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '1c00fd29'
+          const BUILD = 'ded74eb7'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -2222,7 +2222,25 @@ window.__ModuleLoader__.load({
         if (/^\s*>\s?/.test(line)) {
           var q = [];
           while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, '')); i += 1; }
-          out.push('<blockquote>' + mdInline(mdEscape(q.join(' ')), mdOpts) + '</blockquote>');
+          // A quote holds BLOCKS, not a run of inline text. Stripping the marker and
+          // running the remainder through mdInline — which is what this did — drew
+          // a quoted "- a" as the literal characters "- a": every list, heading,
+          // fence, table and nested quote inside a quote came out as text, which is
+          // the marker showing up in the document rather than a subtle drift.
+          // Re-entering the block renderer on the stripped lines fixes all of them
+          // at once, and nesting needs no special handling because each level strips
+          // exactly one marker before recursing.
+          //
+          // A quote whose body is a single paragraph keeps its previous shape (the
+          // p wrapper is dropped), so nothing already written looks different. The
+          // test is deliberately literal — starts with the p opener, ends with its
+          // closer, and the first closer is the last four characters — because a
+          // greedy /^<p>([\s\S]*)<\/p>$/ matches from the first opener to the LAST
+          // closer and would tear the tags out of a two-paragraph quote.
+          var quoted = mdToHtml(q.join('\n'), mdOpts);
+          var oneParagraph = quoted.slice(0, 3) === '<p>' && quoted.slice(-4) === '</p>' &&
+            quoted.indexOf('</p>') === quoted.length - 4;
+          out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
           continue;
         }
         if (/^\s*[-*+]\s+/.test(line)) {
