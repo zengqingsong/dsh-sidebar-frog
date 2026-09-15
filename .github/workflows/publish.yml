@@ -1,0 +1,76 @@
+# Publish to npm.
+#
+# The package is not on npm yet: `dsh plugin --profile web add
+# github:zengqingsong/dsh-sidebar-frog` is the install path this repository
+# documents and the one dsh-plugin.org renders. This workflow is what turns the
+# git spec into a registry name, and it is deliberately inert until the
+# repository owns a credential:
+#
+#   1. create an automation token at https://www.npmjs.com/settings/~/tokens
+#      (Automation, not Classic — it skips the OTP prompt CI cannot answer),
+#   2. add it as the repository secret NPM_TOKEN,
+#   3. publish a GitHub release whose tag is `v<package.json version>`.
+#
+# Nothing here writes to the repository, and a run without the secret fails
+# before it touches the registry, with the sentence that says what is missing.
+name: publish
+
+on:
+  release:
+    types: [published]
+  # Manual runs are for the first publish, or for re-running one that npm
+  # rejected. Both paths publish the version in package.json as it stands on the
+  # ref they were started from.
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm provenance signs the tarball with this workflow's OIDC identity.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: the release tag must be the version in package.json
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::release $GITHUB_REF_NAME does not match package.json version $pkg — a registry name and a tag that disagree cannot be undone, only deprecated"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME == version $pkg"
+
+      - name: NPM_TOKEN must exist before anything else runs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::no NPM_TOKEN secret on this repository — add an npm Automation token under Settings → Secrets and variables → Actions, then re-run this workflow"
+            exit 1
+          fi
+
+      # The same assertions `npm run check` runs everywhere else, minus the
+      # real-browser half: a published tarball is immutable, so the cheap gate
+      # belongs in front of the irreversible step.
+      - run: npm run check:fast
+
+      - run: npm pack --dry-run
+
+      # `prepublishOnly` is deliberately not used: the gate above is visible in
+      # the run log, and a local `npm publish` stays a local decision.
+      - run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
