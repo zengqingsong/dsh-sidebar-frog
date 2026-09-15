@@ -678,7 +678,12 @@ if (built) {
   for (const [file, text] of [['src/host.js', built.host], ['src/client.js', built.client]]) {
     let onDisk = null
     try { onDisk = read(file) } catch (e) { onDisk = null }
-    if (onDisk === text) { ok(file, `${text.length} bytes, current`); continue }
+    // The assembly is LF by construction (scripts/build.js normalises its
+    // inputs), so a CRLF working tree — `core.autocrlf=true` on the machine this
+    // is developed on — is the same artifact with different line endings, not a
+    // stale one. Comparing raw text here reported "stale" on every Windows
+    // checkout that had not been rebuilt in place, which is every fresh clone.
+    if (onDisk !== null && onDisk.replace(/\r\n/g, '\n') === text) { ok(file, `${text.length} bytes, current`); continue }
     stale.push(file)
     if (fix) {
       writeFileSync(join(root, file), text)

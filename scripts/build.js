@@ -23,7 +23,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { faviconDataUri } from './logo.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const read = (p) => readFileSync(join(root, p), 'utf8')
+// Every input is read with its line endings normalised to LF, and that is a
+// correctness requirement, not tidiness. Both bundles embed their inputs
+// verbatim — the vendored libraries go in as `JSON.stringify`'d string literals,
+// and `indent()` decides "is this line empty?" from `line.length` — so a CRLF
+// checkout produced a *different artifact* from an LF one: `\r\n` escapes inside
+// the embedded vendor strings, and four spaces of indentation on every line that
+// was blank. The committed bundle is LF, so a Linux checkout assembled something
+// that could never equal it, `npm run check` failed in `bundle freshness`, and
+// the publish workflow's own gate would have refused to publish. Normalising here
+// makes the artifact a function of the sources rather than of the machine that
+// built them; `.gitattributes` pins the committed form to match.
+const read = (p) => readFileSync(join(root, p), 'utf8').replace(/\r\n/g, '\n')
 const write = (p, s) => writeFileSync(join(root, p), s)
 
 const indent = (text, n) => {

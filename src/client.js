@@ -163,7 +163,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '6751b5e7'
+          const BUILD = '1c00fd29'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -666,7 +666,7 @@ window.__ModuleLoader__.load({
     // plays is the engine's call, and the view says so when it refuses.
     var EXT_AUDIO = { mp3: 1, wav: 1, ogg: 1, oga: 1, m4a: 1, aac: 1, flac: 1, opus: 1, weba: 1 };
     var EXT_VIDEO = { mp4: 1, m4v: 1, webm: 1, mov: 1, mkv: 1, ogv: 1 };
-    
+
     function extType(path) {
       var ext = fileExt(path);
       // svg lands in the image band on purpose: an <img> never runs the scripts a
@@ -689,12 +689,12 @@ window.__ModuleLoader__.load({
       if (EXT_DOC[ext]) return 'document';
       return 'text';
     }
-    
+
     function fileExt(path) {
       var m = /\.([^.]+)$/.exec(String(path || ''));
       return m ? m[1].toLowerCase() : '';
     }
-    
+
     // Explorer icon category for a path. Shared by the sidebar tree and the
     // standalone page so both tint a file the same way.
     function fileIconKind(path) {
@@ -1614,7 +1614,7 @@ window.__ModuleLoader__.load({
     // no interpolation, no backticks — safe to inline verbatim into the standalone
     // page's String.raw template). Emits span class tok-* tokens; color them in CSS.
     function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-    
+
     function makeHl(specs, flags) {
       var src = '';
       for (var i = 0; i < specs.length; i += 1) src += (i ? '|' : '') + '(' + specs[i][1] + ')';
@@ -1637,7 +1637,7 @@ window.__ModuleLoader__.load({
         return out;
       };
     }
-    
+
     var S_DQ = "\"(?:[^\"\\\\\\n]|\\\\.)*\"";
     var S_SQ = "\\x27(?:[^\\x27\\\\\\n]|\\\\.)*\\x27";
     var S_BT = "\\x60(?:[^\\x60\\\\]|\\\\.)*\\x60";
@@ -1663,9 +1663,9 @@ window.__ModuleLoader__.load({
     var FUNC_PY = "\\b[A-Za-z_][\\w]*(?=\\s*\\()";
     var CLASS = "\\b[A-Z][\\w$]*\\b";
     var YAML_KEY = "^\\s*(?:-\\s+)?[\\w.@-]+(?=\\s*:)";
-    
+
     function kwWord(kw) { return '\\b(?:' + kw.replace(/\s+/g, '|') + ')\\b'; }
-    
+
     var JS_KW = 'break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new return static super switch this throw try typeof var void while with yield async await of get set null undefined true false';
     var PY_KW = 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None self';
     var SH_KW = 'if then elif else fi for while do done case esac function select in until return exit set unset export readonly local shift source';
@@ -1676,7 +1676,7 @@ window.__ModuleLoader__.load({
     var JAVA_KW = 'abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while';
     var RB_KW = 'begin case class def do else elsif end ensure for if module next nil not or redo rescue retry return self super then true false undef unless until when while yield';
     var PHP_KW = 'abstract and array as break callable case catch class clone const continue declare default do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile extends final finally fn for foreach function global if implements include instanceof insteadof interface isset list namespace new or print private protected public require return static switch throw trait try unset use var while xor yield';
-    
+
     function cFamily(kw) {
       return makeHl([
         ['comment', C_LINE + '|' + C_BLK],
@@ -1687,7 +1687,7 @@ window.__ModuleLoader__.load({
         ['class', CLASS],
       ]);
     }
-    
+
     var HL_ENGINES = {
       js: makeHl([
         ['comment', C_LINE + '|' + C_BLK],
@@ -1770,7 +1770,7 @@ window.__ModuleLoader__.load({
         ['function', FUNC_PY],
       ]),
     };
-    
+
     var HL_LANG_MAP = {
       js: 'js', mjs: 'js', cjs: 'js', jsx: 'js', javascript: 'js',
       ts: 'js', tsx: 'js', mts: 'js', cts: 'js', typescript: 'js',
@@ -1791,21 +1791,21 @@ window.__ModuleLoader__.load({
       lua: 'c',
       sh: 'sh', bash: 'sh', shell: 'sh', zsh: 'sh', fish: 'sh',
     };
-    
+
     var HL_LANG_NAMES = {
       js: 'JavaScript', py: 'Python', css: 'CSS', html: 'HTML/XML', sh: 'Shell',
       yaml: 'YAML', sql: 'SQL', c: 'C/C++', cpp: 'C++', go: 'Go', rust: 'Rust',
       java: 'Java', rb: 'Ruby', php: 'PHP', json: 'JSON', plain: 'Text',
     };
-    
+
     function hlLangOf(hint) {
       var h = String(hint || '').toLowerCase();
       if (h.charAt(0) === '.') h = h.slice(1);
       return HL_LANG_MAP[h] || 'plain';
     }
-    
+
     function hlLangLabel(hint) { return HL_LANG_NAMES[hlLangOf(hint)] || 'Text'; }
-    
+
     function highlightCode(src, hint) {
       var fn = HL_ENGINES[hlLangOf(hint)];
       return fn ? fn(String(src)) : escHtml(src);

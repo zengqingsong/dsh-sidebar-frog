@@ -1,0 +1,15 @@
+# Canonical line endings — the LF byte is part of the artifact, not a preference.
+#
+# Both bundle halves are generated: sources are concatenated and the vendored
+# libraries are embedded verbatim as JSON string literals. scripts/build.js now
+# normalises every input to LF before assembling, so the artifact is a function of
+# the sources and not of the machine that built it. Without `eol=lf` the checkout
+# could still disagree with it: `core.autocrlf=true` on Windows (the machine this
+# is developed on) turned a fresh clone into a CRLF working tree, `npm run check`
+# reported `bundle freshness: src/host.js — stale`, and the Linux runner in CI
+# assembled something that could never equal the committed bundle — which is also
+# the platform the publish workflow's own gate runs on.
+#
+# `text=auto` keeps git detecting binary files by content, so the vendored
+# raster assets and the logo PNGs are never rewritten.
+* text=auto eol=lf

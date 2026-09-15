@@ -253,6 +253,15 @@ async function buildOfficeFixtures() {
 }
 
 const toWin = (key) => (key ? ROOT + '\\' + key.split('/').join('\\') : ROOT)
+// The stub models a Windows workspace on purpose (ROOT is `D:\ws`, and the tree
+// keys above are '/'-separated because that is how they are written down), so
+// every path the stub hands the client has to be spelled with backslashes on
+// every host. `path.join` is the wrong tool for that: on Linux it produced
+// `D:\ws/src/app.js`, which no longer matched the path the file tree reported,
+// and the ledger row silently stopped offering its diff — two browser
+// assertions failed on the Linux runner for a reason that had nothing to do
+// with the plugin.
+const path = (...parts) => ROOT + '\\' + parts.join('\\')
 
 function relKey(p) {
   if (!p) return ''
@@ -315,12 +324,12 @@ export async function startHost() {
       return json({
         artifacts: [
           {
-            path: join(ROOT, 'src', 'app.js'),
+            path: path('src', 'app.js'),
             kind: 'edit',
             diff: { before: 'const a = 1\nconst b = 2\n', after: 'const a = 1\nconst b = 3\n' },
             undo: { kind: 'edit', can: true, opId: 'op1' },
           },
-          { path: join(ROOT, 'README.md'), kind: 'create' },
+          { path: path('README.md'), kind: 'create' },
         ],
       })
     }
@@ -333,7 +342,7 @@ export async function startHost() {
       req.on('data', (c) => { body += c })
       return req.on('end', () => {
         reverts.push(body)
-        json({ ok: true, path: join(ROOT, 'src', 'app.js'), opId: 'op1', reverted: 'content' })
+        json({ ok: true, path: path('src', 'app.js'), opId: 'op1', reverted: 'content' })
       })
     }
     if (u.pathname === '/dsh-sidebar-frog/content') {
@@ -367,7 +376,7 @@ export async function startHost() {
       req.on('data', (c) => { body += c })
       return req.on('end', () => {
         saves.push(body)
-        json({ ok: true, path: join(ROOT, 'docs', 'guide.md'), version: 'v2', size: body.length, eol: 'LF', bom: false, revision: 1 })
+        json({ ok: true, path: path('docs', 'guide.md'), version: 'v2', size: body.length, eol: 'LF', bom: false, revision: 1 })
       })
     }
     // The streaming route. It answers here so the <audio> element's own request
@@ -471,7 +480,6 @@ async function test(name, fn) {
 
 // ── page helpers ─────────────────────────────────────────────────────────────
 const rowSel = (p) => '[data-path="' + String(p).replace(/\\/g, '\\\\') + '"]'
-const path = (...parts) => ROOT + '\\' + parts.join('\\')
 
 const rows = (s) => s.evaluate('[...document.querySelectorAll("#treeBody [data-path]")].map(el => el.getAttribute("data-path"))')
 const expandedOf = (s, p) => s.evaluate(
