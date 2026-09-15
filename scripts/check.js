@@ -660,6 +660,53 @@ if (shared) {
   }
 }
 
+// A list is a tree and a table cell is one cell. Both used to be read as flat
+// text: every marker matched /^\s*[-*+]\s+/ with the indentation thrown away, so
+// `- a` / `  - b` came out as two siblings and the structure the document
+// expressed was simply gone; `tableCells` split on every `|`, so a cell holding
+// an escaped pipe — a union type, a shell pipeline, a code span — was cut in
+// half and every column after it shifted, which is worse than not rendering the
+// table at all, because the result still looks like a table.
+console.log('markdown lists and tables')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') + '\nreturn { mdToHtml }',
+    )()
+    const cases = [
+      // The nested list has to sit INSIDE the li it belongs to. Emitted as a
+      // sibling the browser repairs it on its own, and no stylesheet can target
+      // it — which is how the first version of this fix "passed" by eye.
+      ['a nested bullet list', '- a\n  - b\n  - c\n- d', (h) => h === '<ul><li>a<ul><li>b</li><li>c</li></ul></li><li>d</li></ul>'],
+      ['a nested ordered list', '1. a\n   1. b\n2. c', (h) => h === '<ol><li>a<ol><li>b</li></ol></li><li>c</li></ol>'],
+      ['mixed nesting', '- a\n  1. b\n  2. c', (h) => h === '<ul><li>a<ol><li>b</li><li>c</li></ol></li></ul>'],
+      ['three levels', '- a\n  - b\n    - c', (h) => h === '<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li></ul>'],
+      ['a wrapped item', '- a long item\n  continued here\n- second', (h) => h === '<ul><li>a long item continued here</li><li>second</li></ul>'],
+      ['a blank line between items', '- a\n\n- b', (h) => h === '<ul><li>a</li><li>b</li></ul>'],
+      ['a second block in an item', '- a\n\n  more\n- b', (h) => h === '<ul><li>a more</li><li>b</li></ul>'],
+      ['a list that starts at 3', '3. a\n4. b', (h) => h === '<ol start="3"><li>a</li><li>b</li></ol>'],
+      ['a nested task list', '- [ ] a\n  - [x] b', (h) => h.includes('</li></ul></li></ul>') && h.includes('disabled checked')],
+      ['a list inside a quote', '> - a\n>   - b', (h) => h === '<blockquote><ul><li>a<ul><li>b</li></ul></li></ul></blockquote>'],
+      // The escaped pipe is the whole reason this check exists.
+      ['an escaped pipe in a cell', '| k | v |\n|---|---|\n| `a \\| b` | union |', (h) => h.includes('<td><code>a | b</code></td><td>union</td>')],
+      ['a cell that ends with an escaped pipe', '| k | v |\n|---|---|\n| x | a \\| |', (h) => h.includes('<td>a |</td>')],
+      ['a setext title', 'Title\n=====', (h) => h === '<h1>Title</h1>'],
+      // The flat shapes that were already right must not move.
+      ['a flat bullet list', '- a\n- b', (h) => h === '<ul><li>a</li><li>b</li></ul>'],
+      ['a flat ordered list', '1. a\n2. b', (h) => h === '<ol><li>a</li><li>b</li></ol>'],
+      ['a task list', '- [x] done', (h) => h === '<ul><li class="task-list-item"><input type="checkbox" disabled checked> done</li></ul>'],
+      ['an unescaped pipe still splits', '| a | b |\n|---|---|\n| 1 | 2 |', (h) => h.includes('<td>1</td><td>2</td>')],
+    ]
+    const wrong = cases
+      .filter(([, src, want]) => !want(md.mdToHtml(src)))
+      .map(([name, src]) => `${name} rendered as ${JSON.stringify(md.mdToHtml(src))}`)
+    if (wrong.length) throw new Error(wrong.join(' | '))
+    ok('markdown lists and tables', `${cases.length} shapes: ${cases.map(([n]) => n).join(', ')}`)
+  } catch (e) {
+    bad('markdown lists and tables', e && e.message ? e.message : String(e))
+  }
+}
+
 // ── 3. popout page inline scripts ──────────────────────────────────────────
 // The popout page is a String.raw template holding HTML with inline <script>
 // blocks. As far as the host bundle is concerned that inline JS is just text

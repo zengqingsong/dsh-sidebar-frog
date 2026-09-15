@@ -61,6 +61,14 @@ const GUIDE_MD = [
   '> - Undo joins the same history as the agent',
   '',
   'after the quote',
+  '',
+  '- outer',
+  '  - inner one',
+  '  - inner two',
+  '',
+  '| key | value |',
+  '| --- | --- |',
+  '| union | `a \\| b` |',
 ].join('\n')
 // A binary container, as the host would send it: no bytes unless the caller asks
 // for them with text=1.
@@ -890,6 +898,26 @@ async function run(s, shots, host) {
     '[...document.querySelectorAll("#previewArea .tabletd")].filter((_, i) => i % ' + step + ' === 0).map(e => e.textContent)'
   )
   const attr = (sel, name) => s.evaluate('(() => { const el = document.querySelector(' + JSON.stringify(sel) + '); return el ? el.getAttribute(' + JSON.stringify(name) + ') : null })()')
+
+  await test('a nested list nests, and an escaped pipe stays inside its cell', async () => {
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea ul li ul")', { label: 'the nested list to render', timeout: 4000 })
+    const shape = await s.evaluate(`(() => {
+      const nested = document.querySelector('#previewArea ul li ul')
+      return {
+        items: [...document.querySelectorAll('#previewArea ul li ul li')].map((li) => li.textContent.trim()),
+        // closest('li') is the assertion that matters: the nested list has to be
+        // INSIDE its parent item. Emitted as a sibling the browser still paints
+        // something list-shaped, which is how a flat list passed for a nested
+        // one until this was written.
+        owner: nested && nested.closest('li') ? nested.closest('li').textContent.trim() : '',
+        cells: [...document.querySelectorAll('#previewArea table th, #previewArea table td')].map((c) => c.textContent.trim()),
+      }
+    })()`)
+    eq(shape.items.join('|'), 'inner one|inner two', 'the nested items')
+    eq(shape.owner, 'outerinner oneinner two', 'the parent item owns the nested list')
+    eq(shape.cells.join('|'), 'key|value|union|a | b', 'the table cells, escaped pipe intact')
+  })
 
   await test('a quoted list renders as a list, not as its own markers', async () => {
     await openDoc('guide.md')

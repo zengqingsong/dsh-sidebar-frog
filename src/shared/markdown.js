@@ -194,9 +194,23 @@ function tableCells(line) {
   var s = String(line).trim();
   if (!s) return [];
   if (s.charAt(0) === '|') s = s.slice(1);
-  if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+  if (s.charAt(s.length - 1) === '|' && s.charAt(s.length - 2) !== '\\') s = s.slice(0, -1);
   if (s.indexOf('|') < 0) return [];
-  return s.split('|');
+  // Split on pipes that are not backslash-escaped, then unescape the ones
+  // inside cells. Splitting blindly on every '|' cut a cell in half the moment
+  // its content had one — an escaped union type, a shell pipeline, a code span
+  // — and shifted every column after it, which is worse than not rendering the
+  // table at all because the result still looks like a table.
+  var cells = [];
+  var cur = '';
+  for (var k = 0; k < s.length; k += 1) {
+    var ch = s.charAt(k);
+    if (ch === '\\' && s.charAt(k + 1) === '|') { cur += '|'; k += 1; continue; }
+    if (ch === '|') { cells.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells;
 }
 function isDelimRow(line) {
   var cells = tableCells(line);
@@ -277,6 +291,88 @@ function mdInline(s, opts) {
   return s.replace(/\x01M(\d+)\x02/g, function (m, d) { return math[Number(d) - 1] || m; });
 }
 
+// ── Lists ───────────────────────────────────────────────────────────────
+// One list, at any depth. The previous rule matched /^\s*[-*+]\s+/ for every
+// line and stripped the leading whitespace, so a nested list came out flat:
+// the structure the document expressed was simply gone. Walking the markers
+// with a stack of open levels keeps it — and gives a wrapped line somewhere to
+// go, where it used to fall out of the list as a stray paragraph still carrying
+// its indentation.
+function mdListMarker(line) {
+  var m = /^([ \t]*)([-*+]|\d+\.)([ \t]+)([\s\S]*)$/.exec(String(line));
+  if (!m) return null;
+  var bullet = m[2].charAt(0);
+  return {
+    // Tabs count as four columns, the usual reading of a tab stop.
+    indent: m[1].replace(/\t/g, '    ').length,
+    ordered: !(bullet === '-' || bullet === '*' || bullet === '+'),
+    number: parseInt(m[2], 10) || 1,
+    body: m[4],
+  };
+}
+
+function mdListBlock(lines, start, opts) {
+  // One level. Deeper markers recurse WHILE the parent item is still open, so
+  // the nested list is emitted inside the li it belongs to rather than beside
+  // it — which is what separates a real nested list from markup a browser will
+  // repair on its own and a stylesheet cannot target.
+  var first = mdListMarker(lines[start]);
+  var base = first.indent;
+  var tag = first.ordered ? 'ol' : 'ul';
+  // A list that does not start at 1 has to say so, or the browser renumbers it
+  // and the document's own numbering is lost.
+  var html = ['<' + tag + (tag === 'ol' && first.number !== 1 ? ' start="' + first.number + '"' : '') + '>'];
+  var open = false;
+  var i = start;
+  var item = function (body) {
+    var task = /^\[([ xX])\][ \t]?([\s\S]*)$/.exec(body);
+    if (task) {
+      html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
+    } else {
+      html.push('<li>' + mdInline(mdEscape(body), opts));
+    }
+    open = true;
+  };
+  // An indented line that is not a marker: a wrapped line of the open item, or
+  // a second block in it after a blank line. Both are item text — this renderer
+  // has no indented-code rule, so that is the least surprising reading.
+  var continuation = function (line) {
+    html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, '')), opts));
+  };
+  while (i < lines.length) {
+    var mark = mdListMarker(lines[i]);
+    if (mark && mark.indent === base) {
+      if ((mark.ordered ? 'ol' : 'ul') !== tag) break;
+      if (open) html.push('</li>');
+      item(mark.body);
+      i += 1;
+      continue;
+    }
+    if (mark && mark.indent > base) {
+      var sub = mdListBlock(lines, i, opts);
+      html.push(sub.html);
+      i = sub.next;
+      continue;
+    }
+    if (lines[i].trim() === '') {
+      // A blank line inside a list is ordinary — spacing, or a paragraph in an
+      // item. The list carries on only if something that belongs to it follows.
+      var j = i + 1;
+      while (j < lines.length && lines[j].trim() === '') j += 1;
+      if (j >= lines.length) break;
+      var next = mdListMarker(lines[j]);
+      if (next && next.indent >= base) { i = j; continue; }
+      if (open && lines[j].search(/\S/) > base) { continuation(lines[j]); i = j + 1; continue; }
+      break;
+    }
+    if (open && lines[i].search(/\S/) > base) { continuation(lines[i]); i += 1; continue; }
+    break;
+  }
+  if (open) html.push('</li>');
+  html.push('</' + tag + '>');
+  return { html: html.join(''), next: i };
+}
+
 // ── Block pass ──────────────────────────────────────────────────────────
 function mdToHtml(src, opts) {
   opts = opts || {};
@@ -293,12 +389,16 @@ function mdToHtml(src, opts) {
   var i = 0;
   while (i < lines.length) {
     var line = lines[i];
-    if (/^\s*\x60\x60\x60/.test(line)) {
-      var fence = /^\s*\x60\x60\x60([\w+-]*)/.exec(line);
-      var langHint = fence ? fence[1] : '';
+    var fenceOpen = /^\s*(\x60{3,}|~{3,})([\w+-]*)/.exec(line);
+    if (fenceOpen) {
+      var fenceCh = fenceOpen[1].charAt(0);
+      var langHint = fenceOpen[2];
+      // Only the fence character that opened the block closes it: a tilde
+      // fence inside a backtick block is content, and vice versa.
+      var fenceClose = fenceCh === '~' ? /^\s*~{3,}/ : /^\s*\x60{3,}/;
       var buf = [];
       i += 1;
-      while (i < lines.length && !/^\s*\x60\x60\x60/.test(lines[i])) { buf.push(lines[i]); i += 1; }
+      while (i < lines.length && !fenceClose.test(lines[i])) { buf.push(lines[i]); i += 1; }
       i += 1;
       var codeText = buf.join('\n');
       if (langHint === 'mermaid') {
@@ -430,26 +530,20 @@ function mdToHtml(src, opts) {
       out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
       continue;
     }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      var lis = [];
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        var content = lines[i].replace(/^\s*[-*+]\s+/, '');
-        var task = /^\[([ xX])\]\s?(.*)$/.exec(content);
-        if (task) {
-          var checked = task[1] !== ' ' && task[1] !== '';
-          lis.push('<li class="task-list-item"><input type="checkbox" disabled' + (checked ? ' checked' : '') + '> ' + mdInline(mdEscape(task[2]), mdOpts) + '</li>');
-        } else {
-          lis.push('<li>' + mdInline(mdEscape(content), mdOpts) + '</li>');
-        }
-        i += 1;
-      }
-      out.push('<ul>' + lis.join('') + '</ul>');
+    if (mdListMarker(line)) {
+      var list = mdListBlock(lines, i, mdOpts);
+      out.push(list.html);
+      i = list.next;
       continue;
     }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      var lis2 = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { lis2.push(mdInline(mdEscape(lines[i].replace(/^\s*\d+\.\s+/, '')), mdOpts)); i += 1; }
-      out.push('<ol>' + lis2.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ol>');
+    // Setext heading: an underlined title. Only the '=' form is honoured here.
+    // A '---' underline is also a horizontal rule, and this renderer has always
+    // drawn it as one, so re-reading it as an h2 is a change nobody asked for.
+    // '=====' cannot be anything but an underline, and today it renders as a
+    // paragraph containing '=====', which is never what was meant.
+    if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
+      out.push('<h1>' + mdInline(mdEscape(line.trim()), mdOpts) + '</h1>');
+      i += 2;
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
