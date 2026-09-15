@@ -2,6 +2,7 @@
 
 **English** · [简体中文](./README.zh-CN.md)
 
+[![ci](https://github.com/zengqingsong/dsh-sidebar-frog/actions/workflows/ci.yml/badge.svg)](https://github.com/zengqingsong/dsh-sidebar-frog/actions/workflows/ci.yml)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/zengqingsong/dsh-sidebar-frog)
 
 <p align="center">
