@@ -139,6 +139,8 @@ npx dsh-plugin-verify . --repo <dsh-checkout>
 
 七个 waterfall 事件全部触发，`tools/result` 正常收尾，静态规则也没扫出裸 `child_process` spawn 或 `single` 槽注册。对侧边栏插件来说，真正有意义的是它在**你没跑的那个 profile** 上的表现：宿主端**没有声明任何静态 `inject`**，所以在 headless 装配下插件照样加载、照样追踪产物，缺的只是 HTTP 路由。如果写成静态的 `inject: ['webServer']`，整个插件在那里会被**悄悄关掉**——连 waterfall 一起。
 
+上面那条检查是用符号链接装工作区，所以市场实际走的那条路单独验了一遍：`npm pack` 打包，再 `dsh plugin --profile headless add <那个 tarball>`。pnpm 装进去之后，profile 的 `dsh.profile.bundles` 里会多出 `dsh-sidebar-frog`，宿主从 `node_modules` 里加载并打印同一个构建 id——循环依然是 7/7，`tools/result` 干净。这条路上没有任何构建脚本，唯一需要联网的只有下载本身。
+
 ## 开发
 
 ```sh
