@@ -140,7 +140,12 @@ npx dsh-plugin-verify . --repo <dsh-checkout>
 
 All seven waterfall events fire and `tools/result` closes cleanly, with no bare `child_process` spawn and no `single`-slot registration. The part that matters for a sidebar plugin is what the check says about the profile you are *not* running: the host declares **no static `inject`**, so on a headless assembly the plugin still applies and still tracks artifacts, and only the HTTP routes are missing. A static `inject: ['webServer']` would have switched the whole plugin off there, waterfalls included — silently.
 
-That check installs the working tree by symlink, so the marketplace's own path is exercised separately: `npm pack` the package, then `dsh plugin --profile headless add <the tarball>`. pnpm installs it, the profile's `dsh.profile.bundles` gains `dsh-sidebar-frog` beside the shipped bundles, and the host logs the same build id out of `node_modules` rather than out of a checkout — the loop still ends 7/7 with `tools/result` clean. Nothing on that path runs a build script, and the only step the network is needed for is the fetch.
+Four checks stand behind that, and they are independent on purpose — each one can fail for a different reason:
+
+- **The working tree**, through `dsh-plugin-verify` (above): 7/7 waterfall, `tools/result` clean, no bare `child_process` spawn, no `single`-slot registration.
+- **The packed artifact**, which is what a marketplace actually installs: `npm pack`, then `dsh plugin --profile headless add <the tarball>`. pnpm installs it, the profile's `dsh.profile.bundles` gains `dsh-sidebar-frog` beside the shipped bundles, and the host logs the same build id out of `node_modules` rather than out of a checkout — the loop still ends 7/7. Nothing on that path runs a build script, and the only step that needs the network is the fetch.
+- **The registry's own admission test**: `dsh --profile headless --dump-config` exits 0 with the package installed — the gate `awesome-dsh-plugins` applies before it will list anything as verified.
+- **Every push, on Linux and Windows**: the guard suite, 178 assertions plus 28 cases driving the pop-out page in real Chrome.
 
 ## Development
 
