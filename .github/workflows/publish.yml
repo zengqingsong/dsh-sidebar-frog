@@ -13,6 +13,13 @@
 #
 # Nothing here writes to the repository, and a run without the secret fails
 # before it touches the registry, with the sentence that says what is missing.
+#
+# That last property is also why there is a dry run. Until this workflow has
+# executed once, every claim about it is a reading of the YAML: that it parses,
+# that the runner has what the steps assume, that `check:fast` passes on the
+# platform that will run it. `workflow_dispatch` with `dry_run: true` runs every
+# step except the publish, needs no credential, and is safe to repeat — so the
+# release path can be exercised now instead of on release day.
 name: publish
 
 on:
@@ -20,8 +27,14 @@ on:
     types: [published]
   # Manual runs are for the first publish, or for re-running one that npm
   # rejected. Both paths publish the version in package.json as it stands on the
-  # ref they were started from.
+  # ref they were started from — unless `dry_run` is set, which stops one step
+  # short of the registry.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every step except npm publish (no NPM_TOKEN needed)'
+        type: boolean
+        default: false
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -54,6 +67,7 @@ jobs:
           echo "tag $GITHUB_REF_NAME == version $pkg"
 
       - name: NPM_TOKEN must exist before anything else runs
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -69,8 +83,13 @@ jobs:
 
       - run: npm pack --dry-run
 
+      - name: what a dry run stopped short of
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: echo "::notice::dry run — npm publish --provenance was skipped, nothing was sent to the registry"
+
       # `prepublishOnly` is deliberately not used: the gate above is visible in
       # the run log, and a local `npm publish` stays a local decision.
       - run: npm publish --provenance
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
