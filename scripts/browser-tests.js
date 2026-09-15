@@ -39,7 +39,7 @@ const TREE = {
   '': [['src', true], ['docs', true], ['README.md', false], ['notes.txt', false]],
   'src': [['deep', true], ['app.js', false], ['util.js', false]],
   'src/deep': [['inner.js', false], ['dsh-sidebar-frog.config.json', false]],
-  'docs': [['guide.md', false], ['data.csv', false], ['report.docx', false], ['book.xlsx', false], ['deck.pptx', false], ['legacy.odt', false], ['clip.mp3', false]],
+  'docs': [['guide.md', false], ['data.csv', false], ['report.docx', false], ['book.xlsx', false], ['deck.pptx', false], ['legacy.odt', false], ['clip.mp3', false], ['课件 中文.md', false]],
 }
 
 const CONTENT = 'const a = 1\nconst b = 2\n'
@@ -917,6 +917,27 @@ async function run(s, shots, host) {
     eq(shape.items.join('|'), 'inner one|inner two', 'the nested items')
     eq(shape.owner, 'outerinner oneinner two', 'the parent item owns the nested list')
     eq(shape.cells.join('|'), 'key|value|union|a | b', 'the table cells, escaped pipe intact')
+  })
+
+  await test('a Chinese file name survives the tree, the request and the preview', async () => {
+    // Four hops, each of which can mangle it independently: the tree row's
+    // data-path attribute, the `path` the client builds, the percent-encoding on
+    // the wire, and the JSON coming back. A workspace here is full of these
+    // names, which is why it is worth one assertion rather than an assumption.
+    await setOpen(s, path('docs'), true)
+    const name = '课件 中文.md'
+    const row = rowSel(path('docs', name))
+    assert(await s.evaluate('!!document.querySelector(' + JSON.stringify(row) + ')'), 'the Chinese-named file has no row in the tree')
+    const before = host.requests.length
+    const at = await s.center(row)
+    assert(at, 'the Chinese-named row has no clickable centre')
+    await s.click(at.x, at.y)
+    await s.waitFor('!!document.querySelector("#previewArea .markdown, #previewArea .codeview, #previewArea .preview-iframe")', { label: 'the preview of a non-ASCII file', timeout: 4000 })
+    const asked = host.requests.slice(before).filter((r) => r.indexOf('/content?') >= 0)
+    assert(asked.length > 0, 'nothing asked the host for the Chinese file: ' + JSON.stringify(host.requests.slice(before)))
+    const encoded = encodeURIComponent(name)
+    assert(asked.some((r) => r.indexOf(encoded) >= 0), 'the name was not percent-encoded on the wire: ' + JSON.stringify(asked))
+    assert(!asked.some((r) => r.indexOf('%EF%BF%BD') >= 0), 'the name was mangled into replacement characters: ' + JSON.stringify(asked))
   })
 
   await test('a quoted list renders as a list, not as its own markers', async () => {

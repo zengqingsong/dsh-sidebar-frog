@@ -1802,6 +1802,11 @@ const bootHost = (rejection, options) => {
     listDir: async (target) => [
       { name: 'b.txt', type: 'file', target: target + '/b.txt', size: 3, version: 'v1' },
       { name: 'a', type: 'directory', target: target + '/a' },
+      // A Chinese file name, because that is what a workspace here is full of
+      // and every hop between the tree and the route is an encoding step that
+      // can quietly mangle it: the JSON, the query string, the row's data-path
+      // attribute, and the fetch URL the preview builds from it.
+      { name: '课件 中文.md', type: 'file', target: target + '/课件 中文.md', size: 9, version: 'v1' },
     ],
     processPath: (t) => String(t).replace(/\//g, '\\'),
     readText: async () => {
@@ -2063,7 +2068,13 @@ try {
   const listedBody = JSON.parse(listed.body)
   const entries = listedBody.entries
   if (!entries.length || !entries[0].isDir) throw new Error('/listdir did not sort the directory first')
-  if (entries[1].name !== 'b.txt') throw new Error('/listdir entries look wrong: ' + JSON.stringify(entries))
+  // Order between the FILES is the route's collation, not a property worth
+  // pinning to an index — the meaningful half is that directories lead and the
+  // rest are files, so adding a name here cannot break the check for the wrong
+  // reason.
+  if (entries.slice(1).some((e) => e.isDir)) throw new Error('/listdir put a directory after a file: ' + JSON.stringify(entries.map((e) => [e.name, e.isDir])))
+  const names = entries.map((e) => e.name)
+  if (names.indexOf('b.txt') < 0) throw new Error('/listdir entries look wrong: ' + JSON.stringify(names))
   if (calls[0][1] !== 'D:/sub') throw new Error('the percent-encoded path did not decode: ' + calls[0][1])
   // The level's own path must come back in the SAME spelling as its entries —
   // here the stub's processPath is the realpath (backslashes) while the request
@@ -2072,7 +2083,19 @@ try {
   // expansion, the reveal walk and the relative-path labels.
   if (listedBody.path !== 'D:\\sub') throw new Error('level path was not normalised to the entries\' spelling: ' + JSON.stringify(listedBody.path))
   if (!entries.every((e) => e.path.indexOf('D:\\sub\\') === 0)) throw new Error('entry paths are not in the level\'s spelling: ' + JSON.stringify(entries.map((e) => e.path)))
-  ok('/listdir', 'decoded path + sessionId, directories first, one spelling for root and entries')
+  // A Chinese file name has to survive every hop: the JSON out of the route, the
+  // level's own spelling, and the percent-encoded path the client sends back when
+  // someone clicks the row. Each of those is a separate chance to mangle it, and
+  // a mangled name is a row that previews nothing.
+  const cjk = entries.filter((e) => e.name.indexOf('课件') === 0)[0]
+  if (!cjk) throw new Error('the non-ASCII entry is missing from /listdir: ' + JSON.stringify(entries.map((e) => e.name)))
+  if (cjk.path !== 'D:\\sub\\课件 中文.md') throw new Error('a non-ASCII entry path was mangled: ' + JSON.stringify(cjk.path))
+  const cjkRead = await call(routes['/dsh-sidebar-frog/content'], '/dsh-sidebar-frog/content?path=' + encodeURIComponent('D:/sub/课件 中文.md'))
+  const cjkBody = JSON.parse(cjkRead.body)
+  if (cjkBody.ok !== true) throw new Error('a percent-encoded non-ASCII path could not be read: ' + cjkRead.body)
+  const lastResolve = calls.filter((c) => c[0] === 'resolve').slice(-1)[0]
+  if (!lastResolve || lastResolve[1] !== 'D:/sub/课件 中文.md') throw new Error('the non-ASCII path did not arrive decoded: ' + JSON.stringify(lastResolve))
+  ok('/listdir', 'decoded path + sessionId, directories first, one spelling for root and entries, non-ASCII names intact')
 
   // A malformed percent escape must not throw out of the route.
   //
