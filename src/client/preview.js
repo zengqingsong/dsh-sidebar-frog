@@ -714,6 +714,18 @@
       }, '在系统侧边栏打开'),
     )
 
+    // The note a cut read must always carry, for EVERY type that carries text.
+    // It used to be pushed only inside the code-view branch, so a Markdown
+    // document that stopped mid-sentence — the exact shape of the 403 kB
+    // textbook this was reported on — carried no mark at all: the reader could
+    // not tell a short file from a truncated one. `chars` is the host's count of
+    // the COMPLETE file, so the note can say how much is missing rather than
+    // only that something is.
+    const truncatedNote = (p) => React.createElement('div', { key: 'trunc', className: 'artifacts-diff-label' },
+      '(truncated preview)' + (typeof p.chars === 'number' && p.chars > 0
+        ? ' — ' + (p.content || '').length + ' / ' + p.chars + ' characters shown'
+        : ''))
+
     const renderPreview = (p) => {
       if (p.loading) return React.createElement('div', { className: 'artifacts-hint' }, '加载中…')
       if (p.ok === false) return React.createElement('div', { className: 'artifacts-error' }, p.error || '读取失败')
@@ -757,8 +769,9 @@
         }))
       } else {
         body.push(React.createElement(CodeView, { key: 'code', code: p.content, lang: langFromExt(p.path) }))
-        if (p.truncated) body.push(React.createElement('div', { key: 'trunc', className: 'artifacts-diff-label' }, '(truncated preview)'))
       }
+      // After the body, before the diff: it describes the content above it.
+      if (p.truncated) body.push(truncatedNote(p))
       // The diff sits on top of the file body: the review question ("what did the
       // agent change?") is asked before the content one. `p.undo` / `p.onUndo` /
       // `p.undoBusy` come from the panel; the popout tab has its own handler.

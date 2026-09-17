@@ -98,6 +98,21 @@ window.__ModuleLoader__.load({
           const path = args && typeof args.path === 'string' ? args.path : ''
           return fetchJson('/dsh-sidebar-frog/remove?path=' + encodeURIComponent(path), { method: 'POST' })
         }
+        if (method === 'artifacts.delete') {
+          // DELETE from disk (the file tree's 删除), a body for the same reason as
+          // 撤销/保存: a mutation travels in a body, not a URL that lands in logs.
+          // The host fences the path to the session workspace and answers a reason
+          // on refusal, which the tree shows to the user.
+          const body = JSON.stringify({
+            path: args && typeof args.path === 'string' ? args.path : '',
+            sessionId: args && typeof args.sessionId === 'string' ? args.sessionId : '',
+          })
+          return fetchJson('/dsh-sidebar-frog/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+          })
+        }
         if (method === 'artifacts.revert') {
           // The one mutating call that carries a body: {path, opId}. A refusal
           // ("file moved on", "no snapshot") comes back as JSON with ok:false and

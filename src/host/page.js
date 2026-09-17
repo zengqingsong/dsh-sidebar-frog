@@ -380,6 +380,8 @@ const page = String.raw`<!doctype html>
   .tree-menu { position: fixed; z-index: 20; min-width: 184px; padding: 4px; border: 1px solid var(--p-border-l2); border-radius: 6px; background: var(--p-bg-layer-1); box-shadow: var(--p-shadow); outline: none; }
   .tree-menu-item { display: block; width: 100%; text-align: left; padding: 5px 10px; border: none; border-radius: 4px; background: transparent; color: var(--p-text); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
   .tree-menu-item:hover, .tree-menu-item.is-active { background: var(--p-hover); }
+  .tree-menu-item.is-danger { color: var(--p-error); }
+  .tree-menu-item.is-danger:hover, .tree-menu-item.is-danger.is-active { background: rgba(236,19,19,0.12); }
   .tree-menu-sep { height: 1px; margin: 4px 6px; background: var(--p-border-l2); }
   @keyframes tree-spin { to { transform: rotate(360deg) } }
   @keyframes tree-flash { 0% { background: var(--p-hover) } 100% { background: transparent } }
@@ -485,6 +487,7 @@ const page = String.raw`<!doctype html>
     var CONTENT_URL = '/dsh-sidebar-frog/content';
     var MEDIA_URL = '/dsh-sidebar-frog/media';
     var LISTDIR_URL = '/dsh-sidebar-frog/listdir';
+    var DELETE_URL = '/dsh-sidebar-frog/delete';
     var _sm = /[?&]sessionId=([^&]+)/.exec(location.search);
     // A malformed percent-escape must never throw here: this runs at the top
     // level of the inline script, so one bad query string would kill the page.
@@ -754,8 +757,65 @@ const page = String.raw`<!doctype html>
       for (var i = 0; i < items.length; i += 1) if (items[i].path === path) return items[i];
       return null;
     }
+    // Delete a file or folder from DISK (the tree's 删除). The host fences the
+    // path to the session's workspace and answers a REASON on refusal — a path
+    // outside the workspace, the workspace root, a locked file — which the toast
+    // shows, because a deletion that silently does nothing is the worst outcome.
+    function deletePathNow(entry) {
+      entry = entry || entryOf(treeCursor || selectedPath);
+      if (!entry || !entry.path) return;
+      var isDir = !!entry.isDir;
+      var name = entry.name || entry.path;
+      var msg = isDir
+        ? '删除文件夹「' + name + '」及其中的全部内容？此操作无法恢复。'
+        : '删除文件「' + name + '」？此操作无法恢复。';
+      if (!window.confirm(msg)) return;
+      fetch(DELETE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: entry.path, sessionId: currentSessionId() }),
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (res && res.ok) {
+          toast(isDir ? '已删除文件夹 ' + name : '已删除 ' + name);
+          // The preview may be showing the very file just deleted: clear it and
+          // re-read the level that listed the entry so the row disappears.
+          selectedPath = null;
+          var parent = parentDirOf(entry.path);
+          // A top-level entry is listed by treeRoot.entries, not treeChildren:
+          // its "parent" is the workspace root itself, so what is stale is the
+          // ROOT — refreshTreeDir(root) would only write a treeChildren['<root>']
+          // key the renderer never reads, leaving the deleted row on screen.
+          if (parent && relTreePath(parent) !== '') refreshTreeDir(parent); else loadTreeRoot(false);
+        } else {
+          toast((res && res.error) || '删除失败');
+        }
+      }).catch(function () {
+        toast('删除失败');
+      });
+    }
+    // The directory a tree entry lives in, spelled the way the host spells it.
+    // Empty for a top-level entry, whose level is the workspace root.
+    function parentDirOf(path) {
+      var text = String(path || '');
+      var at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+      if (at <= 0) return '';
+      return text.slice(0, at);
+    }
     function errNode(msg) {
       return el('div', 'err', msg || '读取失败');
+    }
+    // The note a cut read must always carry — for Markdown too, which is the bug
+    // this exists for: the whole document was sliced at character 200000 and the
+    // page simply ended, with nothing on screen to tell a reader whether the book
+    // was that short or the preview had stopped.
+    //
+    // The host's own count of the COMPLETE file rides along as data.chars (see
+    // src/host/core.js), so the note reports how much is missing instead of only
+    // that something is.
+    function truncatedNote(data) {
+      var shown = data && typeof data.content === 'string' ? data.content.length : 0;
+      var total = data && typeof data.chars === 'number' ? data.chars : 0;
+      return el('div', 'diff-label', '(truncated preview)' + (total > 0 ? ' — ' + shown + ' / ' + total + ' characters shown' : ''));
     }
     // Typeset any $...$ / $$...$$ math that mdToHtml left verbatim in the node.
     // MathJax loads lazily via the deferred <script> in <head>, so retry briefly
@@ -1444,12 +1504,15 @@ const page = String.raw`<!doctype html>
       }).then(function (data) {
         if (seq !== _previewSeq) return;   // a newer preview already replaced this one
         if (!data || data.ok !== true) { area.appendChild(errNode(data && data.error)); return; }
-        // 编辑 is offered for the plugin's text-ish types only, and NEVER for a
-        // truncated read: the host hands over the first 200000 characters, so an
-        // editor built on that holds a prefix and saving it would TRUNCATE the
-        // file. (The host refuses such a save regardless — this is the honest
-        // UI, not the guard.)
-        var canEdit = EDITABLE[type] === 1 && !data.truncated;
+        // 编辑 is offered for the plugin's text-ish types only, and only where a
+        // SAVE can succeed. That verdict is the host's (data.editable), because
+        // the host owns the save ceiling — the page used to infer it from
+        // data.truncated, which was the same answer only while 预览 and 编辑 shared
+        // one 200000-character cap. They don't: a 2 MB Markdown file now previews
+        // in full and is still refused an editor, since an editor built on a
+        // prefix would truncate the file on save. (The host refuses such a save
+        // regardless — this is the honest UI, not the guard.)
+        var canEdit = EDITABLE[type] === 1 && (data.editable === undefined ? !data.truncated : !!data.editable);
         if (canEdit) {
           bar.appendChild(editTools(path, data, diff, pinned));
           if (editorMode && editorModePath === path) { mountEditorIn(area, path, data); return; }
@@ -1470,11 +1533,12 @@ const page = String.raw`<!doctype html>
           typesetMath(md);
           typesetMermaid(md);
           typesetJSXGraph(md);
+          if (data.truncated) area.appendChild(truncatedNote(data));
         } else if (type === 'table') {
           area.appendChild(tableNode(path, data.content));
-          if (data.truncated) area.appendChild(el('div', 'diff-label', '(truncated preview)'));
+          if (data.truncated) area.appendChild(truncatedNote(data));
         } else {
-          if (data.truncated) area.appendChild(el('div', 'diff-label', '(truncated preview)'));
+          if (data.truncated) area.appendChild(truncatedNote(data));
           area.appendChild(codeViewNode(path, data.content));
         }
       }).catch(function (e) {
@@ -2116,6 +2180,10 @@ const page = String.raw`<!doctype html>
         list.push({ label: '展开全部', run: function () { toggleTree(entry.path, true); expandTreeAll(); } });
       }
       list.push({ sep: true });
+      // Destructive: runs through a native confirm() first, so a stray click
+      // never deletes anything on its own.
+      list.push({ label: entry.isDir ? '删除文件夹…' : '删除文件…', danger: true, run: function () { deletePathNow(entry); } });
+      list.push({ sep: true });
       list.push({ label: '全部展开', run: expandTreeAll });
       list.push({ label: '全部折叠', run: collapseTreeAll });
       return list;
@@ -2174,7 +2242,7 @@ const page = String.raw`<!doctype html>
       treeMenuEl.setAttribute('role', 'menu');
       treeMenuEl.tabIndex = -1;
       treeMenuEl.style.left = Math.min(ev.clientX, Math.max(8, window.innerWidth - 210)) + 'px';
-      treeMenuEl.style.top = Math.min(ev.clientY, Math.max(8, window.innerHeight - 260)) + 'px';
+      treeMenuEl.style.top = Math.min(ev.clientY, Math.max(8, window.innerHeight - 340)) + 'px';
       // ONE listener per kind, on the container — which never changes while the
       // menu is open. The items themselves carry no listeners, so there is
       // nothing for a repaint to lose (see buildTreeMenuDom).
@@ -2232,7 +2300,7 @@ const page = String.raw`<!doctype html>
           treeMenuBtns.push(null);
           continue;
         }
-        var btn = el('button', 'tree-menu-item', it.label);
+        var btn = el('button', 'tree-menu-item' + (it.danger ? ' is-danger' : ''), it.label);
         btn.type = 'button';
         btn.setAttribute('role', 'menuitem');
         btn.setAttribute('data-item', String(i));

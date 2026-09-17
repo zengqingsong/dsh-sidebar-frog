@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = '69165802'
+    const BUILD = 'adfb4d86'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -1017,6 +1017,24 @@ return {
     // archives, and reading one as UTF-8 shipped 200 kB of mojibake.
     const BINARY_TYPES = { image: 1, pdf: 1, audio: 1, video: 1, office: 1, document: 1 }
 
+    // ── The two ceilings, declared together because they are two questions ───
+    // A file meets both, in this order, and conflating them is what made the
+    // popout show two thirds of a document:
+    //
+    //   · PREVIEW_TEXT_MAX — what the wire will carry and the DOM will render.
+    //     This is a browser-survival bound, NOT a document policy: nothing real
+    //     is anywhere near it, and a file that trips it is one whose rendering
+    //     would take the tab down anyway. It is deliberately loose (40× the
+    //     200000 it replaced), because the popout is the window a person opens
+    //     precisely when they want to read the whole file.
+    //   · SAVE_TEXT_MAX — what a save may write back, and therefore the largest
+    //     document the 编辑 pane may offer to open. An editor built on a prefix
+    //     would TRUNCATE the file on save, so this is the one that must stay a
+    //     real limit. `readFile` reports it as `editable`; `saveFile` enforces it
+    //     independently (never trust the client's reading of the rule).
+    const PREVIEW_TEXT_MAX = 8 * 1024 * 1024
+    const SAVE_TEXT_MAX = 4 * 1024 * 1024
+
     const readFile = async (path, opts) => {
       const fs = ctx.get('fs')
       if (!fs) return { ok: false, error: 'filesystem unavailable' }
@@ -1040,8 +1058,45 @@ return {
         const forceText = !!(opts && opts.forceText)
         if (BINARY_TYPES[type] && !forceText) return { ok: true, type: type, content: '', truncated: false, size: info.size, version: version }
         const text = await fs.readText(target)
-        const cap = 200000
-        return { ok: true, type: type, content: text.slice(0, cap), truncated: text.length > cap, size: info.size, version: version }
+        // ── What arrives on the wire, and what that costs the reader ─────────
+        // This used to be a flat `text.slice(0, 200000)` — one number doing two
+        // jobs, and it did the wrong one for both:
+        //
+        //   · 预览. The popout exists to show a file COMPLETE: it is the window
+        //     you open when the panel is too narrow to read from. A 403 kB
+        //     student textbook (77% of it three inline base64 images) was cut at
+        //     character 200000 — mid-way through the base64 of the third one —
+        //     so the page ended at an unrenderable `<image>` and the rest of the
+        //     book simply was not there, with nothing on screen saying so. The
+        //     shell's OWN document preview (the sidebar's default path) pages by
+        //     lines and accumulates until eof, i.e. it has no total limit at all;
+        //     the popout is now consistent with it rather than 400× stricter.
+        //   · 编辑. The cap was doing honest work here: an editor holding a
+        //     PREFIX would truncate the file on save. But that is the SAVE
+        //     path's own ceiling (SAVE_TEXT_MAX, below), and it is what decides
+        //     `editable` now — the preview limit and the edit limit are no longer
+        //     the same question, and a file too big to save is refused as
+        //     un-editable instead of being shown to nobody.
+        //
+        // The ceiling that remains is a browser-survival bound, not a document
+        // policy: past it the DOM, not the wire, is what fails. `chars` rides
+        // along so the client can say how much of the file it is showing — the
+        // cut must never be silent, which is the actual bug this replaced.
+        const truncated = text.length > PREVIEW_TEXT_MAX
+        return {
+          ok: true,
+          type: type,
+          content: truncated ? text.slice(0, PREVIEW_TEXT_MAX) : text,
+          truncated: truncated,
+          // Exactly when a save of what the browser holds can succeed. Named
+          // separately from `truncated` on purpose: they are the same value today
+          // for a small file and different answers the moment a file is bigger
+          // than the save ceiling but small enough to read.
+          editable: !truncated && text.length <= SAVE_TEXT_MAX,
+          chars: text.length,
+          size: info.size,
+          version: version,
+        }
       } catch (e) {
         // A file that is not UTF-8 throws out of the read rather than coming back
         // as replacement characters: the filesystem service decodes strictly
@@ -1166,11 +1221,11 @@ return {
     //     normalization", so what is missing is the BOM itself). The write
     //     service preserves the file's mode.
     //
-    // The size caps are the read path's own: `/content` truncates a preview at
-    // 200000 characters, so a file past that must not be saved from here at all —
-    // writing back what the browser has would TRUNCATE the file. The client
-    // hides the editor for a truncated preview; this refuses it independently.
-    const SAVE_TEXT_MAX = 4 * 1024 * 1024
+    // SAVE_TEXT_MAX is declared with PREVIEW_TEXT_MAX, above `readFile`, because
+    // the two only make sense read together: the preview ceiling decides what you
+    // may SEE, this one decides what you may WRITE. The client hides the editor
+    // wherever the host said `editable: false`; this refuses such a save
+    // independently.
     // What the SAVE route lets the request body reach: the text ceiling plus
     // JSON escaping headroom (a control character or a quote becomes two or six
     // bytes on the wire). The real limit is still the TEXT one above — this only
@@ -1352,6 +1407,116 @@ return {
         return policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
       } catch (e) {}
       return undefined
+    }
+
+    // Delete a file or a folder the person asked for from the file tree.
+    //
+    // The filesystem service has NO delete: `fs` exposes readText / listDir /
+    // writeText / editText and nothing that removes a path — which is exactly
+    // why 撤销 of a created file is refused further down (revertFile), because
+    // undoing a create means deleting a file the host cannot delete. This route
+    // is the one place a deletion is INTENDED, so it reaches the host's own
+    // node:fs directly. The plugin's host half runs inside the `dsh web` process
+    // (a Node process), loaded once at startup through src/index.js's
+    // `new Function(host.js)`, where a dynamic import of the built-in resolves —
+    // that is verified, not assumed. (A dynamic `cordis_define` package runs in a
+    // vm sandbox that traps `require` and has no node:fs; this is a static
+    // bundle, so it never takes that path.) The import is cached once per
+    // process so a repeated delete costs nothing.
+    let nodeFsPromises = null
+    const nodeFsMod = async () => {
+      if (!nodeFsPromises) nodeFsPromises = await import('node:fs/promises')
+      return nodeFsPromises
+    }
+
+    // Three guards carry it, each a fact about the host rather than a convention
+    // the client is trusted to respect — the same shape saveFile's fence uses:
+    //
+    //   · CONTAINMENT. The path resolves against the session's workspace, and the
+    //     resolved target must stay under it. The backend's own `contains`
+    //     answers that (both targets are realpaths, so a symlink or a `..` that
+    //     would escape is folded away before the test); a backend without it
+    //     falls back to the string `pathUnder` on the canonical spellings.
+    //   · ROOT. The workspace root itself is never a target: deleting it takes
+    //     the WHOLE workspace. `contains` is true for the root (a place is under
+    //     itself), so the root is refused explicitly. The tree's root row IS the
+    //     workspace and cannot even be right-clicked for delete, but the route
+    //     must not rely on the UI.
+    //   · TYPE. What is deleted is what the tree showed — a regular file or a
+    //     directory. `other` (a socket, a FIFO) is refused rather than unlinked.
+    const deletePath = async (path, sessionId) => {
+      if (typeof path !== 'string' || !path) return { ok: false, error: '缺少路径' }
+      const fs = ctx.get('fs')
+      if (!fs || typeof fs.resolve !== 'function' || typeof fs.processPath !== 'function') {
+        return { ok: false, error: '宿主未提供文件系统接口' }
+      }
+      let cwd
+      try { cwd = await resolveCwd(sessionId) } catch (e) { cwd = undefined }
+      if (!cwd) return { ok: false, error: '工作区不可用，未删除' }
+      // Resolve BOTH the target and the workspace root, so the fence compares
+      // two canonical (realpath) spellings the backend handed us, not the
+      // caller's text.
+      let target
+      let rootTarget
+      try {
+        target = await fs.resolve(path, { cwd: cwd })
+        rootTarget = await fs.resolve(cwd, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该路径：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      let outside = false
+      let isRoot = false
+      if (typeof fs.contains === 'function') {
+        outside = !fs.contains(rootTarget, target)
+        isRoot = String(fs.processPath(rootTarget)) === String(fs.processPath(target))
+      } else {
+        // A backend without `contains`: the string fence on the canonical
+        // spellings. processPath folds separators and (on a local backend) case.
+        const abs = fs.processPath(target)
+        const root = fs.processPath(rootTarget)
+        outside = !pathUnder(abs, root)
+        isRoot = abs === root
+      }
+      if (outside) return { ok: false, error: '该路径在工作区之外，不能删除' }
+      if (isRoot) return { ok: false, error: '不能删除工作区根目录' }
+      let info
+      try { info = await fs.stat(target) } catch (e) { info = undefined }
+      if (!info) return { ok: false, error: '文件已不存在' }
+      if (info.type !== 'file' && info.type !== 'directory') {
+        return { ok: false, error: '只能删除文件或文件夹' }
+      }
+      const isDir = info.type === 'directory'
+      // A directory is removed recursively (the person right-clicked the folder,
+      // so everything under it goes); a file is a plain remove. `force` makes a
+      // path that vanished between the stat and the rm a clean "gone" rather
+      // than a crash.
+      let out
+      try {
+        const nodeFs = await nodeFsMod()
+        await nodeFs.rm(fs.processPath(target), { recursive: isDir, force: true })
+        out = { ok: true, kind: isDir ? 'directory' : 'file' }
+      } catch (e) {
+        const code = e && e.code
+        if (code === 'ENOENT') return { ok: false, error: '文件已不存在' }
+        if (code === 'EPERM' || code === 'EACCES') {
+          return { ok: false, error: '没有删除权限（文件可能正被另一个程序占用）' }
+        }
+        return { ok: false, error: e && e.message ? String(e.message) : '删除失败' }
+      }
+      // The ledger's change letters (A/M) and any in-memory record point at a
+      // path that no longer exists; dropping them keeps the 产物 list from
+      // advertising a file the tree no longer shows. This is a best-effort
+      // cleanup, not the deletion itself.
+      for (let i = artifacts.length - 1; i >= 0; i -= 1) {
+        const a = artifacts[i]
+        if (!a || !a.path) continue
+        if (a.path === path || pathUnder(a.path, path)) {
+          if (a.history) for (const h of a.history) historyChars -= changeSize(h)
+          if (historyChars < 0) historyChars = 0
+          artifacts.splice(i, 1)
+        }
+      }
+      return out
     }
 
     // List one directory level for the file-tree (文件树) view: directories
@@ -1679,6 +1844,7 @@ return {
     if (typeof harness !== 'undefined') {
       harness.handle('artifacts.list', () => ({ artifacts: snapshot() }))
       harness.handle('artifacts.remove', (args) => removeFile(args && args.path))
+      harness.handle('artifacts.delete', (args) => deletePath(args && args.path, args && args.sessionId))
       harness.handle('artifacts.revert', (args) => revertFile(args && args.path, args && args.opId))
       harness.handle('artifacts.save', (args) => saveFile(args && args.path, args && args.content, args))
       harness.handle('artifacts.read', (args) => readFile(args && args.path, args))
@@ -1707,7 +1873,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="69165802" />
+<meta name="dsh-sidebar-frog-build" content="adfb4d86" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -2081,6 +2247,8 @@ return {
   .tree-menu { position: fixed; z-index: 20; min-width: 184px; padding: 4px; border: 1px solid var(--p-border-l2); border-radius: 6px; background: var(--p-bg-layer-1); box-shadow: var(--p-shadow); outline: none; }
   .tree-menu-item { display: block; width: 100%; text-align: left; padding: 5px 10px; border: none; border-radius: 4px; background: transparent; color: var(--p-text); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
   .tree-menu-item:hover, .tree-menu-item.is-active { background: var(--p-hover); }
+  .tree-menu-item.is-danger { color: var(--p-error); }
+  .tree-menu-item.is-danger:hover, .tree-menu-item.is-danger.is-active { background: rgba(236,19,19,0.12); }
   .tree-menu-sep { height: 1px; margin: 4px 6px; background: var(--p-border-l2); }
   @keyframes tree-spin { to { transform: rotate(360deg) } }
   @keyframes tree-flash { 0% { background: var(--p-hover) } 100% { background: transparent } }
@@ -2974,6 +3142,7 @@ return {
     var CONTENT_URL = '/dsh-sidebar-frog/content';
     var MEDIA_URL = '/dsh-sidebar-frog/media';
     var LISTDIR_URL = '/dsh-sidebar-frog/listdir';
+    var DELETE_URL = '/dsh-sidebar-frog/delete';
     var _sm = /[?&]sessionId=([^&]+)/.exec(location.search);
     // A malformed percent-escape must never throw here: this runs at the top
     // level of the inline script, so one bad query string would kill the page.
@@ -4907,8 +5076,65 @@ return {
       for (var i = 0; i < items.length; i += 1) if (items[i].path === path) return items[i];
       return null;
     }
+    // Delete a file or folder from DISK (the tree's 删除). The host fences the
+    // path to the session's workspace and answers a REASON on refusal — a path
+    // outside the workspace, the workspace root, a locked file — which the toast
+    // shows, because a deletion that silently does nothing is the worst outcome.
+    function deletePathNow(entry) {
+      entry = entry || entryOf(treeCursor || selectedPath);
+      if (!entry || !entry.path) return;
+      var isDir = !!entry.isDir;
+      var name = entry.name || entry.path;
+      var msg = isDir
+        ? '删除文件夹「' + name + '」及其中的全部内容？此操作无法恢复。'
+        : '删除文件「' + name + '」？此操作无法恢复。';
+      if (!window.confirm(msg)) return;
+      fetch(DELETE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: entry.path, sessionId: currentSessionId() }),
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (res && res.ok) {
+          toast(isDir ? '已删除文件夹 ' + name : '已删除 ' + name);
+          // The preview may be showing the very file just deleted: clear it and
+          // re-read the level that listed the entry so the row disappears.
+          selectedPath = null;
+          var parent = parentDirOf(entry.path);
+          // A top-level entry is listed by treeRoot.entries, not treeChildren:
+          // its "parent" is the workspace root itself, so what is stale is the
+          // ROOT — refreshTreeDir(root) would only write a treeChildren['<root>']
+          // key the renderer never reads, leaving the deleted row on screen.
+          if (parent && relTreePath(parent) !== '') refreshTreeDir(parent); else loadTreeRoot(false);
+        } else {
+          toast((res && res.error) || '删除失败');
+        }
+      }).catch(function () {
+        toast('删除失败');
+      });
+    }
+    // The directory a tree entry lives in, spelled the way the host spells it.
+    // Empty for a top-level entry, whose level is the workspace root.
+    function parentDirOf(path) {
+      var text = String(path || '');
+      var at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+      if (at <= 0) return '';
+      return text.slice(0, at);
+    }
     function errNode(msg) {
       return el('div', 'err', msg || '读取失败');
+    }
+    // The note a cut read must always carry — for Markdown too, which is the bug
+    // this exists for: the whole document was sliced at character 200000 and the
+    // page simply ended, with nothing on screen to tell a reader whether the book
+    // was that short or the preview had stopped.
+    //
+    // The host's own count of the COMPLETE file rides along as data.chars (see
+    // src/host/core.js), so the note reports how much is missing instead of only
+    // that something is.
+    function truncatedNote(data) {
+      var shown = data && typeof data.content === 'string' ? data.content.length : 0;
+      var total = data && typeof data.chars === 'number' ? data.chars : 0;
+      return el('div', 'diff-label', '(truncated preview)' + (total > 0 ? ' — ' + shown + ' / ' + total + ' characters shown' : ''));
     }
     // Typeset any $...$ / $$...$$ math that mdToHtml left verbatim in the node.
     // MathJax loads lazily via the deferred <script> in <head>, so retry briefly
@@ -5597,12 +5823,15 @@ return {
       }).then(function (data) {
         if (seq !== _previewSeq) return;   // a newer preview already replaced this one
         if (!data || data.ok !== true) { area.appendChild(errNode(data && data.error)); return; }
-        // 编辑 is offered for the plugin's text-ish types only, and NEVER for a
-        // truncated read: the host hands over the first 200000 characters, so an
-        // editor built on that holds a prefix and saving it would TRUNCATE the
-        // file. (The host refuses such a save regardless — this is the honest
-        // UI, not the guard.)
-        var canEdit = EDITABLE[type] === 1 && !data.truncated;
+        // 编辑 is offered for the plugin's text-ish types only, and only where a
+        // SAVE can succeed. That verdict is the host's (data.editable), because
+        // the host owns the save ceiling — the page used to infer it from
+        // data.truncated, which was the same answer only while 预览 and 编辑 shared
+        // one 200000-character cap. They don't: a 2 MB Markdown file now previews
+        // in full and is still refused an editor, since an editor built on a
+        // prefix would truncate the file on save. (The host refuses such a save
+        // regardless — this is the honest UI, not the guard.)
+        var canEdit = EDITABLE[type] === 1 && (data.editable === undefined ? !data.truncated : !!data.editable);
         if (canEdit) {
           bar.appendChild(editTools(path, data, diff, pinned));
           if (editorMode && editorModePath === path) { mountEditorIn(area, path, data); return; }
@@ -5623,11 +5852,12 @@ return {
           typesetMath(md);
           typesetMermaid(md);
           typesetJSXGraph(md);
+          if (data.truncated) area.appendChild(truncatedNote(data));
         } else if (type === 'table') {
           area.appendChild(tableNode(path, data.content));
-          if (data.truncated) area.appendChild(el('div', 'diff-label', '(truncated preview)'));
+          if (data.truncated) area.appendChild(truncatedNote(data));
         } else {
-          if (data.truncated) area.appendChild(el('div', 'diff-label', '(truncated preview)'));
+          if (data.truncated) area.appendChild(truncatedNote(data));
           area.appendChild(codeViewNode(path, data.content));
         }
       }).catch(function (e) {
@@ -6269,6 +6499,10 @@ return {
         list.push({ label: '展开全部', run: function () { toggleTree(entry.path, true); expandTreeAll(); } });
       }
       list.push({ sep: true });
+      // Destructive: runs through a native confirm() first, so a stray click
+      // never deletes anything on its own.
+      list.push({ label: entry.isDir ? '删除文件夹…' : '删除文件…', danger: true, run: function () { deletePathNow(entry); } });
+      list.push({ sep: true });
       list.push({ label: '全部展开', run: expandTreeAll });
       list.push({ label: '全部折叠', run: collapseTreeAll });
       return list;
@@ -6327,7 +6561,7 @@ return {
       treeMenuEl.setAttribute('role', 'menu');
       treeMenuEl.tabIndex = -1;
       treeMenuEl.style.left = Math.min(ev.clientX, Math.max(8, window.innerWidth - 210)) + 'px';
-      treeMenuEl.style.top = Math.min(ev.clientY, Math.max(8, window.innerHeight - 260)) + 'px';
+      treeMenuEl.style.top = Math.min(ev.clientY, Math.max(8, window.innerHeight - 340)) + 'px';
       // ONE listener per kind, on the container — which never changes while the
       // menu is open. The items themselves carry no listeners, so there is
       // nothing for a repaint to lose (see buildTreeMenuDom).
@@ -6385,7 +6619,7 @@ return {
           treeMenuBtns.push(null);
           continue;
         }
-        var btn = el('button', 'tree-menu-item', it.label);
+        var btn = el('button', 'tree-menu-item' + (it.danger ? ' is-danger' : ''), it.label);
         btn.type = 'button';
         btn.setAttribute('role', 'menuitem');
         btn.setAttribute('data-item', String(i));
@@ -6820,7 +7054,7 @@ return {
             // ── Routes ────────────────────────────────────────────────────────────
       // Two classes of route live here.
       //
-      // DATA routes (/data /content /media /remove /listdir /search /revert /git
+      // DATA routes (/data /content /media /remove /delete /listdir /search /revert /git
       // /gitfile) expose the workspace, so each one opens with `rejectRequest`:
       // the same Host/Origin fence + browser-cookie authentication DSH applies to
       // its own /api transport (see the helper in core.js). Both the sidebar and
@@ -6960,6 +7194,33 @@ return {
           res.end(JSON.stringify(out))
         },
       }), 'artifacts: remove route')
+      // Delete a file or folder from DISK (the file tree's 删除). POST with a JSON
+      // body {path, sessionId} — a mutation, so the parameters travel in a body
+      // rather than in a URL that ends up in logs, and the route sits behind the
+      // identical cookie guard as every other data route. The response is always
+      // JSON: a refusal (a path outside the workspace, the workspace root, a
+      // locked file) comes back with a reason the tree shows the user.
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/dsh-sidebar-frog/delete',
+        handler: async (req, res) => {
+          if (rejectRequest(req, res)) return
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+            return
+          }
+          let body
+          try { body = await readJsonBody(req) } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: e && e.message ? String(e.message) : 'bad request' }))
+            return
+          }
+          const out = await deletePath(body && body.path, body && body.sessionId)
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify(out))
+        },
+      }), 'artifacts: delete route')
       // Put one captured change back (撤销). POST with a JSON body, because the
       // path/opId pair is a mutation rather than a query, and guarded like every
       // other data route. The response is always JSON: the client shows the

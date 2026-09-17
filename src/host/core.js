@@ -521,6 +521,24 @@
     // archives, and reading one as UTF-8 shipped 200 kB of mojibake.
     const BINARY_TYPES = { image: 1, pdf: 1, audio: 1, video: 1, office: 1, document: 1 }
 
+    // ── The two ceilings, declared together because they are two questions ───
+    // A file meets both, in this order, and conflating them is what made the
+    // popout show two thirds of a document:
+    //
+    //   · PREVIEW_TEXT_MAX — what the wire will carry and the DOM will render.
+    //     This is a browser-survival bound, NOT a document policy: nothing real
+    //     is anywhere near it, and a file that trips it is one whose rendering
+    //     would take the tab down anyway. It is deliberately loose (40× the
+    //     200000 it replaced), because the popout is the window a person opens
+    //     precisely when they want to read the whole file.
+    //   · SAVE_TEXT_MAX — what a save may write back, and therefore the largest
+    //     document the 编辑 pane may offer to open. An editor built on a prefix
+    //     would TRUNCATE the file on save, so this is the one that must stay a
+    //     real limit. `readFile` reports it as `editable`; `saveFile` enforces it
+    //     independently (never trust the client's reading of the rule).
+    const PREVIEW_TEXT_MAX = 8 * 1024 * 1024
+    const SAVE_TEXT_MAX = 4 * 1024 * 1024
+
     const readFile = async (path, opts) => {
       const fs = ctx.get('fs')
       if (!fs) return { ok: false, error: 'filesystem unavailable' }
@@ -544,8 +562,45 @@
         const forceText = !!(opts && opts.forceText)
         if (BINARY_TYPES[type] && !forceText) return { ok: true, type: type, content: '', truncated: false, size: info.size, version: version }
         const text = await fs.readText(target)
-        const cap = 200000
-        return { ok: true, type: type, content: text.slice(0, cap), truncated: text.length > cap, size: info.size, version: version }
+        // ── What arrives on the wire, and what that costs the reader ─────────
+        // This used to be a flat `text.slice(0, 200000)` — one number doing two
+        // jobs, and it did the wrong one for both:
+        //
+        //   · 预览. The popout exists to show a file COMPLETE: it is the window
+        //     you open when the panel is too narrow to read from. A 403 kB
+        //     student textbook (77% of it three inline base64 images) was cut at
+        //     character 200000 — mid-way through the base64 of the third one —
+        //     so the page ended at an unrenderable `<image>` and the rest of the
+        //     book simply was not there, with nothing on screen saying so. The
+        //     shell's OWN document preview (the sidebar's default path) pages by
+        //     lines and accumulates until eof, i.e. it has no total limit at all;
+        //     the popout is now consistent with it rather than 400× stricter.
+        //   · 编辑. The cap was doing honest work here: an editor holding a
+        //     PREFIX would truncate the file on save. But that is the SAVE
+        //     path's own ceiling (SAVE_TEXT_MAX, below), and it is what decides
+        //     `editable` now — the preview limit and the edit limit are no longer
+        //     the same question, and a file too big to save is refused as
+        //     un-editable instead of being shown to nobody.
+        //
+        // The ceiling that remains is a browser-survival bound, not a document
+        // policy: past it the DOM, not the wire, is what fails. `chars` rides
+        // along so the client can say how much of the file it is showing — the
+        // cut must never be silent, which is the actual bug this replaced.
+        const truncated = text.length > PREVIEW_TEXT_MAX
+        return {
+          ok: true,
+          type: type,
+          content: truncated ? text.slice(0, PREVIEW_TEXT_MAX) : text,
+          truncated: truncated,
+          // Exactly when a save of what the browser holds can succeed. Named
+          // separately from `truncated` on purpose: they are the same value today
+          // for a small file and different answers the moment a file is bigger
+          // than the save ceiling but small enough to read.
+          editable: !truncated && text.length <= SAVE_TEXT_MAX,
+          chars: text.length,
+          size: info.size,
+          version: version,
+        }
       } catch (e) {
         // A file that is not UTF-8 throws out of the read rather than coming back
         // as replacement characters: the filesystem service decodes strictly
@@ -670,11 +725,11 @@
     //     normalization", so what is missing is the BOM itself). The write
     //     service preserves the file's mode.
     //
-    // The size caps are the read path's own: `/content` truncates a preview at
-    // 200000 characters, so a file past that must not be saved from here at all —
-    // writing back what the browser has would TRUNCATE the file. The client
-    // hides the editor for a truncated preview; this refuses it independently.
-    const SAVE_TEXT_MAX = 4 * 1024 * 1024
+    // SAVE_TEXT_MAX is declared with PREVIEW_TEXT_MAX, above `readFile`, because
+    // the two only make sense read together: the preview ceiling decides what you
+    // may SEE, this one decides what you may WRITE. The client hides the editor
+    // wherever the host said `editable: false`; this refuses such a save
+    // independently.
     // What the SAVE route lets the request body reach: the text ceiling plus
     // JSON escaping headroom (a control character or a quote becomes two or six
     // bytes on the wire). The real limit is still the TEXT one above — this only
@@ -856,6 +911,116 @@
         return policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
       } catch (e) {}
       return undefined
+    }
+
+    // Delete a file or a folder the person asked for from the file tree.
+    //
+    // The filesystem service has NO delete: `fs` exposes readText / listDir /
+    // writeText / editText and nothing that removes a path — which is exactly
+    // why 撤销 of a created file is refused further down (revertFile), because
+    // undoing a create means deleting a file the host cannot delete. This route
+    // is the one place a deletion is INTENDED, so it reaches the host's own
+    // node:fs directly. The plugin's host half runs inside the `dsh web` process
+    // (a Node process), loaded once at startup through src/index.js's
+    // `new Function(host.js)`, where a dynamic import of the built-in resolves —
+    // that is verified, not assumed. (A dynamic `cordis_define` package runs in a
+    // vm sandbox that traps `require` and has no node:fs; this is a static
+    // bundle, so it never takes that path.) The import is cached once per
+    // process so a repeated delete costs nothing.
+    let nodeFsPromises = null
+    const nodeFsMod = async () => {
+      if (!nodeFsPromises) nodeFsPromises = await import('node:fs/promises')
+      return nodeFsPromises
+    }
+
+    // Three guards carry it, each a fact about the host rather than a convention
+    // the client is trusted to respect — the same shape saveFile's fence uses:
+    //
+    //   · CONTAINMENT. The path resolves against the session's workspace, and the
+    //     resolved target must stay under it. The backend's own `contains`
+    //     answers that (both targets are realpaths, so a symlink or a `..` that
+    //     would escape is folded away before the test); a backend without it
+    //     falls back to the string `pathUnder` on the canonical spellings.
+    //   · ROOT. The workspace root itself is never a target: deleting it takes
+    //     the WHOLE workspace. `contains` is true for the root (a place is under
+    //     itself), so the root is refused explicitly. The tree's root row IS the
+    //     workspace and cannot even be right-clicked for delete, but the route
+    //     must not rely on the UI.
+    //   · TYPE. What is deleted is what the tree showed — a regular file or a
+    //     directory. `other` (a socket, a FIFO) is refused rather than unlinked.
+    const deletePath = async (path, sessionId) => {
+      if (typeof path !== 'string' || !path) return { ok: false, error: '缺少路径' }
+      const fs = ctx.get('fs')
+      if (!fs || typeof fs.resolve !== 'function' || typeof fs.processPath !== 'function') {
+        return { ok: false, error: '宿主未提供文件系统接口' }
+      }
+      let cwd
+      try { cwd = await resolveCwd(sessionId) } catch (e) { cwd = undefined }
+      if (!cwd) return { ok: false, error: '工作区不可用，未删除' }
+      // Resolve BOTH the target and the workspace root, so the fence compares
+      // two canonical (realpath) spellings the backend handed us, not the
+      // caller's text.
+      let target
+      let rootTarget
+      try {
+        target = await fs.resolve(path, { cwd: cwd })
+        rootTarget = await fs.resolve(cwd, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该路径：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      let outside = false
+      let isRoot = false
+      if (typeof fs.contains === 'function') {
+        outside = !fs.contains(rootTarget, target)
+        isRoot = String(fs.processPath(rootTarget)) === String(fs.processPath(target))
+      } else {
+        // A backend without `contains`: the string fence on the canonical
+        // spellings. processPath folds separators and (on a local backend) case.
+        const abs = fs.processPath(target)
+        const root = fs.processPath(rootTarget)
+        outside = !pathUnder(abs, root)
+        isRoot = abs === root
+      }
+      if (outside) return { ok: false, error: '该路径在工作区之外，不能删除' }
+      if (isRoot) return { ok: false, error: '不能删除工作区根目录' }
+      let info
+      try { info = await fs.stat(target) } catch (e) { info = undefined }
+      if (!info) return { ok: false, error: '文件已不存在' }
+      if (info.type !== 'file' && info.type !== 'directory') {
+        return { ok: false, error: '只能删除文件或文件夹' }
+      }
+      const isDir = info.type === 'directory'
+      // A directory is removed recursively (the person right-clicked the folder,
+      // so everything under it goes); a file is a plain remove. `force` makes a
+      // path that vanished between the stat and the rm a clean "gone" rather
+      // than a crash.
+      let out
+      try {
+        const nodeFs = await nodeFsMod()
+        await nodeFs.rm(fs.processPath(target), { recursive: isDir, force: true })
+        out = { ok: true, kind: isDir ? 'directory' : 'file' }
+      } catch (e) {
+        const code = e && e.code
+        if (code === 'ENOENT') return { ok: false, error: '文件已不存在' }
+        if (code === 'EPERM' || code === 'EACCES') {
+          return { ok: false, error: '没有删除权限（文件可能正被另一个程序占用）' }
+        }
+        return { ok: false, error: e && e.message ? String(e.message) : '删除失败' }
+      }
+      // The ledger's change letters (A/M) and any in-memory record point at a
+      // path that no longer exists; dropping them keeps the 产物 list from
+      // advertising a file the tree no longer shows. This is a best-effort
+      // cleanup, not the deletion itself.
+      for (let i = artifacts.length - 1; i >= 0; i -= 1) {
+        const a = artifacts[i]
+        if (!a || !a.path) continue
+        if (a.path === path || pathUnder(a.path, path)) {
+          if (a.history) for (const h of a.history) historyChars -= changeSize(h)
+          if (historyChars < 0) historyChars = 0
+          artifacts.splice(i, 1)
+        }
+      }
+      return out
     }
 
     // List one directory level for the file-tree (文件树) view: directories
@@ -1183,6 +1348,7 @@
     if (typeof harness !== 'undefined') {
       harness.handle('artifacts.list', () => ({ artifacts: snapshot() }))
       harness.handle('artifacts.remove', (args) => removeFile(args && args.path))
+      harness.handle('artifacts.delete', (args) => deletePath(args && args.path, args && args.sessionId))
       harness.handle('artifacts.revert', (args) => revertFile(args && args.path, args && args.opId))
       harness.handle('artifacts.save', (args) => saveFile(args && args.path, args && args.content, args))
       harness.handle('artifacts.read', (args) => readFile(args && args.path, args))

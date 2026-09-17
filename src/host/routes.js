@@ -1,7 +1,7 @@
       // ── Routes ────────────────────────────────────────────────────────────
       // Two classes of route live here.
       //
-      // DATA routes (/data /content /media /remove /listdir /search /revert /git
+      // DATA routes (/data /content /media /remove /delete /listdir /search /revert /git
       // /gitfile) expose the workspace, so each one opens with `rejectRequest`:
       // the same Host/Origin fence + browser-cookie authentication DSH applies to
       // its own /api transport (see the helper in core.js). Both the sidebar and
@@ -141,6 +141,33 @@
           res.end(JSON.stringify(out))
         },
       }), 'artifacts: remove route')
+      // Delete a file or folder from DISK (the file tree's 删除). POST with a JSON
+      // body {path, sessionId} — a mutation, so the parameters travel in a body
+      // rather than in a URL that ends up in logs, and the route sits behind the
+      // identical cookie guard as every other data route. The response is always
+      // JSON: a refusal (a path outside the workspace, the workspace root, a
+      // locked file) comes back with a reason the tree shows the user.
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/dsh-sidebar-frog/delete',
+        handler: async (req, res) => {
+          if (rejectRequest(req, res)) return
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+            return
+          }
+          let body
+          try { body = await readJsonBody(req) } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: e && e.message ? String(e.message) : 'bad request' }))
+            return
+          }
+          const out = await deletePath(body && body.path, body && body.sessionId)
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify(out))
+        },
+      }), 'artifacts: delete route')
       // Put one captured change back (撤销). POST with a JSON body, because the
       // path/opId pair is a mutation rather than a query, and guarded like every
       // other data route. The response is always JSON: the client shows the

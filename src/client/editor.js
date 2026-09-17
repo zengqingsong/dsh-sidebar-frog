@@ -8,9 +8,13 @@
     // What may be edited is decided here and nowhere else: the plugin's own
     // text-ish preview types, minus the two cases where saving would LOSE data:
     //
-    //   · `truncated` — the host hands the preview the first 200000 characters,
-    //     so the editor would only ever hold a prefix. Saving that back would
-    //     TRUNCATE THE FILE, which is the one failure worse than not editing.
+    //   · `editable === false` — the host's verdict that a save of what the
+    //     browser holds cannot succeed (the file is past the save ceiling, or the
+    //     read was cut). Its own rule, not one re-derived here: the panel used to
+    //     infer it from `truncated`, which was right only while 预览 and 编辑
+    //     shared a single 200000-character cap. They do not any more — a 2 MB
+    //     Markdown file now previews IN FULL and is still refused an editor,
+    //     because saving a prefix is the one failure worse than not editing.
     //   · a failed read (`ok === false`) — there is nothing to edit.
     //
     // Everything else (image / pdf / audio / video / office / document) has no
@@ -18,7 +22,11 @@
 
     const EDITABLE_TYPES = { markdown: 1, text: 1, table: 1 }
 
-    const isEditablePreview = (p) => !!p && p.ok !== false && !p.truncated && EDITABLE_TYPES[p.type] === 1 && typeof p.content === 'string'
+    // A host that predates the `editable` field answers `truncated` only, and
+    // that inference is the safe one to fall back to.
+    const canEditRead = (p) => (p.editable === undefined ? !p.truncated : !!p.editable)
+
+    const isEditablePreview = (p) => !!p && p.ok !== false && canEditRead(p) && EDITABLE_TYPES[p.type] === 1 && typeof p.content === 'string'
 
     // ── Drafts ──────────────────────────────────────────────────────────────
     // Unsaved text lives OUTSIDE the component, keyed by path. A file tab
@@ -120,7 +128,8 @@
       const saveRef = React.useRef(null)
 
       // Leaving the file (or losing editability — a re-read that came back
-      // truncated) returns to 预览: an editor whose document is no longer the one
+      // un-editable, whether because it is too big to save or because the read
+      // was cut) returns to 预览: an editor whose document is no longer the one
       // on screen must not stay mounted claiming to be it.
       React.useEffect(() => {
         if (!editable && mode === 'edit') setMode('view')

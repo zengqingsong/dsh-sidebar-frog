@@ -526,6 +526,24 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-tree-menu-item { display: block; width: 100%; text-align: left; padding: 5px 10px; border: none; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .artifacts-tree-menu-item:hover, .artifacts-tree-menu-item.is-active { background: var(--dsw-alias-interactive-bg-hover); }
 .artifacts-tree-menu-sep { height: 1px; margin: 4px 6px; background: var(--dsw-alias-border-l2); }
+/* The destructive item (删除). It reads as a warning, not a neighbour of the
+   copy actions, so a right-click never hides it among the safe ones. */
+.artifacts-tree-menu-item.is-danger { color: var(--dsw-alias-state-error-primary); }
+.artifacts-tree-menu-item.is-danger:hover, .artifacts-tree-menu-item.is-danger.is-active { background: rgba(236, 19, 19, 0.12); }
+/* Delete confirmation: the destructive action that must be answered. Drawn as a
+   small fixed box (portaled to <body>, so it is measured from the viewport),
+   above the menu's z-index so it wins even if both are briefly on screen. */
+.artifacts-tree-confirm { position: fixed; z-index: 10002; width: 320px; padding: 14px 16px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-1)); box-shadow: var(--dsw-shadow-lv3, var(--dsw-shadow-lv2)); outline: none; }
+.artifacts-tree-confirm-title { font-size: 13px; font-weight: 600; color: var(--dsw-alias-state-error-primary); }
+.artifacts-tree-confirm-body { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary); word-break: break-all; }
+.artifacts-tree-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.artifacts-tree-confirm-btn { padding: 5px 14px; font: inherit; font-size: 12px; cursor: pointer; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); }
+.artifacts-tree-confirm-btn.is-danger { border-color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-state-error-primary); color: #fff; }
+.artifacts-tree-confirm-btn.is-danger.is-busy { opacity: 0.7; cursor: default; }
+.artifacts-tree-confirm-btn:focus-visible { outline: 2px solid var(--dsw-alias-state-error-primary); outline-offset: 1px; }
+/* Transient "已删除 / 删除失败" note pinned above the tree body, so it survives
+   the deleted row vanishing from under it. */
+.artifacts-tree-flash-label { margin: 0 0 4px; padding: 4px 10px; font-size: 12px; color: var(--dsw-alias-state-error-primary); background: rgba(236, 19, 19, 0.08); border-radius: 4px; }
 /* Narrow panel: the「@引用」pill collapses to a compact '@' so the row's
    floating actions never overflow a cramped list/tree pane. */
 @container (max-width: 460px) {

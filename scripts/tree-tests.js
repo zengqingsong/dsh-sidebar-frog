@@ -460,7 +460,7 @@ export const runSidebarTree = async () => {
     const menu = edge.renderer.findAll('artifacts-tree-menu')[0]
     if (!menu) throw new Error('no menu rendered')
     const { left, top } = menu.props.style
-    if (!(left >= 8 && left + 210 <= 1920 && top >= 8 && top + 260 <= 900)) {
+    if (!(left >= 8 && left + 210 <= 1920 && top >= 8 && top + 340 <= 900)) {
       throw new Error('menu drawn off screen at ' + left + ',' + top)
     }
     return 'clamped to ' + left + ',' + top
@@ -478,6 +478,161 @@ export const runSidebarTree = async () => {
     if (r.findAll('artifacts-tree-menu').length) throw new Error('the menu stayed open')
     return 'menu closed'
   })
+
+  // ── delete: a destructive action the menu only ARMS ──────────────────────
+  // The 删除 item must not fire on its own: it opens a confirm, and only the
+  // confirm's 删除 button calls the host. A refusal (the host says the path is
+  // outside the workspace) must not delete anything and must show its reason.
+  {
+    const fsState = {
+      'D:/ws': [
+        { name: 'src', path: 'D:/ws/src', isDir: true },
+        { name: 'docs', path: 'D:/ws/docs', isDir: true },
+        { name: 'README.md', path: 'D:/ws/README.md', isDir: false },
+        { name: 'forbidden.txt', path: 'D:/ws/forbidden.txt', isDir: false },
+      ],
+      'D:/ws/src': [
+        { name: 'deep', path: 'D:/ws/src/deep', isDir: true },
+        { name: 'a.js', path: 'D:/ws/src/a.js', isDir: false },
+      ],
+    }
+    const deleted = []
+    const delHost = {
+      call: (method, args) => {
+        if (method === 'artifacts.listDir') {
+          const p = (args && args.path) || ROOT
+          return Promise.resolve({ ok: true, path: p, entries: fsState[p] || [] })
+        }
+        if (method === 'artifacts.delete') {
+          const path = args && args.path
+          deleted.push(path)
+          // A successful delete removes the entry from the fixture, so the
+          // refresh that follows no longer lists it. A refusal leaves it.
+          if (path !== ROOT + '/forbidden.txt') {
+            for (const key of Object.keys(fsState)) fsState[key] = fsState[key].filter((e) => e.path !== path)
+          }
+          return Promise.resolve(path === ROOT + '/forbidden.txt'
+            ? { ok: false, error: '该路径在工作区之外，不能删除' }
+            : { ok: true, kind: 'file' })
+        }
+        return Promise.resolve({ ok: false, error: 'unknown ' + method })
+      },
+    }
+    const dt = mountSidebar({}, { host: delHost })
+    launch.push(dt)
+    await dt.flush(80)
+    // The menu offers 删除 for a file.
+    dt.rowFor('D:/ws/README.md').props.onContextMenu({
+      clientX: 700, clientY: 300, preventDefault() {}, stopPropagation() {},
+      currentTarget: dt.treeEl, target: dt.treeEl,
+    })
+    await dt.flush(20)
+    await check('sidebar: the menu offers 删除 for a file', () => {
+      const labels = dt.renderer.texts('artifacts-tree-menu-item')
+      if (!labels.includes('删除文件…')) throw new Error('menu items: ' + JSON.stringify(labels))
+      return labels.length + ' items, includes 删除文件…'
+    })
+    // Choosing it opens the confirm, NOT the deletion: the host has not been asked yet.
+    const delItem = dt.renderer.findAll('artifacts-tree-menu-item').find((el) => dt.renderer.textOf(el) === '删除文件…')
+    delItem.props.onClick({ stopPropagation() {} })
+    await dt.flush(20)
+    await check('sidebar: choosing 删除 opens the confirm, not the deletion', () => {
+      if (dt.renderer.findAll('artifacts-tree-menu').length) throw new Error('the menu was not closed')
+      const confirm = dt.renderer.findAll('artifacts-tree-confirm')[0]
+      if (!confirm) throw new Error('no confirm dialog rendered')
+      if (deleted.length) throw new Error('the deletion fired before the confirm: ' + JSON.stringify(deleted))
+      const buttons = dt.renderer.findAll('artifacts-tree-confirm-btn')
+      if (buttons.length !== 2) throw new Error('confirm has ' + buttons.length + ' buttons')
+      return 'confirm up, host not yet called'
+    })
+    // 取消 dismisses it and calls nothing.
+    const cancelBtn = dt.renderer.findAll('artifacts-tree-confirm-btn').find((el) => dt.renderer.textOf(el) === '取消')
+    cancelBtn.props.onClick()
+    await dt.flush(20)
+    await check('sidebar: 取消 dismisses the confirm without deleting', () => {
+      if (dt.renderer.findAll('artifacts-tree-confirm').length) throw new Error('the confirm stayed open')
+      if (deleted.length) throw new Error('a deletion was fired by 取消: ' + JSON.stringify(deleted))
+      if (dt.renderer.texts('artifacts-tree-name').indexOf('README.md') < 0) throw new Error('the file was removed from the tree')
+      return 'confirm closed, nothing deleted'
+    })
+    // …and the confirm's 删除 button is the ONLY thing that deletes: open it again,
+    // press 删除, and the host is asked exactly once and the row disappears.
+    dt.rowFor('D:/ws/README.md').props.onContextMenu({
+      clientX: 700, clientY: 300, preventDefault() {}, stopPropagation() {},
+      currentTarget: dt.treeEl, target: dt.treeEl,
+    })
+    await dt.flush(20)
+    const delItem2 = dt.renderer.findAll('artifacts-tree-menu-item').find((el) => dt.renderer.textOf(el) === '删除文件…')
+    delItem2.props.onClick({ stopPropagation() {} })
+    await dt.flush(20)
+    const okBtn = dt.renderer.findAll('artifacts-tree-confirm-btn').find((el) => dt.renderer.textOf(el) === '删除')
+    okBtn.props.onClick()
+    await dt.flush(120)
+    await check('sidebar: the confirm 删除 button asks the host once and the row vanishes', () => {
+      if (dt.renderer.findAll('artifacts-tree-confirm').length) throw new Error('the confirm stayed open after 删除')
+      if (deleted.length !== 1 || deleted[0] !== 'D:/ws/README.md') throw new Error('deletions: ' + JSON.stringify(deleted))
+      if (dt.renderer.texts('artifacts-tree-name').indexOf('README.md') >= 0) throw new Error('the deleted row is still on screen')
+      if (!dt.renderer.findAll('artifacts-tree-flash-label')[0]) throw new Error('no 已删除 feedback was shown')
+      return 'one delete, row gone, feedback shown'
+    })
+
+    // ── a folder deletes too (recursively), with the right warning ─────────
+    // The request must mention EVERYTHING underneath, and the folder's row — a
+    // top-level entry listed by the ROOT, the same refresh path the file above
+    // exercised — must vanish from the tree after the host confirms.
+    dt.rowFor('D:/ws/docs').props.onContextMenu({
+      clientX: 700, clientY: 300, preventDefault() {}, stopPropagation() {},
+      currentTarget: dt.treeEl, target: dt.treeEl,
+    })
+    await dt.flush(20)
+    await check('sidebar: the menu offers 删除 for a folder', () => {
+      const labels = dt.renderer.texts('artifacts-tree-menu-item')
+      if (!labels.includes('删除文件夹…')) throw new Error('menu items: ' + JSON.stringify(labels))
+      return 'includes 删除文件夹…'
+    })
+    const ddir = dt.renderer.findAll('artifacts-tree-menu-item').find((el) => dt.renderer.textOf(el) === '删除文件夹…')
+    ddir.props.onClick({ stopPropagation() {} })
+    await dt.flush(20)
+    await check('sidebar: the folder confirm warns that EVERYTHING goes', () => {
+      const body = dt.renderer.texts('artifacts-tree-confirm-body').join(' ')
+      if (body.indexOf('全部内容') < 0) throw new Error('folder confirm does not warn about its contents: ' + JSON.stringify(body))
+      if (dt.renderer.texts('artifacts-tree-confirm-title').join('') !== '删除文件夹？') throw new Error('wrong title: ' + JSON.stringify(dt.renderer.texts('artifacts-tree-confirm-title')))
+      return '「…及其中的全部内容都会被删除」'
+    })
+    const dirOk = dt.renderer.findAll('artifacts-tree-confirm-btn').find((el) => dt.renderer.textOf(el) === '删除')
+    dirOk.props.onClick()
+    await dt.flush(120)
+    await check('sidebar: the folder deletes and its row vanishes', () => {
+      if (deleted[deleted.length - 1] !== 'D:/ws/docs') throw new Error('deletions: ' + JSON.stringify(deleted))
+      if (dt.renderer.texts('artifacts-tree-name').indexOf('docs') >= 0) throw new Error('the deleted folder is still on screen')
+      return 'folder gone, host asked for ' + deleted[deleted.length - 1]
+    })
+
+    // ── a refusal deletes nothing and shows the host's reason ──────────────
+    // The host fences the path to the workspace. When it refuses, the row must
+    // stay AND the user must see why — a silent no-op is the worst outcome for a
+    // destructive action.
+    const beforeNames = dt.renderer.texts('artifacts-tree-name').slice().sort().join('|')
+    dt.rowFor('D:/ws/forbidden.txt').props.onContextMenu({
+      clientX: 700, clientY: 300, preventDefault() {}, stopPropagation() {},
+      currentTarget: dt.treeEl, target: dt.treeEl,
+    })
+    await dt.flush(20)
+    const forbItem = dt.renderer.findAll('artifacts-tree-menu-item').find((el) => dt.renderer.textOf(el) === '删除文件…')
+    forbItem.props.onClick({ stopPropagation() {} })
+    await dt.flush(20)
+    const forbOk = dt.renderer.findAll('artifacts-tree-confirm-btn').find((el) => dt.renderer.textOf(el) === '删除')
+    forbOk.props.onClick()
+    await dt.flush(120)
+    await check('sidebar: a refused deletion keeps the file and shows the reason', () => {
+      const label = dt.renderer.texts('artifacts-tree-flash-label').join(' ')
+      if (label.indexOf('工作区之外') < 0) throw new Error('the refusal reason was not shown: ' + JSON.stringify(label))
+      if (dt.renderer.texts('artifacts-tree-name').slice().sort().join('|') !== beforeNames) {
+        throw new Error('the tree changed after a refusal: ' + dt.renderer.texts('artifacts-tree-name').join('|'))
+      }
+      return 'reason shown, row kept'
+    })
+  }
 
   // ── a double-click must not undo itself ─────────────────────────────────
   // Browsers deliver click(detail 1), click(detail 2), dblclick. Toggling on

@@ -26,9 +26,10 @@
  * a *browser* bug that all of the above passed straight through.
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBundles } from './build.js'
 import { runPopoutTree, runSidebarTree, hiddenControlViolations } from './tree-tests.js'
@@ -1743,6 +1744,7 @@ const DATA_ROUTES = [
   '/dsh-sidebar-frog/content',
   '/dsh-sidebar-frog/media',
   '/dsh-sidebar-frog/remove',
+  '/dsh-sidebar-frog/delete',
   '/dsh-sidebar-frog/revert',
   // 保存 writes the workspace, so it belongs on this list twice over: it opens
   // with the same cookie guard as every other data route, and the 401 sweep
@@ -1780,6 +1782,10 @@ const ASSET_ROUTES = [
 // Connection's Host/Origin fence + browser-cookie verdict for one route call.
 const bootHost = (rejection, options) => {
   const headless = !!(options && options.headless)
+  // A test that needs the REAL filesystem (the /delete guard) injects one here;
+  // `workspaceRoot` points it at a temporary workspace instead of the stub's D:/ws.
+  const injectedFs = options && options.fs
+  const injectedRoot = options && options.workspaceRoot
   const hostSrc = built ? built.host : read('src/host.js')
   const routes = {}
   const calls = []
@@ -1851,9 +1857,11 @@ const bootHost = (rejection, options) => {
       // the headless boot below, so it is switched off rather than stubbed away.
       if (name === 'webServer') return headless ? undefined : { register: (route) => { routes[route.path] = route; return () => {} } }
       if (name === 'connection') return connection
-      if (name === 'sessions') return { get: (id) => (id === 's1' ? { header: { cwd: 'D:/ws' } } : undefined), list: () => [] }
-      if (name === 'fs') return fs
-      if (name === 'sandboxPolicy') return { workspaceRoot: 'D:/ws' }
+      // The real-fs /delete test injects its own workspace: session s1 resolves
+      // to the temporary root, so the fence has a real workspace to contain.
+      if (name === 'sessions') return { get: (id) => (id === 's1' ? { header: { cwd: injectedRoot || 'D:/ws' } } : undefined), list: () => [] }
+      if (name === 'fs') return injectedFs || fs
+      if (name === 'sandboxPolicy') return { workspaceRoot: injectedRoot || 'D:/ws' }
       return undefined
     },
     on: (name, fn) => { handlers[name] = fn },
@@ -2048,6 +2056,53 @@ try {
     bad('binary documents', e && e.message ? e.message : String(e))
   }
 
+  // The read that made the popout useless, asserted on the real route.
+  //
+  // `/content` answered with a flat `text.slice(0, 200000)` — one number doing
+  // the preview's job and the editor's at once, and the wrong one for both. A
+  // 403 kB student textbook (77% of it three inline base64 images) came back cut
+  // at character 200000, mid-way through the third image's base64: the page ended
+  // at an unrenderable <image> and the rest of the book was not there, with
+  // nothing on screen to say so. This block pins BOTH halves of the fix — the
+  // whole file reaches the wire, and the editor is still withheld wherever a save
+  // of what the browser holds could not succeed.
+  try {
+    const wide = bootHost(undefined)
+    const route = wide.routes['/dsh-sidebar-frog/content']
+    // 250000 characters: past the 200000 the route used to stop at, and small
+    // enough that the test itself stays quick. The tail is what the cut ate.
+    const body = 'x'.repeat(250000) + '\nTAIL\n'
+    wide.file.text = body
+    const whole = JSON.parse((await call(route, '/dsh-sidebar-frog/content?path=D:/ws/book.md')).body)
+    if (whole.ok !== true) throw new Error('the read failed: ' + JSON.stringify(whole))
+    if (whole.truncated) throw new Error('a ' + body.length + '-character file came back truncated — this is the bug the cap caused')
+    if (whole.content.length !== body.length) throw new Error('the route served ' + whole.content.length + ' of ' + body.length + ' characters')
+    if (whole.content.slice(-5) !== 'TAIL\n') throw new Error('the tail of the file did not survive the read')
+    if (whole.chars !== body.length) throw new Error('the wire does not report the complete length: ' + whole.chars)
+    if (whole.editable !== true) throw new Error('a ' + body.length + '-character file is under the save ceiling, so it must be editable')
+
+    // A file past the SAVE ceiling but under the preview one. This is the case
+    // that a single shared cap could not express at all: it has to be shown in
+    // full AND refused an editor.
+    const five = 5 * 1024 * 1024
+    wide.file.text = 'y'.repeat(five)
+    const big = JSON.parse((await call(route, '/dsh-sidebar-frog/content?path=D:/ws/huge.md')).body)
+    if (big.truncated) throw new Error('a 5 MB file was cut instead of shown — the preview ceiling is not the save ceiling')
+    if (big.content.length !== five) throw new Error('a 5 MB file came back short (' + big.content.length + ')')
+    if (big.editable !== false) throw new Error('a 5 MB file was offered an editor whose save the host refuses')
+
+    // …and past the preview ceiling the cut is still reported, with the REAL
+    // length, because a silent cut is the whole complaint.
+    wide.file.text = 'z'.repeat(8 * 1024 * 1024 + 10)
+    const giant = JSON.parse((await call(route, '/dsh-sidebar-frog/content?path=D:/ws/giant.md')).body)
+    if (!giant.truncated) throw new Error('a file past the preview ceiling was served as if it were whole')
+    if (giant.chars !== wide.file.text.length) throw new Error('the truncation cannot be described: chars=' + giant.chars)
+    if (giant.editable !== false) throw new Error('a cut read was offered an editor — saving it would shorten the file')
+    ok('complete reads', 'a 300 kB document arrives whole (content, tail and chars agree); 8 MiB is the preview ceiling and 4 MiB the save one, so a 5 MB file previews in full and is still refused 编辑')
+  } catch (e) {
+    bad('complete reads', e && e.message ? e.message : String(e))
+  }
+
   // The banner is how a human tells which build a long-running `dsh web` is
   // actually serving; it must name the build that was just assembled.
   const banner = logs.find((line) => line.indexOf('dsh-sidebar-frog build') >= 0)
@@ -2131,6 +2186,94 @@ try {
   const search = await call(routes['/dsh-sidebar-frog/search'], '/dsh-sidebar-frog/search?q=zz&limit=5')
   if (search.status !== 200 || !Array.isArray(JSON.parse(search.body).results)) throw new Error('/search payload malformed')
   ok('/search', 'bounded search answers a result list')
+
+  // ── /delete, end to end against a REAL workspace ─────────────────────────
+  //
+  // This is the ONE route the stub fs cannot answer honestly: deleting a file is
+  // a side effect on disk, so the guard must drive the route against a real
+  // temporary workspace and check that the bytes are (or are not) gone. It is
+  // the whole feature, reduced to what matters — that a name inside the
+  // workspace disappears, and that NOTHING outside it (or the workspace itself)
+  // ever does, whatever the request says.
+  try {
+    const realWs = await mkdtemp(join(tmpdir(), 'dsh-frog-del-'))
+    await mkdir(join(realWs, 'sub', 'inner'), { recursive: true })
+    await writeFile(join(realWs, 'notes.txt'), 'x')
+    await writeFile(join(realWs, 'sub', 'a.md'), 'y')
+    await writeFile(join(realWs, 'sub', 'inner', 'c.js'), 'z')
+    const outside = join(realWs, '..', 'outside-frog-' + process.pid + '.txt')
+    await writeFile(outside, 'keep')
+    // The real node:fs behind a Cordis-shaped wrapper: the host's deletePath only
+    // uses resolve / contains / processPath / stat, so the wrapper carries just
+    // those (plus the shape listDir expects). `stat` answers the exact object the
+    // host reads (`type`, not `isFile()`), which is also what a remote backend
+    // would return.
+    const nodeFs = await import('node:fs/promises')
+    const realFs = {
+      resolve: async (p) => {
+        const abs = resolve(p)
+        return { targetKey: abs, displayPath: abs }
+      },
+      processPath: (t) => String(t.targetKey || t),
+      // The backend's containment test, expressed with node:path exactly the way
+      // dsh-fs-local's LocalFileSystem does it: `child` is contained when the
+      // relative path from `parent` to `child` is not an upward walk (a leading
+      // `..` or an absolute path). The root vs itself resolves to '', which IS
+      // contained — which is also why the host refuses the root explicitly.
+      contains: (parent, child) => {
+        const rel = relative(String(parent.targetKey || parent), String(child.targetKey || child))
+        return rel !== '..' && !rel.startsWith('..\\') && !/^[A-Za-z]:/.test(rel)
+      },
+      stat: async (t) => {
+        const s = await nodeFs.stat(String(t.targetKey || t))
+        return {
+          type: s.isDirectory() ? 'directory' : s.isFile() ? 'file' : 'other',
+          size: s.size,
+          version: 'v' + s.mtimeMs,
+        }
+      },
+      listDir: async () => [],
+    }
+    const del = bootHost(undefined, { fs: realFs, workspaceRoot: realWs })
+    const callDel = (obj) => callPost(del.routes['/dsh-sidebar-frog/delete'], '/dsh-sidebar-frog/delete', obj)
+    const exists = async (p) => { try { await nodeFs.access(p); return true } catch (e) { return false } }
+    // A top-level file goes.
+    let r1 = JSON.parse((await callDel({ path: realWs + '/notes.txt' })).body)
+    if (r1.ok !== true || r1.kind !== 'file') throw new Error('file delete refused: ' + JSON.stringify(r1))
+    if (await exists(realWs + '/notes.txt')) throw new Error('the file survived the delete')
+    // …and the workspace root still stands.
+    if (!(await exists(realWs))) throw new Error('the workspace root was removed')
+    // A folder goes recursively.
+    let r2 = JSON.parse((await callDel({ path: realWs + '/sub' })).body)
+    if (r2.ok !== true || r2.kind !== 'directory') throw new Error('folder delete refused: ' + JSON.stringify(r2))
+    if (await exists(realWs + '/sub')) throw new Error('the folder survived the delete')
+    if (await exists(realWs + '/sub/inner/c.js')) throw new Error('a descendant of the deleted folder survived')
+    // A sibling of the workspace is never touched, however the path is spelled.
+    let r3 = JSON.parse((await callDel({ path: outside })).body)
+    if (r3.ok === true) throw new Error('a path outside the workspace was deleted: ' + JSON.stringify(r3))
+    if (!(await exists(outside))) throw new Error('the outside file was removed despite the refusal')
+    // A ".." that resolves outside the workspace is refused.
+    let r4 = JSON.parse((await callDel({ path: realWs + '/../outside-frog-' + process.pid + '.txt' })).body)
+    if (r4.ok === true || !(await exists(outside))) throw new Error('a .. path escaped the workspace: ' + JSON.stringify(r4))
+    // The workspace root itself is never a target.
+    let r5 = JSON.parse((await callDel({ path: realWs })).body)
+    if (r5.ok === true) throw new Error('the workspace root was deletable: ' + JSON.stringify(r5))
+    if (!(await exists(realWs))) throw new Error('the workspace root was removed')
+    // …and so is a spelling of it with a trailing separator.
+    let r5b = JSON.parse((await callDel({ path: realWs + '/' })).body)
+    if (r5b.ok === true) throw new Error('the workspace root (trailing /) was deletable: ' + JSON.stringify(r5b))
+    // A path that no longer exists is a clean "gone", not a crash.
+    let r6 = JSON.parse((await callDel({ path: realWs + '/notes.txt' })).body)
+    if (r6.ok === true) throw new Error('a missing file was answered as deleted: ' + JSON.stringify(r6))
+    // A mutation on a URL query is refused: the route is POST.
+    const r7 = await call(del.routes['/dsh-sidebar-frog/delete'], '/dsh-sidebar-frog/delete?path=' + encodeURIComponent(realWs))
+    if (r7.status !== 405) throw new Error('a GET on /delete answered ' + r7.status)
+    ok('/delete', `deletes a file and a folder (recursively); refuses the workspace root, a sibling and a .. escape; 405s a GET`)
+    await rm(realWs, { recursive: true, force: true })
+    await rm(outside, { force: true })
+  } catch (e) {
+    bad('/delete', e && e.message ? e.message : String(e))
+  }
 } catch (e) {
   bad('host routes (authenticated)', e && e.message ? e.message : String(e))
 }
@@ -2374,8 +2517,13 @@ try {
       throw new Error('the vendored bundle does not record ' + pkg + ' — a rebuild would have nothing to reproduce')
     }
   }
-  // Both faces mount it, and each refuses to offer 编辑 for a truncated read:
-  // that preview is a prefix of the file, and saving it back would shorten it.
+  // Both faces ask the HOST whether a preview may be edited, and neither
+  // re-derives it. They used to infer it from `truncated`, which was the same
+  // answer only while 预览 and 编辑 shared one 200000-character cap: a face that
+  // still inferred it would offer an editor for a file whose save the host
+  // refuses, and — worse — for a read the host had cut. The fallback for a host
+  // that predates the field is the old inference, and it is asserted here so it
+  // cannot be dropped by accident.
   const client = built ? built.client : read('src/client.js')
   const pageText = built ? built.page : read('src/host/page.js')
   for (const [label, text] of [['client bundle', client], ['popout page', pageText]]) {
@@ -2389,13 +2537,16 @@ try {
       throw new Error('the ' + label + ' never calls the save route')
     }
   }
-  if (!/truncated/.test(client.slice(client.indexOf('const isEditablePreview'), client.indexOf('const isEditablePreview') + 400))) {
-    throw new Error('the panel does not exclude a truncated preview from 编辑')
+  if (!/const canEditRead = \(p\) => \(p\.editable === undefined \? !p\.truncated : !!p\.editable\)/.test(client)) {
+    throw new Error('the panel does not take the host\'s `editable` verdict (with the old inference only as a fallback)')
   }
-  if (!/EDITABLE\[type\] === 1 && !data\.truncated/.test(pageText)) {
-    throw new Error('the popout page does not exclude a truncated preview from 编辑')
+  if (!/const isEditablePreview = \(p\) => !!p && p\.ok !== false && canEditRead\(p\)/.test(client)) {
+    throw new Error('the panel\'s one editability decision does not consult the host\'s verdict')
   }
-  ok('editor asset', 'the vendored CodeMirror (real bundle, MIT licence, versions recorded) is served as JavaScript and mounted by both faces, which both refuse to edit a truncated read')
+  if (!/EDITABLE\[type\] === 1 && \(data\.editable === undefined \? !data\.truncated : !!data\.editable\)/.test(pageText)) {
+    throw new Error('the popout page does not take the host\'s `editable` verdict')
+  }
+  ok('editor asset', 'the vendored CodeMirror (real bundle, MIT licence, versions recorded) is served as JavaScript and mounted by both faces, which both take the host\'s `editable` verdict — the preview ceiling and the save ceiling are no longer the same number')
 } catch (e) {
   bad('editor asset', e && e.message ? e.message : String(e))
 }
@@ -3862,11 +4013,14 @@ try {
 }
 
 // (A2) 编辑 is OFFERED exactly where saving it back is safe. The panel decides
-// that in ONE place (`isEditablePreview`) and hands the answer to the editor pane,
-// so what is driven here is the prop the pane actually received — through a real
-// mount, a real row click and the real fetch path. The case that matters is the
-// truncated read: that content is the file's first 200000 characters, so an
-// editor built on it holds a PREFIX and saving it would shorten the file.
+// that in ONE place (`isEditablePreview`) from the HOST's verdict — `editable`,
+// which the host computes from its own save ceiling — and hands the answer to the
+// editor pane, so what is driven here is the prop the pane actually received:
+// through a real mount, a real row click and the real fetch path. Three cases
+// matter, and the middle one is why `editable` is not derived from `truncated`:
+// a truncated read (an editor on it holds a PREFIX, so saving would shorten the
+// file), a read that is COMPLETE but past the save ceiling (shown in full, and
+// still not editable), and the ordinary editable file.
 try {
   const walkFor = (node, name, out) => {
     if (!node || typeof node !== 'object') return out
@@ -3904,8 +4058,20 @@ try {
   if (editable.baseSize !== 4) throw new Error('the editor was not handed the size the preview read: ' + JSON.stringify(editable.baseSize))
   if (!editable.children) throw new Error('the read-only preview was not handed to the editor pane as its fallback body')
 
-  const cut = await paneFor(md, { type: 'markdown', content: '# n\n', truncated: true, size: 900000, version: 'v1' })
+  const cut = await paneFor(md, { type: 'markdown', content: '# n\n', truncated: true, editable: false, chars: 900000, size: 900000, version: 'v1' })
   if (cut.editable !== false) throw new Error('a TRUNCATED preview was offered for 编辑 — saving it back would shorten the file')
+
+  // Complete on the wire, past the save ceiling: the host says `editable: false`
+  // and NOTHING about the preview is cut. The panel used to infer editability
+  // from `truncated`, so this file — shown in full — would have been handed an
+  // editor whose save the host then refuses. That is the case this asserts.
+  const tooBig = await paneFor(md, { type: 'markdown', content: '# n\n', truncated: false, editable: false, chars: 5000000, size: 5000000, version: 'v1' })
+  if (tooBig.editable !== false) throw new Error('a complete read past the save ceiling was offered an editor the host would refuse to save')
+
+  // …and an older host that answers `truncated` only: the fallback must still
+  // refuse the cut and still allow the whole file.
+  const legacyCut = await paneFor(md, { type: 'markdown', content: '# n\n', truncated: true, size: 900000, version: 'v1' })
+  if (legacyCut.editable !== false) throw new Error('the fallback for a host without `editable` let a truncated read be edited')
 
   const img = await paneFor({ path: 'D:/ws/pic.png', kind: 'create', at: Date.now() }, { type: 'image', content: '', truncated: false })
   if (img.editable !== false) throw new Error('an image was offered for text editing')
@@ -3916,9 +4082,44 @@ try {
   if (!/key: 'Mod-s'/.test(sharedEditor) || !/preventDefault: true/.test(sharedEditor)) {
     throw new Error('the shared editor has no Ctrl+S binding (or it lets the browser swallow the key)')
   }
-  ok('编辑 offered (rendered)', 'Markdown is editable with the revision it read; a truncated read, an image and every other non-text type are not — and Ctrl+S is bound in the shared mount both faces use')
+  ok('编辑 offered (rendered)', 'Markdown is editable with the revision it read; a truncated read, a complete-but-too-big read, an image and every other non-text type are not — and Ctrl+S is bound in the shared mount both faces use')
 } catch (e) {
   bad('编辑 offered (rendered)', e && e.message ? e.message : String(e))
+}
+
+// (A3) A CUT READ MUST SAY SO. The note lived only inside the code-view branch,
+// so a Markdown document that stopped mid-sentence carried no mark at all — which
+// is precisely how a 403 kB textbook came back as two thirds of a book that
+// looked like a short one. Driven through the real render, because "the source
+// mentions truncated" is the check that let it ship.
+try {
+  const mounted = await mountPanel({
+    sidebarRight: true,
+    fetch: (url) => {
+      const u = String(url)
+      if (u.indexOf('/dsh-sidebar-frog/data') === 0) {
+        return Promise.resolve({ status: 200, json: () => Promise.resolve({ artifacts: [{ path: 'D:/ws/book.md', kind: 'create', at: Date.now() }] }) })
+      }
+      return Promise.resolve({
+        status: 200,
+        json: () => Promise.resolve({ ok: true, type: 'markdown', content: '# 前半本\n', truncated: true, editable: false, chars: 364752, size: 403314, version: 'v1' }),
+      })
+    },
+  })
+  const registration = mounted.boot.registrations.find((r) => r.def.name === 'sidebar.right.pane.tab')
+  if (!registration) throw new Error('no panel content was registered to mount')
+  await mounted.mount(registration)
+  const row = mounted.r.findAll('artifacts-item-main')[0]
+  if (!row) throw new Error('the stubbed artifact list did not render')
+  row.props.onClick()
+  await mounted.flush()
+  const notes = mounted.r.findAll('artifacts-diff-label').map((el) => mounted.r.textOf(el))
+  const note = notes.find((t) => t && t.indexOf('truncated preview') >= 0)
+  if (!note) throw new Error('a truncated MARKDOWN read rendered with no notice at all: ' + JSON.stringify(notes))
+  if (note.indexOf('364752') < 0) throw new Error('the notice cannot say how much was cut: ' + JSON.stringify(note))
+  ok('truncation notice (rendered)', 'a cut Markdown preview says so, with the real length — ' + JSON.stringify(note))
+} catch (e) {
+  bad('truncation notice (rendered)', e && e.message ? e.message : String(e))
 }
 
 // (B) The table's BEHAVIOUR, driven through the very component both the panel and

@@ -73,6 +73,11 @@ const FileTree = (props) => {
   const [copiedPath, setCopiedPath] = React.useState(null)
   const [copiedLabel, setCopiedLabel] = React.useState('')
   const [flashPath, setFlashPath] = React.useState(null)
+  // Delete: a destructive action, so the menu item only ARMS it. `confirmDel`
+  // holds the entry awaiting the confirm dialog; `delBusy` is the in-flight host
+  // call that disables 删除 so a double click cannot fire it twice.
+  const [confirmDel, setConfirmDel] = React.useState(null)
+  const [delBusy, setDelBusy] = React.useState(false)
 
   const rootTimer = React.useRef(null)
   const copyTimer = React.useRef(null)
@@ -321,6 +326,62 @@ const FileTree = (props) => {
     copyText(text, '已复制 @引用')
   }
 
+  // Delete the entry from DISK (the host's /delete route), not just from the
+  // 产物 list — that one is 清除 and lives in the ledger view. The host fences
+  // the path to the session workspace, and its reason is what the user sees when
+  // a deletion is refused (a path outside the workspace, the workspace root
+  // itself, a locked file).
+  const doDelete = (entry) => {
+    if (delBusy) return
+    setDelBusy(true)
+    host.call('artifacts.delete', { path: entry.path, sessionId: currentSessionId() }).then((res) => {
+      setDelBusy(false)
+      setConfirmDel(null)
+      if (res && res.ok) {
+        setFlashLabel(entry.name, '已删除')
+        // The level that listed the entry is now stale: re-read the parent (or
+        // the root when it was a top-level entry). pruneMissing also drops the
+        // cached children and expansion of anything deleted.
+        //
+        // A top-level entry is listed by tree.root.entries, NOT by tree.children:
+        // parentDirOf yields the WORKSPACE ROOT for it, which is truthy — so the
+        // old `if (parent)` here called refreshDir(root), writing a
+        // children['<root>'] key the renderer never reads, and the deleted row
+        // stayed on screen. The parent level equals the root exactly when the
+        // entry was top-level; that is when the ROOT, not a child level, is stale.
+        const parent = parentDirOf(entry.path)
+        if (parent && pathRelativeTo(parent, rootPath) !== '') refreshDir(parent)
+        else loadRoot(false)
+      } else {
+        setFlashLabel(entry.name, (res && res.error) || '删除失败')
+      }
+    }).catch(() => {
+      setDelBusy(false)
+      setConfirmDel(null)
+      setFlashLabel(entry.name, '删除失败')
+    })
+  }
+
+  // The directory a tree entry lives in (its parent level), spelled the way the
+  // host spells it. Empty for a top-level entry, whose level is the root.
+  const parentDirOf = (path) => {
+    const text = String(path == null ? '' : path)
+    const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+    if (at <= 0) return ''
+    return text.slice(0, at)
+  }
+
+  // Transient feedback that survives the deleted row vanishing: a small banner
+  // at the top of the tree body naming the entry and what happened to it, for a
+  // couple of seconds.
+  const [flashLabel, _setFlashLabelState] = React.useState(null)
+  const flashLabelTimer = React.useRef(null)
+  const setFlashLabel = (name, label) => {
+    clearTimeout(flashLabelTimer.current)
+    _setFlashLabelState({ name: name || '', text: label || '' })
+    flashLabelTimer.current = setTimeout(() => _setFlashLabelState(null), 2600)
+  }
+
   const openEntry = (entry, pinned) => {
     if (entry.isDir) { toggle(entry.path); return }
     if (props.onOpen) props.onOpen(entry.path, { pinned: !!pinned })
@@ -381,6 +442,7 @@ const FileTree = (props) => {
     clearTimeout(flashTimer.current)
     clearTimeout(searchTimer.current)
     clearTimeout(persistTimer.current)
+    clearTimeout(flashLabelTimer.current)
   }, [])
 
   // Load levels that are expanded but not cached yet (remembered state,
@@ -502,6 +564,14 @@ const FileTree = (props) => {
   }
 
   const onKeyDown = (ev) => {
+    // The delete confirm is a modal-ish overlay drawn over the tree: Escape
+    // cancels it and Enter runs it, everything else is swallowed so it cannot
+    // move the cursor or open a file while the question is up.
+    if (confirmDel) {
+      if (ev.key === 'Escape') { ev.preventDefault(); setConfirmDel(null); return }
+      if (ev.key === 'Enter') { ev.preventDefault(); doDelete(confirmDel); return }
+      return
+    }
     if (menu) { onMenuKeyDown(ev); return }
     const idx = cursor != null ? rowIndex[cursor] : -1
     const cur = idx >= 0 ? rows[idx] : null
@@ -583,6 +653,13 @@ const FileTree = (props) => {
       items.push({ label: '展开全部', run: () => { toggle(entry.path, true); expandAll() } })
     }
     items.push({ sep: true })
+    // Destructive: the item only opens the confirm dialog — the deletion itself
+    // needs the 删除 button in it, so a stray double click can never fire it.
+    items.push({
+      label: entry.isDir ? '删除文件夹…' : '删除文件…',
+      danger: true,
+      run: () => setConfirmDel(entry),
+    })
     items.push({ label: '全部展开', run: expandAll })
     items.push({ label: '全部折叠', run: collapseAll })
     return items
@@ -623,7 +700,7 @@ const FileTree = (props) => {
     ev.stopPropagation()
     setCursor(entry.path)
     const MENU_W = 210   // min-width 184px + padding, the box we keep on screen
-    const MENU_H = 260   // the tallest menu (a directory: 7 items + separators)
+    const MENU_H = 340   // the tallest menu (a directory: 12 items + 3 separators)
     // The pointer is the anchor: that is the whole contract of a context menu.
     // Clamped to the window so the menu can never be drawn half off screen.
     const vx = Math.max(8, Math.min(ev.clientX, window.innerWidth - MENU_W))
@@ -636,9 +713,9 @@ const FileTree = (props) => {
   }
 
   React.useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
-    const onScroll = () => setMenu(null)
+    if (!menu && !confirmDel) return
+    const close = () => { setMenu(null); setConfirmDel(null) }
+    const onScroll = () => { setMenu(null); setConfirmDel(null) }
     window.addEventListener('click', close)
     window.addEventListener('resize', close)
     window.addEventListener('scroll', onScroll, true)
@@ -647,7 +724,7 @@ const FileTree = (props) => {
       window.removeEventListener('resize', close)
       window.removeEventListener('scroll', onScroll, true)
     }
-  }, [menu])
+  }, [menu, confirmDel])
 
   // Fit the menu inside the window using its REAL box. openMenu clamps with the
   // widest/tallest a menu is expected to be, which is a guess: an item list that
@@ -800,10 +877,59 @@ const FileTree = (props) => {
       key: it.label,
       type: 'button',
       role: 'menuitem',
-      className: 'artifacts-tree-menu-item' + ((menu.index || 0) === i ? ' is-active' : ''),
+      className: 'artifacts-tree-menu-item' + ((menu.index || 0) === i ? ' is-active' : '') + (it.danger ? ' is-danger' : ''),
       onMouseEnter: () => setMenu({ ...menu, index: i }),
-      onClick: () => { setMenu(null); it.run() },
+      // stopPropagation: the window click-closer (armed while the menu is open)
+      // is still listening for THIS click when it lands — it would fire before the
+      // new confirm's listener is attached and close the confirm the instant it
+      // opens. The item is the menu's own click, so it must not be "outside".
+      // (A test that calls the handler with no event gets a no-op, not a throw.)
+      onClick: (e) => { if (e && e.stopPropagation) e.stopPropagation(); setMenu(null); it.run() },
     }, it.label)))) : null
+
+  // The delete confirmation. A destructive action gets a real question: the
+  // entry's name, and for a folder a reminder that EVERYTHING under it goes. It
+  // is portaled next to the menu so it is never clipped by the tree's scroll
+  // box, and it is the ONLY thing that can run the deletion (the menu item just
+  // arms it). `delBusy` keeps 删除 single-clicked.
+  const confirmEl = confirmDel ? React.createElement('div', {
+    className: 'artifacts-tree-confirm',
+    // Centered in the viewport. The box is portaled to <body> (see the return
+    // below), where `position: fixed` is really measured from the viewport — the
+    // panel itself sets container-type, so a fixed box left inside it would be
+    // placed (and clipped) against the panel, exactly the bug the menu's portal
+    // removes.
+    style: {
+      left: Math.max(8, Math.round((window.innerWidth - 320) / 2)),
+      top: Math.max(8, Math.round((window.innerHeight - 160) / 2)),
+    },
+    role: 'alertdialog',
+    'aria-modal': 'true',
+    'aria-label': '确认删除',
+    onClick: (e) => e.stopPropagation(),
+  },
+    React.createElement('div', { className: 'artifacts-tree-confirm-title' },
+      confirmDel.isDir ? '删除文件夹？' : '删除文件？'),
+    React.createElement('div', { className: 'artifacts-tree-confirm-body' },
+      confirmDel.isDir
+        ? '「' + confirmDel.name + '」及其中的全部内容都会被删除，且无法恢复。'
+        : '「' + confirmDel.name + '」会被删除，且无法恢复。'),
+    React.createElement('div', { className: 'artifacts-tree-confirm-actions' },
+      React.createElement('button', {
+        type: 'button',
+        className: 'artifacts-tree-confirm-btn',
+        'aria-label': '取消删除',
+        onClick: () => setConfirmDel(null),
+      }, '取消'),
+      React.createElement('button', {
+        type: 'button',
+        className: 'artifacts-tree-confirm-btn is-danger' + (delBusy ? ' is-busy' : ''),
+        disabled: delBusy,
+        'aria-label': '确认删除',
+        onClick: () => doDelete(confirmDel),
+      }, delBusy ? '删除中…' : '删除'),
+    ),
+  ) : null
 
   return React.createElement('div', { className: 'artifacts-tree' },
     React.createElement('div', { className: 'artifacts-tree-header' },
@@ -870,6 +996,7 @@ const FileTree = (props) => {
       'aria-label': '工作区文件树',
       onKeyDown: onKeyDown,
     },
+      flashLabel ? React.createElement('div', { key: 'flash-label', className: 'artifacts-tree-flash-label' }, flashLabel.text) : null,
       showEmptyHint
         ? React.createElement('div', { className: 'artifacts-hint' }, tree.error || '加载文件树…')
         : [
@@ -891,6 +1018,10 @@ const FileTree = (props) => {
         ],
     ),
     menuEl && MENU_PORTAL ? ReactDOM.createPortal(menuEl, MENU_PORTAL_TARGET) : menuEl,
+    // The confirm rides the SAME portal as the menu: it is `position: fixed` and
+    // must be measured from the viewport, not the panel's containment box. When
+    // react-dom is unavailable the menu's in-place fallback applies to it too.
+    confirmEl && MENU_PORTAL ? ReactDOM.createPortal(confirmEl, MENU_PORTAL_TARGET) : confirmEl,
   )
 }
 
