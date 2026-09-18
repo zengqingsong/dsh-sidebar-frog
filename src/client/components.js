@@ -118,6 +118,15 @@ const ArtifactsContent = (props) => {
   // duplicating the shell's tab strip. The floating panel has no such strip, so it
   // keeps its own (`fixedView` empty) and switches in place.
   const fixedView = (props && props.fixedView) || ''
+  // Which session this instance is showing.
+  //
+  // A NATIVE tab body is a session-scoped slot, so the shell hands it the session
+  // it was opened for (`sessionId`); that id is authoritative and is what every
+  // host call, the popout link and the shell hand-off below are keyed by. The
+  // floating panel and the standalone popout have no seat of their own, so they
+  // fall back to the root read (currentSessionId, src/client/core.js).
+  const seatSessionId = (props && typeof props.sessionId === 'string' && props.sessionId) || ''
+  const sessionId = seatSessionId || currentSessionId()
   // Which inner view is showing: pinned on a native tab, chosen by the band on the
   // floating panel. The ledger is the floating panel's first view (that is what it
   // exists for); a bare native instance with no pin also starts there.
@@ -183,11 +192,18 @@ const ArtifactsContent = (props) => {
   // Publish the current session id to localStorage so the standalone
   // popout tab (which has no client session store) can root its file tree
   // at the active workspace and follow workspace switches in real time.
+  //
+  // The seat's own id (see `sessionId` above) is what a native tab knows for
+  // certain, and the root read covers a change of session behind a mounted
+  // panel: the subscription below fires on it, and the ref carries the seat's
+  // value into that callback.
+  const sessionRef = React.useRef(sessionId)
+  sessionRef.current = sessionId
   React.useEffect(() => {
     const KEY = BRIDGE.session
     const write = () => {
       try {
-        const sid = currentSessionId()
+        const sid = sessionRef.current || currentSessionId()
         if (localStorage.getItem(KEY) !== sid) localStorage.setItem(KEY, sid || '')
       } catch (e) { }
     }
@@ -229,7 +245,7 @@ const ArtifactsContent = (props) => {
   // Background jobs come from the shell's own mirror (see useJobs), so the view
   // only shows rows while there is something to show — the same rule the shell's
   // header button follows.
-  const jobs = useJobs(currentSessionId())
+  const jobs = useJobs(sessionId)
 
   // Drawn only where the band has something to hold. The floating surface keeps
   // its view switcher whenever it has a view to switch; a native ledger tab holds
@@ -242,7 +258,7 @@ const ArtifactsContent = (props) => {
 
   if (!active) return null
 
-  const sid = currentSessionId()
+  const sid = sessionId
   const popoutHref = popoutHrefFor(sid)
 
   const startResize = (e) => {
@@ -348,10 +364,16 @@ const ArtifactsContent = (props) => {
   // Hand a file to the renderer the SHELL would pick (see openInShellSidebar in
   // src/client/docpreview.js). It can refuse — no sidebar face, no session, or an
   // address no type will open — and a silent no-op reads as a broken button, so
-  // the refusal is reported.
+  // the refusal is reported, WITH the reason the shell gave.
+  //
+  // The session is passed IN rather than looked up inside: on the native surface
+  // this instance's own seat knows it exactly (see `sessionId` above), and a
+  // hand-off addressed to another session's workspace would open the right tab
+  // over the wrong file.
   const openInShell = (path) => {
-    if (openInShellSidebar(path)) flash('已在系统侧边栏打开')
-    else flash('无法在系统侧边栏打开此文件')
+    const res = openInShellSidebar(path, sid)
+    if (res && res.ok) flash('已在系统侧边栏打开')
+    else flash(openShellFailureText(res))
   }
 
   // Opening a file from the TREE. A native tab holds one view and has no file
@@ -624,7 +646,14 @@ const ArtifactsContent = (props) => {
             baseVersion: preview.version || null,
             baseSize: typeof preview.size === 'number' ? preview.size : null,
             onSaved: refreshAfterRevert,
-          }, renderPreview(Object.assign({}, preview, { onUndo: undoChange, undoBusy: undoBusy, onOpenInShell: openInShell }))) : null,
+          }, renderPreview(Object.assign({}, preview, {
+            onUndo: undoChange,
+            undoBusy: undoBusy,
+            onOpenInShell: openInShell,
+            // The session the reader is in: a document-relative image is resolved
+            // against ITS workspace by the media route (see mdMedia).
+            sessionId: sid,
+          }))) : null,
         )
         : null,
       // A native tab pinned to the tree draws the tree WHATEVER the floating
@@ -644,6 +673,9 @@ const ArtifactsContent = (props) => {
           pinnedPath: null,
           // The artifact records double as the explorer's change letters (A/M).
           items: items,
+          // The seat's own session, so every directory read is fenced to THIS
+          // tab's workspace (see seatSessionId in src/client/filetree.js).
+          sessionId: seatSessionId,
         }),
       ) : null,
       React.createElement('div', {
@@ -981,6 +1013,38 @@ const SettingsSection = () => {
             },
           }),
           React.createElement('span', { className: 'artifacts-suffix' }, '%'),
+        ),
+      ),
+      // The document skin: which platform typography rendered Markdown wears.
+      // It sits with the renderer switches because it belongs to the same
+      // question — how a document is DRAWN here — and it applies to all three
+      // readers at once (this panel, the shell's document tab, the popout page).
+      //
+      // A row of BUTTONS, not a <select>, for two reasons. It is the shape this
+      // app already uses for a small closed choice (外观: 浅色/深色/跟随系统), so
+      // it reads as part of the same settings page; and a native select popup is
+      // a browser widget this panel can neither style nor test — it was reported
+      // as "cannot be selected" in the running app, which no assertion here can
+      // see into. One button per skin with the current one marked: the state is a
+      // class and an aria-pressed, and choosing is an ordinary onClick.
+      React.createElement('div', { className: 'artifacts-setrow is-stacked' },
+        React.createElement('div', { className: 'artifacts-settext' },
+          React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档皮肤'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤只改排版与结构（标题线、行距、代码块、表格、图片位置），颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
+        ),
+        React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
+          markdownSkinOptions().map((opt) => {
+            const on = markdownSkinName(settings.markdownSkin) === opt.value
+            return React.createElement('button', {
+              key: opt.value,
+              type: 'button',
+              className: 'artifacts-chip' + (on ? ' is-on' : ''),
+              'data-frog-skin': opt.value,
+              'aria-pressed': on ? 'true' : 'false',
+              title: 'Markdown 文档皮肤：' + opt.label,
+              onClick: () => set('markdownSkin', opt.value),
+            }, opt.label)
+          }),
         ),
       ),
       React.createElement('div', { className: 'artifacts-setrow' },

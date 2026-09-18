@@ -91,21 +91,37 @@ const FileTree = (props) => {
   // inside the window (see the fit effect next to the close-on-click one).
   const menuRef = React.useRef(null)
 
+  // Which session this tree is rooted at.
+  //
+  // The SEAT's own id wins whenever the shell handed one down: a native tab body
+  // is a session-scoped slot, so `props.sessionId` IS the session that tab lives
+  // in, and every host call below is fenced to that session's workspace. The
+  // root read (currentSessionId) is the fallback for the surfaces with no seat of
+  // their own — the floating panel and the standalone popout page.
+  //
+  // The distinction is not theoretical: with only the root read, an empty id made
+  // every request "unnamed", and the host answers an unnamed request with the
+  // MOST RECENT session's workspace — the right directory by luck, until the user
+  // switches workspace or session.
+  const seatSessionId = () => (props && typeof props.sessionId === 'string' && props.sessionId)
+    || currentSessionId()
+
   // Track the active session so the tree re-roots automatically when the
   // workspace changes (no manual refresh needed).
-  const [sessionId, setSessionId] = React.useState(currentSessionId())
+  const [sessionId, setSessionId] = React.useState(seatSessionId())
+  React.useEffect(() => { setSessionId(seatSessionId()) }, [props && props.sessionId])
   React.useEffect(() => {
     let list
     try { list = ctx.get('sessions') && ctx.get('sessions').list } catch (e) { }
     if (!list || typeof list.subscribe !== 'function') return
-    return list.subscribe(() => setSessionId(currentSessionId()))
+    return list.subscribe(() => setSessionId(seatSessionId()))
   }, [])
 
   // ── data ────────────────────────────────────────────────────────────────
   // Read one directory level. `path` empty ⇒ the root resolved from the session.
   const fetchDir = (path) => host.call('artifacts.listDir', {
     path: path || undefined,
-    sessionId: currentSessionId(),
+    sessionId: seatSessionId(),
   }).then((res) => (res && res.ok
     ? { entries: Array.isArray(res.entries) ? res.entries : [], path: res.path }
     : { error: (res && res.error) || '读取失败' }
@@ -334,7 +350,7 @@ const FileTree = (props) => {
   const doDelete = (entry) => {
     if (delBusy) return
     setDelBusy(true)
-    host.call('artifacts.delete', { path: entry.path, sessionId: currentSessionId() }).then((res) => {
+    host.call('artifacts.delete', { path: entry.path, sessionId: seatSessionId() }).then((res) => {
       setDelBusy(false)
       setConfirmDel(null)
       if (res && res.ok) {
@@ -394,7 +410,7 @@ const FileTree = (props) => {
     const text = String(q || '').trim()
     if (!text) { setSearch(null); return }
     setSearch({ loading: true, results: [], local: false })
-    host.call('artifacts.search', { q: text, sessionId: currentSessionId(), limit: 200 })
+    host.call('artifacts.search', { q: text, sessionId: seatSessionId(), limit: 200 })
       .then((res) => {
         if (res && res.ok && Array.isArray(res.results)) {
           setSearch({ loading: false, results: res.results, local: false, truncated: !!res.truncated })

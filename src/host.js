@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = 'adfb4d86'
+    const BUILD = '84a506d3'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -1873,7 +1873,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="adfb4d86" />
+<meta name="dsh-sidebar-frog-build" content="84a506d3" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -1939,6 +1939,15 @@ return {
     color-scheme: light;
     --p-bg: rgb(255, 255, 255);
     --p-bg-layer-1: rgb(255, 255, 255);
+    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
+       onto this page own palette: one skin stylesheet then serves the panel,
+       the shell document tab and this page. */
+    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+    --dsw-alias-border-l1: var(--p-border-l1);
+    --dsw-alias-border-l2: var(--p-border-l2);
+    --dsw-alias-border-l3: var(--p-border-l2);
+    --dsw-alias-label-primary: var(--p-text);
+    --dsw-alias-label-secondary: var(--p-text-secondary);
     --p-border-l1: rgba(0, 0, 0, 0.04);
     --p-border-l2: rgba(0, 0, 0, 0.1);
     --p-text: rgb(15, 17, 21);
@@ -1962,6 +1971,15 @@ return {
     color-scheme: dark;
     --p-bg: rgb(21, 21, 23);
     --p-bg-layer-1: rgb(35, 35, 36);
+    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
+       onto this page own palette: one skin stylesheet then serves the panel,
+       the shell document tab and this page. */
+    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+    --dsw-alias-border-l1: var(--p-border-l1);
+    --dsw-alias-border-l2: var(--p-border-l2);
+    --dsw-alias-border-l3: var(--p-border-l2);
+    --dsw-alias-label-primary: var(--p-text);
+    --dsw-alias-label-secondary: var(--p-text-secondary);
     --p-border-l1: rgba(255, 255, 255, 0.06);
     --p-border-l2: rgba(255, 255, 255, 0.12);
     --p-text: rgb(249, 250, 251);
@@ -2104,6 +2122,10 @@ return {
   .markdown pre { background: var(--p-code-bg); padding: 12px 14px; border-radius: 6px; overflow: auto; }
   .markdown pre code { background: transparent; padding: 0; }
   .markdown img { max-width: 100%; }
+.markdown picture { max-width: 100%; }
+.markdown picture > img { max-width: 100%; height: auto; }
+.markdown [align="center"] { text-align: center; }
+.markdown [align="right"] { text-align: right; }
   .markdown blockquote { border-left: 3px solid var(--p-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--p-text-secondary); }
   .markdown ul, .markdown ol { padding-left: 24px; }
   .markdown a { color: var(--p-accent); }
@@ -2611,6 +2633,12 @@ return {
       // switch is about the SHELL's sidebar, not about this plugin's own previews.
       // See src/client/docpreview.js and src/shared/office.js.
       nativeOffice: true,
+      // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the
+      // platform typographies in src/shared/skins.js (GitHub, 微信, 知乎). Typography
+      // and layout only — colors come from the theme, so a skin is right in light and
+      // dark alike. Applied to the panel, the shell's own document tab and the popout
+      // page from this one value; see markdownSkinClass.
+      markdownSkin: 'default',
     };
 
     var SETTINGS_RANGES = {
@@ -2619,6 +2647,24 @@ return {
       defaultPanelWidth: [20, 85],
       minPanelWidth: [20, 60],
       previewHeight: [20, 80],
+    };
+
+    // Settings whose value is one of a fixed set of names rather than a number.
+    // EVERY string-valued setting must be listed here WITH its fallback among the
+    // allowed names, or it can never be changed at all:
+    // clampSetting reads a setting through parseInt, so a name like "github"
+    // arrives as NaN and comes back out as the DEFAULT — which is exactly how the
+    // Markdown skin picker shipped unselectable (the choice was stored, read back as
+    // the default, and the control snapped back under the user's pointer).
+    //
+    // The list is a literal on purpose, not a reference to MD_SKIN_ORDER in
+    // src/shared/skins.js: this module is evaluated BEFORE the skins module in both
+    // bundles (the popout page reads its settings at the top of its script), so a
+    // cross-reference would read an uninitialized var. The two are held together by
+    // a guard in scripts/check.js instead — a copy that can be checked beats a
+    // coupling that cannot be loaded.
+    var SETTINGS_CHOICES = {
+      markdownSkin: ['default', 'github', 'wechat', 'zhihu'],
     };
 
     function clampSetting(key, value) {
@@ -2630,7 +2676,17 @@ return {
       return Math.max(range[0], Math.min(range[1], n));
     }
 
-    // Fills in defaults, drops unknown keys, coerces booleans and clamps numbers.
+    // One of a fixed set of names: an unknown or missing name is the default, so a
+    // hand-edited localStorage entry degrades to a usable value instead of leaving a
+    // setting nothing can interpret.
+    function choiceSetting(key, value) {
+      var allowed = SETTINGS_CHOICES[key] || [];
+      var text = typeof value === 'string' ? value : '';
+      return allowed.indexOf(text) >= 0 ? text : DEFAULT_SETTINGS[key];
+    }
+
+    // Fills in defaults, drops unknown keys, and normalizes every value by its own
+    // kind — booleans coerced, numbers clamped, names checked against their list.
     // Applied on both sides of every read and write, so a malformed entry (partial
     // JSON, a string where a number belongs, 5000%) degrades to a usable object
     // instead of propagating.
@@ -2639,7 +2695,9 @@ return {
       Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
         var fallback = DEFAULT_SETTINGS[key];
         var value = raw && Object.prototype.hasOwnProperty.call(raw, key) ? raw[key] : fallback;
-        out[key] = typeof fallback === 'boolean' ? !!value : clampSetting(key, value);
+        if (typeof fallback === 'boolean') out[key] = !!value;
+        else if (typeof fallback === 'string') out[key] = choiceSetting(key, value);
+        else out[key] = clampSetting(key, value);
       });
       return out;
     }
@@ -4146,7 +4204,14 @@ return {
     // Rewrite one raw <tag ...> opener (no content): drops on* handlers and other
     // dangerous attributes, scrubs attribute values, and escapes what remains so
     // the tag cannot be reinterpreted. Returns the sanitized opener string.
-    function sanitizeHtmlTag(open) {
+    //
+    // opts (dir/media, see mdMedia) additionally REBASES the URLs the tag carries:
+    // a raw <img src="docs/logo/logo.svg"> in a Markdown file is relative to THAT
+    // file, and left alone it resolved against the app's own URL — where it 404s, so
+    // the image silently did not appear. ![alt](relative.svg) already went through
+    // mdMedia; raw HTML images now do too. Omitted opts (no document path) keep the
+    // old behavior: no rebasing.
+    function sanitizeHtmlTag(open, opts) {
       var nm = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(open) || [];
       var name = nm[1] || '';
       var body = open.slice(1, -1).replace(/^[a-zA-Z][a-zA-Z0-9-]*/, '');
@@ -4163,6 +4228,10 @@ return {
         var q = raw.charAt(0);
         if (q === '"' || q === '\'') raw = raw.slice(1, -1);
         var safe = sanitizeAttrValue(raw);
+        if (opts) {
+          if (/^(src|poster)$/i.test(an)) safe = mdMedia(safe, opts);
+          else if (/^srcset$/i.test(an)) safe = mdRebaseSrcset(safe, opts);
+        }
         attrs.push(an + '="' + safe.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"');
       }
       return '<' + name + (attrs.length ? ' ' + attrs.join(' ') : '') + '>';
@@ -4175,7 +4244,43 @@ return {
       details: 1, div: 1, figure: 1, figcaption: 1, summary: 1, p: 1,
       ul: 1, ol: 1, li: 1, dl: 1, dt: 1, dd: 1,
       table: 1, thead: 1, tbody: 1, tfoot: 1, tr: 1, th: 1, td: 1,
+      // <picture> is the light/dark image switch GitHub READMEs use — a <source
+      // media="(prefers-color-scheme: dark)"> beside a fallback <img>. It is
+      // gathered as a block so a multi-line one survives (line-by-line paragraph
+      // handling split it), and rendered by renderPicture.
+      picture: 1,
     };
+    // A <picture> element, rebuilt from its own children: the <source> elements and
+    // the fallback <img> are sanitized and their URLs rebased (see sanitizeHtmlTag),
+    // and the browser keeps making the light/dark choice itself — that IS the
+    // element's contract, and re-implementing it here would only disagree with the
+    // engine on the cases it already handles (width media queries, image formats).
+    // Anything else inside is escaped: a <picture> holds sources and an image, so
+    // stray text or markup is not silently swallowed.
+    function renderPicture(block, opts) {
+      var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
+      var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var afterOpen = open ? block.slice(open.index + open[0].length) : block;
+      var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
+      var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
+      var out = [];
+      var re = /<(?:source|img)\b[^>]*>/gi;
+      var m;
+      var last = 0;
+      while ((m = re.exec(inner))) {
+        if (m.index > last) {
+          var gap = inner.slice(last, m.index);
+          if (gap.trim()) out.push(htmlEscape(gap));
+        }
+        out.push(sanitizeHtmlTag(m[0], opts));
+        last = m.index + m[0].length;
+      }
+      if (last < inner.length) {
+        var tail = inner.slice(last);
+        if (tail.trim()) out.push(htmlEscape(tail));
+      }
+      return opener + out.join('') + '</picture>';
+    }
     // Collect the raw source of a block-level HTML element: starts at its opening
     // tag (already on the current line) and runs until the matching closing tag
     // (case-insensitive, closer-tag), counting nested openers so a nested
@@ -4214,7 +4319,7 @@ return {
         var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
         var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
         cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-        out.push(cellAttr + mdInline(mdEscape(cellText), opts) + '</' + m[1] + '>');
+        out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
         last = m.index + m[0].length;
       }
       if (last < inner.length) out.push(htmlEscape(inner.slice(last)));
@@ -4242,14 +4347,15 @@ return {
         inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
       }
       if (tag === 'tr') return renderTr(block, opts);
+      if (tag === 'picture') return renderPicture(block, opts);
       if (INLINE_BLOCK_TAGS[tag]) {
         var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-        return openTag + mdInline(mdEscape(text), opts) + closeTag;
+        return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
       }
       return openTag + mdToHtml(inner, opts) + closeTag;
     }
 
-    function mdEscape(s) {
+    function mdEscape(s, opts) {
       s = String(s);
       // Protect whitelisted raw inline HTML so the escaping below cannot turn it
       // into visible entity text. Whole elements (opener + content + closer) are
@@ -4258,15 +4364,21 @@ return {
       //     i, em, u, s, small, mark, del, ins, q, span, font, abbr, a — with
       //     any attribute list (colors, sizes, href…); each opener is sanitized
       //     (on* handlers and script-ish URLs dropped, values scrubbed)
-      //   - void: br, hr, wbr
+      //   - void: br, hr, wbr, and img — an image's src is REBASED onto the media
+      //     route when opts carries one (see sanitizeHtmlTag), which is what makes a
+      //     raw <img src="docs/logo/logo.svg"> in a README actually appear
+      //   - picture: the whole element (sources + fallback image) is rebuilt by
+      //     renderPicture, so a <picture> inside a paragraph renders as the image
+      //     instead of as visible angle brackets
       //   - single-line svg (sanitized)
       var toks = [];
-      s = s.replace(/<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
+      s = s.replace(/<picture\b[^>]*>[\s\S]*?<\/picture>|<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
         if (/^<svg/i.test(m)) { m = sanitizeSvg(m); }
+        else if (/^<picture/i.test(m)) { m = renderPicture(m, opts); }
         else if (/^<(kbd|sub|sup)>/i.test(m)) { /* content is plain text — keep as-is */ }
         else {
           var gi = m.indexOf('>');
-          m = sanitizeHtmlTag(m.slice(0, gi + 1)) + m.slice(gi + 1);
+          m = sanitizeHtmlTag(m.slice(0, gi + 1), opts) + m.slice(gi + 1);
         }
         toks.push(m);
         return '\x01K' + toks.length + '\x02';
@@ -4329,14 +4441,35 @@ return {
     // (scheme:, data:, #fragment, /absolute) are passed through untouched; relative
     // targets are rebased onto the Markdown file's directory. media is only set
     // when the caller supplied opts.path (i.e. a real document is being rendered).
-    function mdMedia(url, dir, media) {
+    function mdMedia(url, opts) {
+      var media = (opts && opts.media) || '';
       if (!media) return url;
       if (/^(?:[a-z][a-z0-9+.-]*:|data:|#|\/)/i.test(url)) return url;
-      return media + encodeURIComponent(dir + url);
+      var out = media + encodeURIComponent(((opts && opts.dir) || '') + url);
+      // The session the document is being read in. The media route resolves a
+      // relative path against that session's workspace (see src/host/routes.js), so
+      // without it a document-relative image resolves against whatever the sandbox
+      // root happens to be — a 404, i.e. a silently broken image.
+      if (opts && opts.sessionId) out += '&sessionId=' + encodeURIComponent(opts.sessionId);
+      return out;
+    }
+    // srcset is a comma-separated list of "url [descriptor]" candidates, so each
+    // candidate's URL is rebased on its own and its descriptor (2x, 640w) is
+    // kept. A srcset carrying a data: URL is passed through untouched: those
+    // contain commas of their own, and splitting them would corrupt the value —
+    // and a data URL needs no rebasing anyway.
+    function mdRebaseSrcset(value, opts) {
+      var text = String(value);
+      if (!(opts && opts.media) || /data\s*:/i.test(text)) return text;
+      return text.split(',').map(function (part) {
+        var m = /^(\s*)(\S+)([\s\S]*)$/.exec(part);
+        if (!m) return part;
+        return m[1] + mdMedia(m[2], opts) + m[3];
+      }).join(',');
     }
     function mdCell(src, tag, align, opts) {
       var st = align ? ' style="text-align:' + align + '"' : '';
-      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim()), opts) + '</' + tag + '>';
+      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
     }
 
     // ── Inline pass ─────────────────────────────────────────────────────────
@@ -4355,7 +4488,7 @@ return {
       // Images and links are shelved as tokens while auto-linking runs, so a URL
       // inside a rendered href/src cannot be wrapped in a second anchor.
       s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-        kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts.dir || '', opts.media || '') + '">');
+        kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts) + '">');
         return '\x01A' + kept.length + '\x02';
       });
       s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
@@ -4380,8 +4513,29 @@ return {
         var href = /^www\./i.test(core) ? 'http://' + core : core;
         return pre + '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + core + '</a>' + suffix;
       });
-      s = s.replace(/\x01A(\d+)\x02/g, function (m, d) { return kept[Number(d) - 1] || m; });
-      return s.replace(/\x01M(\d+)\x02/g, function (m, d) { return math[Number(d) - 1] || m; });
+      // Tokens can nest — a badge is [![alt](image)](link), so the link token's
+      // replacement text CONTAINS the image token. String.replace never rescans
+      // what it just wrote, so a single pass left the inner token in the output and
+      // the badge rendered as the literal characters "A1" instead of the image.
+      // Restoring repeatedly until nothing is left fixes every nesting depth, and the
+      // bound is only there so a malformed token cannot spin.
+      s = restoreTokens(s, kept, 'A');
+      return restoreTokens(s, math, 'M');
+    }
+
+    // Replace the \x01<t>\x02 tokens with what they stand for, repeatedly: a token's
+    // replacement text may hold another token (see the badge note above). An
+    // out-of-range index is left as-is rather than dropped — a missing token must not
+    // be able to delete text.
+    function restoreTokens(s, list, letter) {
+      var re = new RegExp('\\x01' + letter + '(\\d+)\\x02');
+      var once = function (text) {
+        return text.replace(new RegExp('\\x01' + letter + '(\\d+)\\x02', 'g'), function (m, d) {
+          return list[Number(d) - 1] || m;
+        });
+      };
+      for (var pass = 0; pass < 6 && re.test(s); pass += 1) s = once(s);
+      return s;
     }
 
     // ── Lists ───────────────────────────────────────────────────────────────
@@ -4422,7 +4576,7 @@ return {
         if (task) {
           html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
         } else {
-          html.push('<li>' + mdInline(mdEscape(body), opts));
+          html.push('<li>' + mdInline(mdEscape(body, opts), opts));
         }
         open = true;
       };
@@ -4430,7 +4584,7 @@ return {
       // a second block in it after a blank line. Both are item text — this renderer
       // has no indented-code rule, so that is the least surprising reading.
       var continuation = function (line) {
-        html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, '')), opts));
+        html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, ''), opts), opts));
       };
       while (i < lines.length) {
         var mark = mdListMarker(lines[i]);
@@ -4476,6 +4630,11 @@ return {
       var mdOpts = {
         dir: opts.dir != null ? opts.dir : (lastSlash >= 0 ? docPath.slice(0, lastSlash + 1) : ''),
         media: opts.media != null ? opts.media : (opts.path ? '/dsh-sidebar-frog/media?path=' : ''),
+        // Carried through to every media URL this render produces (see mdMedia).
+        sessionId: opts.sessionId || '',
+        // The chosen document skin (see src/shared/skins.js): the class the Markdown
+        // root carries, so a skin is pure CSS and costs the renderer nothing.
+        skin: opts.skin || '',
       };
       var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
       var out = [];
@@ -4534,7 +4693,7 @@ return {
             }
           }
           var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$') + '</div>');
+          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
           continue;
         }
         // Standalone SVG block: gather until the closing tag, then emit sanitized.
@@ -4594,7 +4753,7 @@ return {
         var hd = /^(#{1,6})\s+(.*)$/.exec(line);
         if (hd) {
           var lv = hd[1].length;
-          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2]), mdOpts) + '</h' + lv + '>');
+          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
           i += 1;
           continue;
         }
@@ -4635,15 +4794,133 @@ return {
         // '=====' cannot be anything but an underline, and today it renders as a
         // paragraph containing '=====', which is never what was meant.
         if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-          out.push('<h1>' + mdInline(mdEscape(line.trim()), mdOpts) + '</h1>');
+          out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
           i += 2;
           continue;
         }
         if (line.trim() === '') { i += 1; continue; }
-        out.push('<p>' + mdInline(mdEscape(line), mdOpts) + '</p>');
+        out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
         i += 1;
       }
       return out.join('\n');
+    }
+
+    // ── Document skins for rendered Markdown ────────────────────────────────────
+    // A skin is TYPOGRAPHY AND LAYOUT — heading rules, density, how a code block,
+    // a quote, a table and an image sit on the page — so the same document reads
+    // like the platform whose skin is chosen. It is deliberately NOT a color
+    // scheme: every color comes from the app's own design tokens
+    // (--dsw-alias-*), which is what lets one stylesheet serve the panel, the
+    // shell's document tab and the standalone popout page in both light and dark
+    // themes. A hardcoded light palette would look broken in a dark app, and the
+    // platform's own palette is not what a reader inside DSH is looking at.
+    //
+    // Portable JS (var/function, no template literals, no closing script tag): this
+    // file is inlined into the client bundle AND into the popout page's String.raw
+    // template, and a backtick or a dollar-brace in it would end that template.
+    //
+    // Every rule is scoped by the class the Markdown ROOT carries (see
+    // markdownSkinClass), so skins never reach anything else on the page.
+    //
+    // default is the shipped look (its rules live in the panel's stylesheet and
+    // the popout page's), so it contributes no CSS at all.
+
+    var MD_SKIN_DEFAULT = 'default';
+
+    var MD_SKIN_LABELS = {
+      default: '默认（跟随主题）',
+      github: 'GitHub',
+      wechat: '微信（公众号）',
+      zhihu: '知乎',
+    };
+
+    // The order the settings panel lists them in: the shipped look first, then the
+    // platforms by how often a Markdown document is written for one.
+    var MD_SKIN_ORDER = ['default', 'github', 'wechat', 'zhihu'];
+
+    var MD_SKIN_CSS = {
+      github: [
+        '.md-skin-github { font-size: 14px; line-height: 1.6; }',
+        '.md-skin-github h1 { font-size: 1.75em; border-bottom: 1px solid var(--dsw-alias-border-l2); padding-bottom: .3em; }',
+        '.md-skin-github h2 { font-size: 1.4em; border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: .3em; }',
+        '.md-skin-github h3 { font-size: 1.2em; }',
+        '.md-skin-github h4, .md-skin-github h5, .md-skin-github h6 { font-size: 1em; }',
+        '.md-skin-github h1, .md-skin-github h2, .md-skin-github h3 { margin: 20px 0 12px; }',
+        '.md-skin-github p { margin: 12px 0; }',
+        '.md-skin-github ul, .md-skin-github ol { padding-left: 2em; }',
+        '.md-skin-github li + li { margin-top: 4px; }',
+        '.md-skin-github code { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: .2em .4em; font-size: .85em; }',
+        '.md-skin-github pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 16px; line-height: 1.45; }',
+        '.md-skin-github pre code { background: transparent; padding: 0; font-size: .85em; }',
+        '.md-skin-github blockquote { border-left: .25em solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); padding: 0 1em; margin: 12px 0; }',
+        '.md-skin-github blockquote > :first-child { margin-top: 0; }',
+        '.md-skin-github blockquote > :last-child { margin-bottom: 0; }',
+        '.md-skin-github hr { border: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); height: 0; margin: 24px 0; }',
+        '.md-skin-github table { display: table; width: auto; max-width: 100%; }',
+        '.md-skin-github th, .md-skin-github td { border: 1px solid var(--dsw-alias-border-l2); padding: 6px 13px; }',
+        '.md-skin-github thead tr { background: var(--dsw-alias-bg-layer-1); }',
+        '.md-skin-github img { max-width: 100%; box-sizing: content-box; }',
+      ].join('\n'),
+      wechat: [
+        '.md-skin-wechat { font-size: 16px; line-height: 1.75; letter-spacing: .04em; }',
+        '.md-skin-wechat h1, .md-skin-wechat h2, .md-skin-wechat h3, .md-skin-wechat h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
+        '.md-skin-wechat h1 { font-size: 1.4em; margin: 26px 0 14px; }',
+        '.md-skin-wechat h2 { font-size: 1.25em; margin: 24px 0 12px; }',
+        '.md-skin-wechat h3 { font-size: 1.1em; margin: 20px 0 10px; }',
+        '.md-skin-wechat p { margin: 18px 0; }',
+        '.md-skin-wechat ul, .md-skin-wechat ol { padding-left: 1.6em; }',
+        '.md-skin-wechat li { margin: 8px 0; }',
+        '.md-skin-wechat code { background: var(--dsw-alias-bg-layer-1); padding: .15em .4em; border-radius: 3px; font-size: .9em; }',
+        '.md-skin-wechat pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 14px 16px; line-height: 1.6; }',
+        '.md-skin-wechat pre code { background: transparent; padding: 0; }',
+        '.md-skin-wechat blockquote { border-left: 3px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); padding: 12px 14px; margin: 18px 0; }',
+        '.md-skin-wechat a { text-decoration: none; border-bottom: 1px solid currentColor; }',
+        // A 公众号 lays its images out as centered blocks, and separates sections
+        // with a dashed rule rather than a solid one.
+        '.md-skin-wechat img { display: block; margin: 18px auto; }',
+        '.md-skin-wechat picture { display: block; text-align: center; }',
+        '.md-skin-wechat hr { border: 0; border-top: 1px dashed var(--dsw-alias-border-l2); margin: 28px 0; }',
+        '.md-skin-wechat table { display: table; width: 100%; font-size: .95em; }',
+        '.md-skin-wechat th, .md-skin-wechat td { border: 1px solid var(--dsw-alias-border-l1); padding: 8px 10px; }',
+      ].join('\n'),
+      zhihu: [
+        '.md-skin-zhihu { font-size: 15px; line-height: 1.7; }',
+        '.md-skin-zhihu h1, .md-skin-zhihu h2, .md-skin-zhihu h3, .md-skin-zhihu h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
+        '.md-skin-zhihu h2 { font-size: 1.3em; margin: 26px 0 12px; }',
+        '.md-skin-zhihu h3 { font-size: 1.15em; margin: 22px 0 10px; }',
+        '.md-skin-zhihu p { margin: 14px 0; }',
+        '.md-skin-zhihu code { background: var(--dsw-alias-bg-layer-1); border-radius: 3px; padding: .15em .35em; font-size: .9em; }',
+        '.md-skin-zhihu pre { border-radius: 4px; padding: 12px 16px; }',
+        '.md-skin-zhihu blockquote { border-left: 3px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-secondary); padding: 4px 16px; margin: 16px 0; }',
+        '.md-skin-zhihu img { border-radius: 4px; }',
+        '.md-skin-zhihu table { display: table; width: 100%; font-size: .95em; }',
+        '.md-skin-zhihu th, .md-skin-zhihu td { border: 1px solid var(--dsw-alias-border-l1); padding: 7px 10px; }',
+        '.md-skin-zhihu thead tr { background: var(--dsw-alias-bg-layer-1); }',
+      ].join('\n'),
+    };
+
+    // The skin actually applied: an unknown or missing name is the shipped look, so
+    // a hand-edited localStorage entry can never leave a document unstyled.
+    function markdownSkinName(name) {
+      return Object.prototype.hasOwnProperty.call(MD_SKIN_CSS, name) ? name : MD_SKIN_DEFAULT;
+    }
+
+    // The extra class the Markdown root carries. Empty for the default skin.
+    function markdownSkinClass(name) {
+      var n = markdownSkinName(name);
+      return n === MD_SKIN_DEFAULT ? '' : ' md-skin-' + n;
+    }
+
+    // The CSS for one skin: '' for the default (its rules are the base stylesheet).
+    function markdownSkinCss(name) {
+      return MD_SKIN_CSS[markdownSkinName(name)] || '';
+    }
+
+    // [{ value, label }] for the settings control, in listing order.
+    function markdownSkinOptions() {
+      return MD_SKIN_ORDER.map(function (name) {
+        return { value: name, label: MD_SKIN_LABELS[name] || name };
+      });
     }
 
     // ── 编辑 (editing) — the shared half ────────────────────────────────────────
@@ -5847,7 +6124,8 @@ return {
         } else if (type === 'markdown') {
           var md = el('div', 'markdown');
           // opts.path lets relative image/svg links resolve next to the doc.
-          md.innerHTML = mdToHtml(data.content, { path: path });
+          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin);
+        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId() });
           area.appendChild(md);
           typesetMath(md);
           typesetMermaid(md);
@@ -7008,7 +7286,24 @@ return {
     // the poll interval and its「自动刷新」switch, whether the 文件树 tab exists,
     // and the default divider position.
     var _pollTimer = null;
+    // The document skin (src/shared/skins.js): one style tag for the whole page,
+    // rewritten when the setting changes. A skin is a few dozen rules scoped by
+    // the class the Markdown root carries, so switching one costs a textContent
+    // write — not a re-render of every open document.
+    var SKIN_STYLE_ID = "dsh-sidebar-frog-skin";
+    function applyMarkdownSkin() {
+      var css = markdownSkinCss(SETTINGS.markdownSkin);
+      var existing = document.getElementById(SKIN_STYLE_ID);
+      if (!css) { if (existing && existing.parentNode) existing.parentNode.removeChild(existing); return; }
+      if (existing) { if (existing.textContent !== css) existing.textContent = css; return; }
+      var tag = document.createElement("style");
+      tag.id = SKIN_STYLE_ID;
+      tag.setAttribute("data-plugin", "dsh-sidebar-frog");
+      tag.textContent = css;
+      document.head.appendChild(tag);
+    }
     function applySettings() {
+      applyMarkdownSkin();
       var wanted = SETTINGS.autoRefresh !== false;
       if (wanted && !_pollTimer) _pollTimer = setInterval(load, 2000);
       else if (!wanted && _pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
@@ -7113,7 +7408,8 @@ return {
         path: '/dsh-sidebar-frog/media',
         handler: async (req, res) => {
           if (rejectRequest(req, res)) return
-          const path = parseQuery(req.url).path || ''
+          const query = parseQuery(req.url)
+          const path = query.path || ''
           const fs = ctx.get('fs')
           if (!fs || !path) {
             res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -7121,8 +7417,22 @@ return {
             return
           }
           try {
+            // A relative path is resolved against the WORKSPACE of the session
+            // that is showing it, not against the sandbox root: a Markdown
+            // document's own images arrive here document-relative
+            // (`docs/logo/logo.svg` for a README at the workspace root), and the
+            // sandbox root is not necessarily that workspace — resolving against
+            // it answered 404 for every local image in the document, which reads
+            // as a broken image rather than as a routing mistake.
+            //
+            // `sessionId` is what the client already knows: it is on every host
+            // call (see host.call in src/client/body.js) and the popout page reads
+            // it from localStorage. An unnamed request still resolves the same way
+            // (resolveCwd falls back to the most recent session's workspace), and
+            // an absolute path ignores the root entirely.
             const policy = ctx.get('sandboxPolicy')
-            const cwd = policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
+            const fallback = policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
+            const cwd = (await resolveCwd(query.sessionId || '')) || fallback
             const target = await fs.resolve(path, cwd ? { cwd: cwd } : undefined)
             const info = await fs.stat(target)
             if (!info || info.type !== 'file') {

@@ -309,15 +309,51 @@
       })
     }
 
+    // ── The document skin ───────────────────────────────────────────────────
+    // Which platform typography rendered Markdown wears (see src/shared/skins.js
+    // for the styles themselves and why they carry no colors). Only the SELECTED
+    // skin's CSS is on the page, in one tag: a skin is a few dozen rules scoped by
+    // the class the Markdown root carries, so switching skins is a textContent
+    // write rather than a re-render of every open document.
+    const SKIN_STYLE_ID = 'dsh-sidebar-frog-skin'
+    const syncMarkdownSkin = () => {
+      if (typeof document === 'undefined') return
+      const css = markdownSkinCss(settingsStore.get().markdownSkin)
+      const existing = document.getElementById(SKIN_STYLE_ID)
+      if (!css) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+        return
+      }
+      if (existing) {
+        if (existing.textContent !== css) existing.textContent = css
+        return
+      }
+      const tag = document.createElement('style')
+      tag.id = SKIN_STYLE_ID
+      // The same attribute the panel's own stylesheet carries, so a hot-swapped
+      // bundle replaces this one too instead of leaving a stale skin behind.
+      tag.setAttribute('data-plugin', 'dsh-sidebar-frog')
+      tag.textContent = css
+      document.head.appendChild(tag)
+    }
+
     const MarkdownView = (props) => {
       const ref = React.useRef(null)
       const content = props.content == null ? '' : String(props.content)
       const mdPath = props.path || ''
+      // The session the document is read in. Its workspace is what the media
+      // route resolves a document-relative image against (see mdMedia in
+      // src/shared/markdown.js), so it travels with the render.
+      const mdSession = props.sessionId || currentSessionId()
+      // The chosen skin is a SETTING, and the view re-renders when it changes:
+      // the class on the root is what selects its rules, so a switch repaints
+      // immediately instead of needing a reload.
+      const skin = useSettings().markdownSkin
       React.useEffect(() => {
         const node = ref.current
         if (!node) return
         // opts.path lets relative image/svg links resolve next to the doc.
-        node.innerHTML = mdToHtml(content, { path: mdPath })
+        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession })
         let alive = true
         renderMermaidIn(node)
         renderJSXGraphIn(node)
@@ -327,8 +363,8 @@
           mj.typesetPromise([node]).catch(() => {})
         })
         return () => { alive = false }
-      }, [content, mdPath])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' })
+      }, [content, mdPath, mdSession, skin])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) })
     }
 
     const PdfView = (props) => {
@@ -745,7 +781,7 @@
       } else if (type === 'pdf') {
         body.push(React.createElement(PdfView, { key: 'pdf', path: p.path || '' }))
       } else if (type === 'markdown') {
-        body.push(React.createElement(MarkdownView, { key: 'md', content: p.content, path: p.path || '' }))
+        body.push(React.createElement(MarkdownView, { key: 'md', content: p.content, path: p.path || '', sessionId: p.sessionId || '' }))
       } else if (type === 'table') {
         body.push(React.createElement(TableView, { key: 'table', content: p.content, path: p.path || '' }))
       } else if (type === 'audio' || type === 'video') {

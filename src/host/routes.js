@@ -60,7 +60,8 @@
         path: '/dsh-sidebar-frog/media',
         handler: async (req, res) => {
           if (rejectRequest(req, res)) return
-          const path = parseQuery(req.url).path || ''
+          const query = parseQuery(req.url)
+          const path = query.path || ''
           const fs = ctx.get('fs')
           if (!fs || !path) {
             res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -68,8 +69,22 @@
             return
           }
           try {
+            // A relative path is resolved against the WORKSPACE of the session
+            // that is showing it, not against the sandbox root: a Markdown
+            // document's own images arrive here document-relative
+            // (`docs/logo/logo.svg` for a README at the workspace root), and the
+            // sandbox root is not necessarily that workspace — resolving against
+            // it answered 404 for every local image in the document, which reads
+            // as a broken image rather than as a routing mistake.
+            //
+            // `sessionId` is what the client already knows: it is on every host
+            // call (see host.call in src/client/body.js) and the popout page reads
+            // it from localStorage. An unnamed request still resolves the same way
+            // (resolveCwd falls back to the most recent session's workspace), and
+            // an absolute path ignores the root entirely.
             const policy = ctx.get('sandboxPolicy')
-            const cwd = policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
+            const fallback = policy && typeof policy.workspaceRoot === 'string' ? policy.workspaceRoot : undefined
+            const cwd = (await resolveCwd(query.sessionId || '')) || fallback
             const target = await fs.resolve(path, cwd ? { cwd: cwd } : undefined)
             const info = await fs.stat(target)
             if (!info || info.type !== 'file') {

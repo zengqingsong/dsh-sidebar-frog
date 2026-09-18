@@ -223,18 +223,20 @@
     }
 
     // The session the shell itself calls BLANK: one that has never run a turn.
-    // Read from the same snapshot the product reads (`sessions.list`), and only a
-    // literal `blank: true` counts — an older shell whose summaries say nothing
-    // is left alone rather than guessed at.
+    // The id comes from the SAME reader the panel uses everywhere else
+    // (currentSessionId in src/client/core.js) — the list snapshot has no
+    // `current` field to read, and a private second reader is how this one came
+    // to answer '' forever — and only a literal `blank: true` counts: an older
+    // shell whose summaries say nothing is left alone rather than guessed at.
     const blankSessionId = () => {
       try {
         const sessions = ctx.get('sessions')
         const list = sessions && sessions.list
         if (!list || typeof list.getSnapshot !== 'function') return ''
+        const id = currentSessionId()
+        if (!id) return ''
         const snap = list.getSnapshot()
-        const id = snap && (snap.current != null ? snap.current : snap.active)
-        if (typeof id !== 'string' || !id) return ''
-        const summary = snap.byId && snap.byId[id]
+        const summary = snap && snap.byId && snap.byId[id]
         return summary && summary.blank === true ? id : ''
       } catch (e) { return '' }
     }

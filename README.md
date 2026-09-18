@@ -20,16 +20,17 @@ Forked from [e2mcc/dsh-popout-sidebar](https://github.com/e2mcc/dsh-popout-sideb
 - **MIT** · zero runtime dependencies · **no network requests** · no telemetry.
 - Reads and writes only inside the session workspace. Every data route is fenced with the browser cookie exactly the way the product's own `/api` is, and answers `401` without it.
 - Every preview library is **bundled**, so it works offline, on an intranet, behind no CDN.
-- Targets DSH `0.1.5-rc.2` on the `web` profile. Installing runs **no build script**.
+- Targets DSH `0.1.6-alpha.2` on the `web` profile. Installing runs **no build script**.
 
 ## Highlights
 
 | | What | Why it matters |
 |---|---|---|
 | 🖥️ | Pop out to a second monitor | One click moves the whole sidebar into its own browser tab. Session, workspace, settings and the divider position are shared, so the two windows never drift apart. |
+| 🎨 | Markdown skins and raw HTML | Rendered Markdown can wear another platform's document typography — GitHub, WeChat, Zhihu — alongside the default, picked from this plugin's own section in Settings (the Markdown document skin row); a skin changes layout and structure only, so its colors still come from the theme and it holds in light and dark alike, and it applies to the panel, the system sidebar's document tab and the popout page at once. The raw HTML a README is built from renders too: a picture element with a dark/light source, a plain img, and the badge shape where an image sits inside a link — with relative image paths resolved against the document's own directory. |
 | 📦 | Previews that work offline | Code, Markdown with math and diagrams, PDF, HTML, images, sortable CSV tables, Word / Excel / PowerPoint, and audio and video with HTTP Range. Every renderer is bundled — no CDN, no network call. |
 | 🌳 | An artifact ledger | Files the agent wrote or edited appear on their own, including files produced indirectly by a shell command. Edited files keep their before/after hunks, and Undo lives there. |
-| ↔️ | The workspace file tree | Takes over the system sidebar's own Files tab, so `@`-references into the composer, the context menu and per-directory refresh sit where you already look. |
+| ↔️ | The workspace file tree | Takes over the system sidebar's own Files tab, so `@`-references into the composer, the context menu, per-directory refresh and deleting a single file sit where you already look. |
 | ✏️ | Editing and saving in place | Markdown, plain text and CSV open in a CodeMirror editor with `Ctrl+S`. The save is fenced to the workspace, checked against the version you opened, and puts the file's own line endings and byte-order mark back. |
 | 🌿 | A read-only Git slice | Branch, ahead/behind, and the changed / staged / untracked / conflicted lists, with a line-level diff against HEAD for any file. Read-only is a hard boundary: no staging, no commit, no checkout, no discard. |
 
@@ -84,7 +85,8 @@ dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
 
 - **Popout page.** `/dsh-sidebar-frog` is a standalone two-column page — preview on the left, ledger or file tree on the right, with a draggable divider. It is a normal tab, so you can drag it to another monitor, and it stays in sync with the sidebar through a `storage` bridge. The `@` button on the popout page writes the reference straight into the main window's composer; if that window is gone, it falls back to the clipboard.
 - **Artifact ledger.** Successful `write` and `edit` calls are recorded as they happen, with the file's type, its change letter and its before/after text. Shell commands are covered too: the workspace is fingerprinted before and after `bash` / `pwsh` runs, so a chart or a report produced by a script is picked up as well. Removing an entry and undoing a change both go through the same bounded history.
-- **File tree.** Expand, collapse, filter, keyboard navigation, per-directory refresh (the toolbar refresh keeps your expansion state; `Shift`-click reloads everything), and a context menu with copy path, copy relative path, `@`-reference, refresh this folder, expand/collapse all, and delete for files and folders (with a confirmation, and the host fencing every deletion to the session workspace). Expansion state survives reloads.
+- **File tree.** Expand, collapse, filter, keyboard navigation, per-directory refresh (the toolbar refresh keeps your expansion state; `Shift`-click reloads everything), and a context menu with copy path, copy relative path, `@`-reference, refresh this folder, expand/collapse all, and delete for the single row you right-clicked. Expansion state survives reloads.
+- **Deleting from the tree.** Right-click one file — or one folder, which goes recursively — and that entry alone is removed from disk; the popout page offers the same item. The menu item only arms the action: a dialog that names the target has to be confirmed, and `Enter` / `Esc` run or cancel it. Every deletion is fenced by the host to the session workspace, which refuses the workspace root, a path outside it, a socket or a FIFO, and a locked file, and answers with its reason instead of failing silently. `清除` in the artifact ledger is deliberately a different thing: it drops the in-memory record and never touches disk.
 - **Previews.** Code with syntax highlighting, Markdown with MathJax, Mermaid and JSXGraph, PDF, HTML, images, CSV and TSV as sortable tables, Word / Excel / PowerPoint rendered fully offline, and audio and video streamed with byte ranges so the scrubber actually works. A file it cannot render gets a short explanation instead of mojibake.
 - **Renderers lent to the system sidebar.** The same Markdown, table and Office renderers register into the product's own document-preview registry, so the system's Markdown preview gains math and diagrams, spreadsheets stop being one long line of text, and Word / Excel / PowerPoint become readable there too. Each of the three is a separate switch, and the settings page states which ones actually took effect.
 - **Editing and saving.** Markdown, plain text and CSV are editable in the panel or on the popout page. A save that conflicts with a change made in the meantime is refused with a clear choice rather than written over, and it joins the same undo history as the agent's edits — so Undo takes your change back too.
@@ -107,6 +109,7 @@ The built-in browser view that earlier versions carried has been **removed**. It
 | Render system Office documents with this plugin | on | Lend the Office reader for `docx`, `xlsx` and `pptx`, which the system cannot display otherwise. It only affects the system sidebar; this plugin's own panel renders Office either way. |
 | Default panel width | 26% | The floating panel's width when expanded, 20–85% of the window. On the native sidebar the width belongs to the system, so this is not shown. |
 | Minimum panel width | 20% | The floating panel's floor, 20–60%. File names stay readable regardless, so they are never ellipsised at small window sizes. |
+| Markdown document skin | Default (follows the theme) | The typography rendered Markdown wears: Default / GitHub / WeChat / Zhihu. Layout and structure only — colors come from the current theme, so a skin is right in light and dark alike. Applies to the sidebar panel, the system sidebar's document tab and the popout page together, with immediate effect. |
 | Popout preview width | 80% | The preview's share of the split on the popout page, 20–80%. Dragging the divider adjusts it temporarily. |
 
 ## How it works
@@ -145,7 +148,7 @@ Four checks stand behind that, and they are independent on purpose — each one 
 - **The working tree**, through `dsh-plugin-verify` (above): 7/7 waterfall, `tools/result` clean, no bare `child_process` spawn, no `single`-slot registration.
 - **The packed artifact**, which is what a marketplace actually installs: `npm pack`, then `dsh plugin --profile headless add <the tarball>`. pnpm installs it, the profile's `dsh.profile.bundles` gains `dsh-sidebar-frog` beside the shipped bundles, and the host logs the same build id out of `node_modules` rather than out of a checkout — the loop still ends 7/7. Nothing on that path runs a build script, and the only step that needs the network is the fetch.
 - **The registry's own admission test**: `dsh --profile headless --dump-config` exits 0 with the package installed — the gate `awesome-dsh-plugins` applies before it will list anything as verified.
-- **Every push, on Linux and Windows**: the guard suite, 178 assertions plus 28 cases driving the pop-out page in real Chrome.
+- **Every push, on Linux and Windows**: the guard suite, 188 assertions plus 28 cases driving the pop-out page in real Chrome.
 
 ## Development
 
@@ -168,7 +171,7 @@ The running build is identified by a short id. The host prints it on startup and
 
 Written and maintained by [曾青松 (Zeng Qingsong)](https://github.com/zengqingsong).
 
-It began as a fork of [e2mcc/dsh-popout-sidebar](https://github.com/e2mcc/dsh-popout-sidebar) by Qinyun Cai, whose upstream license notice is preserved unchanged in [LICENSE](./LICENSE). Since then the plugin has grown an artifact ledger, the file-tree takeover of the system sidebar, the offline preview and Office readers, editing and saving, the read-only Git slice, and the renderers lent back to the system.
+It began as a fork of [e2mcc/dsh-popout-sidebar](https://github.com/e2mcc/dsh-popout-sidebar) by Qinyun Cai, whose upstream license notice is preserved unchanged in [LICENSE](./LICENSE). Since then the plugin has grown an artifact ledger, the file-tree takeover of the system sidebar, the offline preview and Office readers, editing and saving, the read-only Git slice, and the renderers lent back to the system — most recently, Markdown document skins and raw HTML (`<picture>` and badge image links), plus the fix for "open in the system sidebar" failing because the plugin could not read the current session.
 
 The bundled renderers are third-party work, used under their own licenses, with their texts kept under `src/vendor/`: pdf.js, MathJax, Mermaid, JSXGraph, CodeMirror, docx-preview, JSZip, SheetJS and the PowerPoint renderer.
 

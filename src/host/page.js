@@ -72,6 +72,15 @@ const page = String.raw`<!doctype html>
     color-scheme: light;
     --p-bg: rgb(255, 255, 255);
     --p-bg-layer-1: rgb(255, 255, 255);
+    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
+       onto this page own palette: one skin stylesheet then serves the panel,
+       the shell document tab and this page. */
+    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+    --dsw-alias-border-l1: var(--p-border-l1);
+    --dsw-alias-border-l2: var(--p-border-l2);
+    --dsw-alias-border-l3: var(--p-border-l2);
+    --dsw-alias-label-primary: var(--p-text);
+    --dsw-alias-label-secondary: var(--p-text-secondary);
     --p-border-l1: rgba(0, 0, 0, 0.04);
     --p-border-l2: rgba(0, 0, 0, 0.1);
     --p-text: rgb(15, 17, 21);
@@ -95,6 +104,15 @@ const page = String.raw`<!doctype html>
     color-scheme: dark;
     --p-bg: rgb(21, 21, 23);
     --p-bg-layer-1: rgb(35, 35, 36);
+    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
+       onto this page own palette: one skin stylesheet then serves the panel,
+       the shell document tab and this page. */
+    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+    --dsw-alias-border-l1: var(--p-border-l1);
+    --dsw-alias-border-l2: var(--p-border-l2);
+    --dsw-alias-border-l3: var(--p-border-l2);
+    --dsw-alias-label-primary: var(--p-text);
+    --dsw-alias-label-secondary: var(--p-text-secondary);
     --p-border-l1: rgba(255, 255, 255, 0.06);
     --p-border-l2: rgba(255, 255, 255, 0.12);
     --p-text: rgb(249, 250, 251);
@@ -237,6 +255,10 @@ const page = String.raw`<!doctype html>
   .markdown pre { background: var(--p-code-bg); padding: 12px 14px; border-radius: 6px; overflow: auto; }
   .markdown pre code { background: transparent; padding: 0; }
   .markdown img { max-width: 100%; }
+.markdown picture { max-width: 100%; }
+.markdown picture > img { max-width: 100%; height: auto; }
+.markdown [align="center"] { text-align: center; }
+.markdown [align="right"] { text-align: right; }
   .markdown blockquote { border-left: 3px solid var(--p-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--p-text-secondary); }
   .markdown ul, .markdown ol { padding-left: 24px; }
   .markdown a { color: var(--p-accent); }
@@ -678,6 +700,7 @@ const page = String.raw`<!doctype html>
       setTimeout(function () { finish(false); }, BRIDGE_ACK_TIMEOUT_MS);
     }
 @@markdown@@
+@@skins@@
 @@editor@@
 
     // Change review in the popout tab: the same line-per-row diff the sidebar
@@ -1528,7 +1551,8 @@ const page = String.raw`<!doctype html>
         } else if (type === 'markdown') {
           var md = el('div', 'markdown');
           // opts.path lets relative image/svg links resolve next to the doc.
-          md.innerHTML = mdToHtml(data.content, { path: path });
+          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin);
+        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId() });
           area.appendChild(md);
           typesetMath(md);
           typesetMermaid(md);
@@ -2689,7 +2713,24 @@ const page = String.raw`<!doctype html>
     // the poll interval and its「自动刷新」switch, whether the 文件树 tab exists,
     // and the default divider position.
     var _pollTimer = null;
+    // The document skin (src/shared/skins.js): one style tag for the whole page,
+    // rewritten when the setting changes. A skin is a few dozen rules scoped by
+    // the class the Markdown root carries, so switching one costs a textContent
+    // write — not a re-render of every open document.
+    var SKIN_STYLE_ID = "dsh-sidebar-frog-skin";
+    function applyMarkdownSkin() {
+      var css = markdownSkinCss(SETTINGS.markdownSkin);
+      var existing = document.getElementById(SKIN_STYLE_ID);
+      if (!css) { if (existing && existing.parentNode) existing.parentNode.removeChild(existing); return; }
+      if (existing) { if (existing.textContent !== css) existing.textContent = css; return; }
+      var tag = document.createElement("style");
+      tag.id = SKIN_STYLE_ID;
+      tag.setAttribute("data-plugin", "dsh-sidebar-frog");
+      tag.textContent = css;
+      document.head.appendChild(tag);
+    }
     function applySettings() {
+      applyMarkdownSkin();
       var wanted = SETTINGS.autoRefresh !== false;
       if (wanted && !_pollTimer) _pollTimer = setInterval(load, 2000);
       else if (!wanted && _pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }

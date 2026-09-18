@@ -178,7 +178,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = 'adfb4d86'
+          const BUILD = '84a506d3'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -319,6 +319,12 @@ window.__ModuleLoader__.load({
       // switch is about the SHELL's sidebar, not about this plugin's own previews.
       // See src/client/docpreview.js and src/shared/office.js.
       nativeOffice: true,
+      // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the
+      // platform typographies in src/shared/skins.js (GitHub, 微信, 知乎). Typography
+      // and layout only — colors come from the theme, so a skin is right in light and
+      // dark alike. Applied to the panel, the shell's own document tab and the popout
+      // page from this one value; see markdownSkinClass.
+      markdownSkin: 'default',
     };
 
     var SETTINGS_RANGES = {
@@ -327,6 +333,24 @@ window.__ModuleLoader__.load({
       defaultPanelWidth: [20, 85],
       minPanelWidth: [20, 60],
       previewHeight: [20, 80],
+    };
+
+    // Settings whose value is one of a fixed set of names rather than a number.
+    // EVERY string-valued setting must be listed here WITH its fallback among the
+    // allowed names, or it can never be changed at all:
+    // clampSetting reads a setting through parseInt, so a name like "github"
+    // arrives as NaN and comes back out as the DEFAULT — which is exactly how the
+    // Markdown skin picker shipped unselectable (the choice was stored, read back as
+    // the default, and the control snapped back under the user's pointer).
+    //
+    // The list is a literal on purpose, not a reference to MD_SKIN_ORDER in
+    // src/shared/skins.js: this module is evaluated BEFORE the skins module in both
+    // bundles (the popout page reads its settings at the top of its script), so a
+    // cross-reference would read an uninitialized var. The two are held together by
+    // a guard in scripts/check.js instead — a copy that can be checked beats a
+    // coupling that cannot be loaded.
+    var SETTINGS_CHOICES = {
+      markdownSkin: ['default', 'github', 'wechat', 'zhihu'],
     };
 
     function clampSetting(key, value) {
@@ -338,7 +362,17 @@ window.__ModuleLoader__.load({
       return Math.max(range[0], Math.min(range[1], n));
     }
 
-    // Fills in defaults, drops unknown keys, coerces booleans and clamps numbers.
+    // One of a fixed set of names: an unknown or missing name is the default, so a
+    // hand-edited localStorage entry degrades to a usable value instead of leaving a
+    // setting nothing can interpret.
+    function choiceSetting(key, value) {
+      var allowed = SETTINGS_CHOICES[key] || [];
+      var text = typeof value === 'string' ? value : '';
+      return allowed.indexOf(text) >= 0 ? text : DEFAULT_SETTINGS[key];
+    }
+
+    // Fills in defaults, drops unknown keys, and normalizes every value by its own
+    // kind — booleans coerced, numbers clamped, names checked against their list.
     // Applied on both sides of every read and write, so a malformed entry (partial
     // JSON, a string where a number belongs, 5000%) degrades to a usable object
     // instead of propagating.
@@ -347,7 +381,9 @@ window.__ModuleLoader__.load({
       Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
         var fallback = DEFAULT_SETTINGS[key];
         var value = raw && Object.prototype.hasOwnProperty.call(raw, key) ? raw[key] : fallback;
-        out[key] = typeof fallback === 'boolean' ? !!value : clampSetting(key, value);
+        if (typeof fallback === 'boolean') out[key] = !!value;
+        else if (typeof fallback === 'string') out[key] = choiceSetting(key, value);
+        else out[key] = clampSetting(key, value);
       });
       return out;
     }
@@ -1881,7 +1917,14 @@ window.__ModuleLoader__.load({
     // Rewrite one raw <tag ...> opener (no content): drops on* handlers and other
     // dangerous attributes, scrubs attribute values, and escapes what remains so
     // the tag cannot be reinterpreted. Returns the sanitized opener string.
-    function sanitizeHtmlTag(open) {
+    //
+    // opts (dir/media, see mdMedia) additionally REBASES the URLs the tag carries:
+    // a raw <img src="docs/logo/logo.svg"> in a Markdown file is relative to THAT
+    // file, and left alone it resolved against the app's own URL — where it 404s, so
+    // the image silently did not appear. ![alt](relative.svg) already went through
+    // mdMedia; raw HTML images now do too. Omitted opts (no document path) keep the
+    // old behavior: no rebasing.
+    function sanitizeHtmlTag(open, opts) {
       var nm = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(open) || [];
       var name = nm[1] || '';
       var body = open.slice(1, -1).replace(/^[a-zA-Z][a-zA-Z0-9-]*/, '');
@@ -1898,6 +1941,10 @@ window.__ModuleLoader__.load({
         var q = raw.charAt(0);
         if (q === '"' || q === '\'') raw = raw.slice(1, -1);
         var safe = sanitizeAttrValue(raw);
+        if (opts) {
+          if (/^(src|poster)$/i.test(an)) safe = mdMedia(safe, opts);
+          else if (/^srcset$/i.test(an)) safe = mdRebaseSrcset(safe, opts);
+        }
         attrs.push(an + '="' + safe.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"');
       }
       return '<' + name + (attrs.length ? ' ' + attrs.join(' ') : '') + '>';
@@ -1910,7 +1957,43 @@ window.__ModuleLoader__.load({
       details: 1, div: 1, figure: 1, figcaption: 1, summary: 1, p: 1,
       ul: 1, ol: 1, li: 1, dl: 1, dt: 1, dd: 1,
       table: 1, thead: 1, tbody: 1, tfoot: 1, tr: 1, th: 1, td: 1,
+      // <picture> is the light/dark image switch GitHub READMEs use — a <source
+      // media="(prefers-color-scheme: dark)"> beside a fallback <img>. It is
+      // gathered as a block so a multi-line one survives (line-by-line paragraph
+      // handling split it), and rendered by renderPicture.
+      picture: 1,
     };
+    // A <picture> element, rebuilt from its own children: the <source> elements and
+    // the fallback <img> are sanitized and their URLs rebased (see sanitizeHtmlTag),
+    // and the browser keeps making the light/dark choice itself — that IS the
+    // element's contract, and re-implementing it here would only disagree with the
+    // engine on the cases it already handles (width media queries, image formats).
+    // Anything else inside is escaped: a <picture> holds sources and an image, so
+    // stray text or markup is not silently swallowed.
+    function renderPicture(block, opts) {
+      var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
+      var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var afterOpen = open ? block.slice(open.index + open[0].length) : block;
+      var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
+      var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
+      var out = [];
+      var re = /<(?:source|img)\b[^>]*>/gi;
+      var m;
+      var last = 0;
+      while ((m = re.exec(inner))) {
+        if (m.index > last) {
+          var gap = inner.slice(last, m.index);
+          if (gap.trim()) out.push(htmlEscape(gap));
+        }
+        out.push(sanitizeHtmlTag(m[0], opts));
+        last = m.index + m[0].length;
+      }
+      if (last < inner.length) {
+        var tail = inner.slice(last);
+        if (tail.trim()) out.push(htmlEscape(tail));
+      }
+      return opener + out.join('') + '</picture>';
+    }
     // Collect the raw source of a block-level HTML element: starts at its opening
     // tag (already on the current line) and runs until the matching closing tag
     // (case-insensitive, closer-tag), counting nested openers so a nested
@@ -1949,7 +2032,7 @@ window.__ModuleLoader__.load({
         var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
         var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
         cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-        out.push(cellAttr + mdInline(mdEscape(cellText), opts) + '</' + m[1] + '>');
+        out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
         last = m.index + m[0].length;
       }
       if (last < inner.length) out.push(htmlEscape(inner.slice(last)));
@@ -1977,14 +2060,15 @@ window.__ModuleLoader__.load({
         inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
       }
       if (tag === 'tr') return renderTr(block, opts);
+      if (tag === 'picture') return renderPicture(block, opts);
       if (INLINE_BLOCK_TAGS[tag]) {
         var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-        return openTag + mdInline(mdEscape(text), opts) + closeTag;
+        return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
       }
       return openTag + mdToHtml(inner, opts) + closeTag;
     }
 
-    function mdEscape(s) {
+    function mdEscape(s, opts) {
       s = String(s);
       // Protect whitelisted raw inline HTML so the escaping below cannot turn it
       // into visible entity text. Whole elements (opener + content + closer) are
@@ -1993,15 +2077,21 @@ window.__ModuleLoader__.load({
       //     i, em, u, s, small, mark, del, ins, q, span, font, abbr, a — with
       //     any attribute list (colors, sizes, href…); each opener is sanitized
       //     (on* handlers and script-ish URLs dropped, values scrubbed)
-      //   - void: br, hr, wbr
+      //   - void: br, hr, wbr, and img — an image's src is REBASED onto the media
+      //     route when opts carries one (see sanitizeHtmlTag), which is what makes a
+      //     raw <img src="docs/logo/logo.svg"> in a README actually appear
+      //   - picture: the whole element (sources + fallback image) is rebuilt by
+      //     renderPicture, so a <picture> inside a paragraph renders as the image
+      //     instead of as visible angle brackets
       //   - single-line svg (sanitized)
       var toks = [];
-      s = s.replace(/<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
+      s = s.replace(/<picture\b[^>]*>[\s\S]*?<\/picture>|<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
         if (/^<svg/i.test(m)) { m = sanitizeSvg(m); }
+        else if (/^<picture/i.test(m)) { m = renderPicture(m, opts); }
         else if (/^<(kbd|sub|sup)>/i.test(m)) { /* content is plain text — keep as-is */ }
         else {
           var gi = m.indexOf('>');
-          m = sanitizeHtmlTag(m.slice(0, gi + 1)) + m.slice(gi + 1);
+          m = sanitizeHtmlTag(m.slice(0, gi + 1), opts) + m.slice(gi + 1);
         }
         toks.push(m);
         return '\x01K' + toks.length + '\x02';
@@ -2064,14 +2154,35 @@ window.__ModuleLoader__.load({
     // (scheme:, data:, #fragment, /absolute) are passed through untouched; relative
     // targets are rebased onto the Markdown file's directory. media is only set
     // when the caller supplied opts.path (i.e. a real document is being rendered).
-    function mdMedia(url, dir, media) {
+    function mdMedia(url, opts) {
+      var media = (opts && opts.media) || '';
       if (!media) return url;
       if (/^(?:[a-z][a-z0-9+.-]*:|data:|#|\/)/i.test(url)) return url;
-      return media + encodeURIComponent(dir + url);
+      var out = media + encodeURIComponent(((opts && opts.dir) || '') + url);
+      // The session the document is being read in. The media route resolves a
+      // relative path against that session's workspace (see src/host/routes.js), so
+      // without it a document-relative image resolves against whatever the sandbox
+      // root happens to be — a 404, i.e. a silently broken image.
+      if (opts && opts.sessionId) out += '&sessionId=' + encodeURIComponent(opts.sessionId);
+      return out;
+    }
+    // srcset is a comma-separated list of "url [descriptor]" candidates, so each
+    // candidate's URL is rebased on its own and its descriptor (2x, 640w) is
+    // kept. A srcset carrying a data: URL is passed through untouched: those
+    // contain commas of their own, and splitting them would corrupt the value —
+    // and a data URL needs no rebasing anyway.
+    function mdRebaseSrcset(value, opts) {
+      var text = String(value);
+      if (!(opts && opts.media) || /data\s*:/i.test(text)) return text;
+      return text.split(',').map(function (part) {
+        var m = /^(\s*)(\S+)([\s\S]*)$/.exec(part);
+        if (!m) return part;
+        return m[1] + mdMedia(m[2], opts) + m[3];
+      }).join(',');
     }
     function mdCell(src, tag, align, opts) {
       var st = align ? ' style="text-align:' + align + '"' : '';
-      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim()), opts) + '</' + tag + '>';
+      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
     }
 
     // ── Inline pass ─────────────────────────────────────────────────────────
@@ -2090,7 +2201,7 @@ window.__ModuleLoader__.load({
       // Images and links are shelved as tokens while auto-linking runs, so a URL
       // inside a rendered href/src cannot be wrapped in a second anchor.
       s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-        kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts.dir || '', opts.media || '') + '">');
+        kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts) + '">');
         return '\x01A' + kept.length + '\x02';
       });
       s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
@@ -2115,8 +2226,29 @@ window.__ModuleLoader__.load({
         var href = /^www\./i.test(core) ? 'http://' + core : core;
         return pre + '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + core + '</a>' + suffix;
       });
-      s = s.replace(/\x01A(\d+)\x02/g, function (m, d) { return kept[Number(d) - 1] || m; });
-      return s.replace(/\x01M(\d+)\x02/g, function (m, d) { return math[Number(d) - 1] || m; });
+      // Tokens can nest — a badge is [![alt](image)](link), so the link token's
+      // replacement text CONTAINS the image token. String.replace never rescans
+      // what it just wrote, so a single pass left the inner token in the output and
+      // the badge rendered as the literal characters "A1" instead of the image.
+      // Restoring repeatedly until nothing is left fixes every nesting depth, and the
+      // bound is only there so a malformed token cannot spin.
+      s = restoreTokens(s, kept, 'A');
+      return restoreTokens(s, math, 'M');
+    }
+
+    // Replace the \x01<t>\x02 tokens with what they stand for, repeatedly: a token's
+    // replacement text may hold another token (see the badge note above). An
+    // out-of-range index is left as-is rather than dropped — a missing token must not
+    // be able to delete text.
+    function restoreTokens(s, list, letter) {
+      var re = new RegExp('\\x01' + letter + '(\\d+)\\x02');
+      var once = function (text) {
+        return text.replace(new RegExp('\\x01' + letter + '(\\d+)\\x02', 'g'), function (m, d) {
+          return list[Number(d) - 1] || m;
+        });
+      };
+      for (var pass = 0; pass < 6 && re.test(s); pass += 1) s = once(s);
+      return s;
     }
 
     // ── Lists ───────────────────────────────────────────────────────────────
@@ -2157,7 +2289,7 @@ window.__ModuleLoader__.load({
         if (task) {
           html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
         } else {
-          html.push('<li>' + mdInline(mdEscape(body), opts));
+          html.push('<li>' + mdInline(mdEscape(body, opts), opts));
         }
         open = true;
       };
@@ -2165,7 +2297,7 @@ window.__ModuleLoader__.load({
       // a second block in it after a blank line. Both are item text — this renderer
       // has no indented-code rule, so that is the least surprising reading.
       var continuation = function (line) {
-        html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, '')), opts));
+        html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, ''), opts), opts));
       };
       while (i < lines.length) {
         var mark = mdListMarker(lines[i]);
@@ -2211,6 +2343,11 @@ window.__ModuleLoader__.load({
       var mdOpts = {
         dir: opts.dir != null ? opts.dir : (lastSlash >= 0 ? docPath.slice(0, lastSlash + 1) : ''),
         media: opts.media != null ? opts.media : (opts.path ? '/dsh-sidebar-frog/media?path=' : ''),
+        // Carried through to every media URL this render produces (see mdMedia).
+        sessionId: opts.sessionId || '',
+        // The chosen document skin (see src/shared/skins.js): the class the Markdown
+        // root carries, so a skin is pure CSS and costs the renderer nothing.
+        skin: opts.skin || '',
       };
       var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
       var out = [];
@@ -2269,7 +2406,7 @@ window.__ModuleLoader__.load({
             }
           }
           var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$') + '</div>');
+          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
           continue;
         }
         // Standalone SVG block: gather until the closing tag, then emit sanitized.
@@ -2329,7 +2466,7 @@ window.__ModuleLoader__.load({
         var hd = /^(#{1,6})\s+(.*)$/.exec(line);
         if (hd) {
           var lv = hd[1].length;
-          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2]), mdOpts) + '</h' + lv + '>');
+          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
           i += 1;
           continue;
         }
@@ -2370,15 +2507,133 @@ window.__ModuleLoader__.load({
         // '=====' cannot be anything but an underline, and today it renders as a
         // paragraph containing '=====', which is never what was meant.
         if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-          out.push('<h1>' + mdInline(mdEscape(line.trim()), mdOpts) + '</h1>');
+          out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
           i += 2;
           continue;
         }
         if (line.trim() === '') { i += 1; continue; }
-        out.push('<p>' + mdInline(mdEscape(line), mdOpts) + '</p>');
+        out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
         i += 1;
       }
       return out.join('\n');
+    }
+
+              // ── Document skins for rendered Markdown ────────────────────────────────────
+    // A skin is TYPOGRAPHY AND LAYOUT — heading rules, density, how a code block,
+    // a quote, a table and an image sit on the page — so the same document reads
+    // like the platform whose skin is chosen. It is deliberately NOT a color
+    // scheme: every color comes from the app's own design tokens
+    // (--dsw-alias-*), which is what lets one stylesheet serve the panel, the
+    // shell's document tab and the standalone popout page in both light and dark
+    // themes. A hardcoded light palette would look broken in a dark app, and the
+    // platform's own palette is not what a reader inside DSH is looking at.
+    //
+    // Portable JS (var/function, no template literals, no closing script tag): this
+    // file is inlined into the client bundle AND into the popout page's String.raw
+    // template, and a backtick or a dollar-brace in it would end that template.
+    //
+    // Every rule is scoped by the class the Markdown ROOT carries (see
+    // markdownSkinClass), so skins never reach anything else on the page.
+    //
+    // default is the shipped look (its rules live in the panel's stylesheet and
+    // the popout page's), so it contributes no CSS at all.
+
+    var MD_SKIN_DEFAULT = 'default';
+
+    var MD_SKIN_LABELS = {
+      default: '默认（跟随主题）',
+      github: 'GitHub',
+      wechat: '微信（公众号）',
+      zhihu: '知乎',
+    };
+
+    // The order the settings panel lists them in: the shipped look first, then the
+    // platforms by how often a Markdown document is written for one.
+    var MD_SKIN_ORDER = ['default', 'github', 'wechat', 'zhihu'];
+
+    var MD_SKIN_CSS = {
+      github: [
+        '.md-skin-github { font-size: 14px; line-height: 1.6; }',
+        '.md-skin-github h1 { font-size: 1.75em; border-bottom: 1px solid var(--dsw-alias-border-l2); padding-bottom: .3em; }',
+        '.md-skin-github h2 { font-size: 1.4em; border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: .3em; }',
+        '.md-skin-github h3 { font-size: 1.2em; }',
+        '.md-skin-github h4, .md-skin-github h5, .md-skin-github h6 { font-size: 1em; }',
+        '.md-skin-github h1, .md-skin-github h2, .md-skin-github h3 { margin: 20px 0 12px; }',
+        '.md-skin-github p { margin: 12px 0; }',
+        '.md-skin-github ul, .md-skin-github ol { padding-left: 2em; }',
+        '.md-skin-github li + li { margin-top: 4px; }',
+        '.md-skin-github code { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: .2em .4em; font-size: .85em; }',
+        '.md-skin-github pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 16px; line-height: 1.45; }',
+        '.md-skin-github pre code { background: transparent; padding: 0; font-size: .85em; }',
+        '.md-skin-github blockquote { border-left: .25em solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); padding: 0 1em; margin: 12px 0; }',
+        '.md-skin-github blockquote > :first-child { margin-top: 0; }',
+        '.md-skin-github blockquote > :last-child { margin-bottom: 0; }',
+        '.md-skin-github hr { border: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); height: 0; margin: 24px 0; }',
+        '.md-skin-github table { display: table; width: auto; max-width: 100%; }',
+        '.md-skin-github th, .md-skin-github td { border: 1px solid var(--dsw-alias-border-l2); padding: 6px 13px; }',
+        '.md-skin-github thead tr { background: var(--dsw-alias-bg-layer-1); }',
+        '.md-skin-github img { max-width: 100%; box-sizing: content-box; }',
+      ].join('\n'),
+      wechat: [
+        '.md-skin-wechat { font-size: 16px; line-height: 1.75; letter-spacing: .04em; }',
+        '.md-skin-wechat h1, .md-skin-wechat h2, .md-skin-wechat h3, .md-skin-wechat h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
+        '.md-skin-wechat h1 { font-size: 1.4em; margin: 26px 0 14px; }',
+        '.md-skin-wechat h2 { font-size: 1.25em; margin: 24px 0 12px; }',
+        '.md-skin-wechat h3 { font-size: 1.1em; margin: 20px 0 10px; }',
+        '.md-skin-wechat p { margin: 18px 0; }',
+        '.md-skin-wechat ul, .md-skin-wechat ol { padding-left: 1.6em; }',
+        '.md-skin-wechat li { margin: 8px 0; }',
+        '.md-skin-wechat code { background: var(--dsw-alias-bg-layer-1); padding: .15em .4em; border-radius: 3px; font-size: .9em; }',
+        '.md-skin-wechat pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 14px 16px; line-height: 1.6; }',
+        '.md-skin-wechat pre code { background: transparent; padding: 0; }',
+        '.md-skin-wechat blockquote { border-left: 3px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); padding: 12px 14px; margin: 18px 0; }',
+        '.md-skin-wechat a { text-decoration: none; border-bottom: 1px solid currentColor; }',
+        // A 公众号 lays its images out as centered blocks, and separates sections
+        // with a dashed rule rather than a solid one.
+        '.md-skin-wechat img { display: block; margin: 18px auto; }',
+        '.md-skin-wechat picture { display: block; text-align: center; }',
+        '.md-skin-wechat hr { border: 0; border-top: 1px dashed var(--dsw-alias-border-l2); margin: 28px 0; }',
+        '.md-skin-wechat table { display: table; width: 100%; font-size: .95em; }',
+        '.md-skin-wechat th, .md-skin-wechat td { border: 1px solid var(--dsw-alias-border-l1); padding: 8px 10px; }',
+      ].join('\n'),
+      zhihu: [
+        '.md-skin-zhihu { font-size: 15px; line-height: 1.7; }',
+        '.md-skin-zhihu h1, .md-skin-zhihu h2, .md-skin-zhihu h3, .md-skin-zhihu h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
+        '.md-skin-zhihu h2 { font-size: 1.3em; margin: 26px 0 12px; }',
+        '.md-skin-zhihu h3 { font-size: 1.15em; margin: 22px 0 10px; }',
+        '.md-skin-zhihu p { margin: 14px 0; }',
+        '.md-skin-zhihu code { background: var(--dsw-alias-bg-layer-1); border-radius: 3px; padding: .15em .35em; font-size: .9em; }',
+        '.md-skin-zhihu pre { border-radius: 4px; padding: 12px 16px; }',
+        '.md-skin-zhihu blockquote { border-left: 3px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-secondary); padding: 4px 16px; margin: 16px 0; }',
+        '.md-skin-zhihu img { border-radius: 4px; }',
+        '.md-skin-zhihu table { display: table; width: 100%; font-size: .95em; }',
+        '.md-skin-zhihu th, .md-skin-zhihu td { border: 1px solid var(--dsw-alias-border-l1); padding: 7px 10px; }',
+        '.md-skin-zhihu thead tr { background: var(--dsw-alias-bg-layer-1); }',
+      ].join('\n'),
+    };
+
+    // The skin actually applied: an unknown or missing name is the shipped look, so
+    // a hand-edited localStorage entry can never leave a document unstyled.
+    function markdownSkinName(name) {
+      return Object.prototype.hasOwnProperty.call(MD_SKIN_CSS, name) ? name : MD_SKIN_DEFAULT;
+    }
+
+    // The extra class the Markdown root carries. Empty for the default skin.
+    function markdownSkinClass(name) {
+      var n = markdownSkinName(name);
+      return n === MD_SKIN_DEFAULT ? '' : ' md-skin-' + n;
+    }
+
+    // The CSS for one skin: '' for the default (its rules are the base stylesheet).
+    function markdownSkinCss(name) {
+      return MD_SKIN_CSS[markdownSkinName(name)] || '';
+    }
+
+    // [{ value, label }] for the settings control, in listing order.
+    function markdownSkinOptions() {
+      return MD_SKIN_ORDER.map(function (name) {
+        return { value: name, label: MD_SKIN_LABELS[name] || name };
+      });
     }
 
               // ── 编辑 (editing) — the shared half ────────────────────────────────────────
@@ -2804,19 +3059,58 @@ window.__ModuleLoader__.load({
       return parts[parts.length - 1] || text
     }
 
-    // The current session id, read from the client sessions store. The file
-    // tree passes it to the host so it can root at the session's workspace.
+    // ── Which session is on screen ──────────────────────────────────────────
+    // The list snapshot carries NO `current`/`active` field in the DSH this
+    // plugin runs against: `SessionListState` is
+    // `{ ids, byId, phase, subagentsByParent, jobsBySession }`
+    // (@deepseek-ai/dsh-api-session-controller). Reading `snap.current` — the
+    // shape this used to assume — therefore returned '' on EVERY call, silently,
+    // for every consumer at once.
+    //
+    // What is left as the truth is the retention count: the session the MAIN
+    // VIEW holds is the session being shown, which is exactly the test the
+    // shell's own session surface makes (`isMain` in ui-session reads
+    // `list.getSnapshot().byId[id].retainedBy.mainView`). So that is what is read
+    // here, with the explicit field still honored first for a shell that has one.
+    //
+    // An empty id is not cosmetic. It roots the file tree at "the most recent
+    // session's workspace" (the host's own fallback for an unnamed request),
+    // which looks right until the user switches workspace or session; it drops
+    // the `?sessionId=` from the popout page; it makes `@引用` give up on the
+    // composer and copy to the clipboard instead; and it is why 「在系统侧边栏
+    // 打开」 refused with no reason at all.
     const currentSessionId = () => {
       try {
         const sessions = ctx.get('sessions')
         const list = sessions && sessions.list
-        if (list && typeof list.getSnapshot === 'function') {
-          const snap = list.getSnapshot()
-          const id = snap && (snap.current != null ? snap.current : snap.active)
-          return typeof id === 'string' ? id : ''
+        if (!list || typeof list.getSnapshot !== 'function') return ''
+        const snap = list.getSnapshot()
+        if (!snap) return ''
+        const explicit = snap.current != null ? snap.current : snap.active
+        if (typeof explicit === 'string' && explicit) return explicit
+        const byId = snap.byId || {}
+        const ids = Array.isArray(snap.ids) && snap.ids.length ? snap.ids : Object.keys(byId)
+        for (const id of ids) {
+          const row = byId[id]
+          if (row && row.retainedBy && row.retainedBy.mainView > 0) return id
         }
       } catch (e) {}
       return ''
+    }
+
+    // The workspace root of one session, from the same list snapshot. It is what
+    // makes an absolute path INSIDE that workspace addressable as a session file
+    // (see sessionFileAddress in src/client/docpreview.js).
+    const sessionCwd = (sessionId) => {
+      try {
+        if (typeof sessionId !== 'string' || !sessionId) return ''
+        const sessions = ctx.get('sessions')
+        const list = sessions && sessions.list
+        if (!list || typeof list.getSnapshot !== 'function') return ''
+        const snap = list.getSnapshot()
+        const row = snap && snap.byId ? snap.byId[sessionId] : null
+        return row && typeof row.cwd === 'string' ? row.cwd : ''
+      } catch (e) { return '' }
     }
 
     // Write `@path` into the current session's composer draft. Returns true on
@@ -2827,13 +3121,8 @@ window.__ModuleLoader__.load({
         const sessions = ctx.get('sessions')
         const conversation = ctx.get('conversation')
         if (!sessions || !conversation) return false
-        const list = sessions.list
-        let sessionId
-        if (list && typeof list.getSnapshot === 'function') {
-          const snap = list.getSnapshot()
-          sessionId = snap && (snap.current != null ? snap.current : snap.active)
-        }
-        if (sessionId == null) return false
+        const sessionId = currentSessionId()
+        if (!sessionId) return false
         const actx = typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined
         if (!actx) return false
         const input = conversation.input && typeof conversation.input.for === 'function' ? conversation.input.for(actx) : undefined
@@ -3480,6 +3769,15 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
 .artifacts-markdown pre code { background: transparent; padding: 0; }
 .artifacts-markdown img { max-width: 100%; }
+/* The raw-HTML shapes a README uses for its logo: <picture> (a light/dark
+   <source> beside a fallback <img>) inside <p align="center">. Alignment comes
+   from an obsolete presentational attribute, so it is stated here rather than
+   trusted to the browser; the image keeps its aspect ratio when a width/height
+   attribute pair is scaled down by max-width. */
+.artifacts-markdown picture { max-width: 100%; }
+.artifacts-markdown picture > img { max-width: 100%; height: auto; }
+.artifacts-markdown [align="center"] { text-align: center; }
+.artifacts-markdown [align="right"] { text-align: right; }
 .artifacts-markdown blockquote { border-left: 3px solid var(--dsw-alias-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--dsw-alias-label-secondary); }
 .artifacts-markdown ul, .artifacts-markdown ol { padding-left: 24px; }
 .artifacts-markdown a { color: var(--dsw-alias-state-business-primary); }
@@ -3838,6 +4136,17 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-switch input:checked + .artifacts-switch-track .artifacts-switch-thumb { background: var(--dsw-alias-bg-layer-3); transform: translate(16px); }
 .artifacts-switch input:focus-visible + .artifacts-switch-track { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
 .artifacts-setcontrol { flex: none; align-items: center; gap: 6px; display: flex; }
+/* A stacked settings row: the control sits UNDER its label rather than beside it.
+   Four skin names do not fit the control column of a settings row, and squeezing
+   them onto one line made the row unreadable — which is how an operable control
+   starts looking like one that cannot be used. */
+.artifacts-setrow.is-stacked { flex-direction: column; align-items: flex-start; gap: 8px; }
+.artifacts-setchips { flex-wrap: wrap; gap: 6px; }
+/* The skin chips: the same affordance as the panel's own chips, so a small closed
+   choice reads the same wherever it appears. */
+.artifacts-chip { padding: 4px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.artifacts-chip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .12)); color: var(--dsw-alias-label-primary); }
+.artifacts-chip.is-on { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
 .artifacts-widthinput { width: 76px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; border-radius: 6px; padding: 4px 8px; }
 .artifacts-suffix { color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 22px; }
 
@@ -4609,15 +4918,51 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       })
     }
 
+    // ── The document skin ───────────────────────────────────────────────────
+    // Which platform typography rendered Markdown wears (see src/shared/skins.js
+    // for the styles themselves and why they carry no colors). Only the SELECTED
+    // skin's CSS is on the page, in one tag: a skin is a few dozen rules scoped by
+    // the class the Markdown root carries, so switching skins is a textContent
+    // write rather than a re-render of every open document.
+    const SKIN_STYLE_ID = 'dsh-sidebar-frog-skin'
+    const syncMarkdownSkin = () => {
+      if (typeof document === 'undefined') return
+      const css = markdownSkinCss(settingsStore.get().markdownSkin)
+      const existing = document.getElementById(SKIN_STYLE_ID)
+      if (!css) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+        return
+      }
+      if (existing) {
+        if (existing.textContent !== css) existing.textContent = css
+        return
+      }
+      const tag = document.createElement('style')
+      tag.id = SKIN_STYLE_ID
+      // The same attribute the panel's own stylesheet carries, so a hot-swapped
+      // bundle replaces this one too instead of leaving a stale skin behind.
+      tag.setAttribute('data-plugin', 'dsh-sidebar-frog')
+      tag.textContent = css
+      document.head.appendChild(tag)
+    }
+
     const MarkdownView = (props) => {
       const ref = React.useRef(null)
       const content = props.content == null ? '' : String(props.content)
       const mdPath = props.path || ''
+      // The session the document is read in. Its workspace is what the media
+      // route resolves a document-relative image against (see mdMedia in
+      // src/shared/markdown.js), so it travels with the render.
+      const mdSession = props.sessionId || currentSessionId()
+      // The chosen skin is a SETTING, and the view re-renders when it changes:
+      // the class on the root is what selects its rules, so a switch repaints
+      // immediately instead of needing a reload.
+      const skin = useSettings().markdownSkin
       React.useEffect(() => {
         const node = ref.current
         if (!node) return
         // opts.path lets relative image/svg links resolve next to the doc.
-        node.innerHTML = mdToHtml(content, { path: mdPath })
+        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession })
         let alive = true
         renderMermaidIn(node)
         renderJSXGraphIn(node)
@@ -4627,8 +4972,8 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
           mj.typesetPromise([node]).catch(() => {})
         })
         return () => { alive = false }
-      }, [content, mdPath])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' })
+      }, [content, mdPath, mdSession, skin])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) })
     }
 
     const PdfView = (props) => {
@@ -5045,7 +5390,7 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       } else if (type === 'pdf') {
         body.push(React.createElement(PdfView, { key: 'pdf', path: p.path || '' }))
       } else if (type === 'markdown') {
-        body.push(React.createElement(MarkdownView, { key: 'md', content: p.content, path: p.path || '' }))
+        body.push(React.createElement(MarkdownView, { key: 'md', content: p.content, path: p.path || '', sessionId: p.sessionId || '' }))
       } else if (type === 'table') {
         body.push(React.createElement(TableView, { key: 'table', content: p.content, path: p.path || '' }))
       } else if (type === 'audio' || type === 'video') {
@@ -5182,21 +5527,37 @@ const FileTree = (props) => {
   // inside the window (see the fit effect next to the close-on-click one).
   const menuRef = React.useRef(null)
 
+  // Which session this tree is rooted at.
+  //
+  // The SEAT's own id wins whenever the shell handed one down: a native tab body
+  // is a session-scoped slot, so `props.sessionId` IS the session that tab lives
+  // in, and every host call below is fenced to that session's workspace. The
+  // root read (currentSessionId) is the fallback for the surfaces with no seat of
+  // their own — the floating panel and the standalone popout page.
+  //
+  // The distinction is not theoretical: with only the root read, an empty id made
+  // every request "unnamed", and the host answers an unnamed request with the
+  // MOST RECENT session's workspace — the right directory by luck, until the user
+  // switches workspace or session.
+  const seatSessionId = () => (props && typeof props.sessionId === 'string' && props.sessionId)
+    || currentSessionId()
+
   // Track the active session so the tree re-roots automatically when the
   // workspace changes (no manual refresh needed).
-  const [sessionId, setSessionId] = React.useState(currentSessionId())
+  const [sessionId, setSessionId] = React.useState(seatSessionId())
+  React.useEffect(() => { setSessionId(seatSessionId()) }, [props && props.sessionId])
   React.useEffect(() => {
     let list
     try { list = ctx.get('sessions') && ctx.get('sessions').list } catch (e) { }
     if (!list || typeof list.subscribe !== 'function') return
-    return list.subscribe(() => setSessionId(currentSessionId()))
+    return list.subscribe(() => setSessionId(seatSessionId()))
   }, [])
 
   // ── data ────────────────────────────────────────────────────────────────
   // Read one directory level. `path` empty ⇒ the root resolved from the session.
   const fetchDir = (path) => host.call('artifacts.listDir', {
     path: path || undefined,
-    sessionId: currentSessionId(),
+    sessionId: seatSessionId(),
   }).then((res) => (res && res.ok
     ? { entries: Array.isArray(res.entries) ? res.entries : [], path: res.path }
     : { error: (res && res.error) || '读取失败' }
@@ -5425,7 +5786,7 @@ const FileTree = (props) => {
   const doDelete = (entry) => {
     if (delBusy) return
     setDelBusy(true)
-    host.call('artifacts.delete', { path: entry.path, sessionId: currentSessionId() }).then((res) => {
+    host.call('artifacts.delete', { path: entry.path, sessionId: seatSessionId() }).then((res) => {
       setDelBusy(false)
       setConfirmDel(null)
       if (res && res.ok) {
@@ -5485,7 +5846,7 @@ const FileTree = (props) => {
     const text = String(q || '').trim()
     if (!text) { setSearch(null); return }
     setSearch({ loading: true, results: [], local: false })
-    host.call('artifacts.search', { q: text, sessionId: currentSessionId(), limit: 200 })
+    host.call('artifacts.search', { q: text, sessionId: seatSessionId(), limit: 200 })
       .then((res) => {
         if (res && res.ok && Array.isArray(res.results)) {
           setSearch({ loading: false, results: res.results, local: false, truncated: !!res.truncated })
@@ -6592,6 +6953,15 @@ const ArtifactsContent = (props) => {
   // duplicating the shell's tab strip. The floating panel has no such strip, so it
   // keeps its own (`fixedView` empty) and switches in place.
   const fixedView = (props && props.fixedView) || ''
+  // Which session this instance is showing.
+  //
+  // A NATIVE tab body is a session-scoped slot, so the shell hands it the session
+  // it was opened for (`sessionId`); that id is authoritative and is what every
+  // host call, the popout link and the shell hand-off below are keyed by. The
+  // floating panel and the standalone popout have no seat of their own, so they
+  // fall back to the root read (currentSessionId, src/client/core.js).
+  const seatSessionId = (props && typeof props.sessionId === 'string' && props.sessionId) || ''
+  const sessionId = seatSessionId || currentSessionId()
   // Which inner view is showing: pinned on a native tab, chosen by the band on the
   // floating panel. The ledger is the floating panel's first view (that is what it
   // exists for); a bare native instance with no pin also starts there.
@@ -6657,11 +7027,18 @@ const ArtifactsContent = (props) => {
   // Publish the current session id to localStorage so the standalone
   // popout tab (which has no client session store) can root its file tree
   // at the active workspace and follow workspace switches in real time.
+  //
+  // The seat's own id (see `sessionId` above) is what a native tab knows for
+  // certain, and the root read covers a change of session behind a mounted
+  // panel: the subscription below fires on it, and the ref carries the seat's
+  // value into that callback.
+  const sessionRef = React.useRef(sessionId)
+  sessionRef.current = sessionId
   React.useEffect(() => {
     const KEY = BRIDGE.session
     const write = () => {
       try {
-        const sid = currentSessionId()
+        const sid = sessionRef.current || currentSessionId()
         if (localStorage.getItem(KEY) !== sid) localStorage.setItem(KEY, sid || '')
       } catch (e) { }
     }
@@ -6703,7 +7080,7 @@ const ArtifactsContent = (props) => {
   // Background jobs come from the shell's own mirror (see useJobs), so the view
   // only shows rows while there is something to show — the same rule the shell's
   // header button follows.
-  const jobs = useJobs(currentSessionId())
+  const jobs = useJobs(sessionId)
 
   // Drawn only where the band has something to hold. The floating surface keeps
   // its view switcher whenever it has a view to switch; a native ledger tab holds
@@ -6716,7 +7093,7 @@ const ArtifactsContent = (props) => {
 
   if (!active) return null
 
-  const sid = currentSessionId()
+  const sid = sessionId
   const popoutHref = popoutHrefFor(sid)
 
   const startResize = (e) => {
@@ -6822,10 +7199,16 @@ const ArtifactsContent = (props) => {
   // Hand a file to the renderer the SHELL would pick (see openInShellSidebar in
   // src/client/docpreview.js). It can refuse — no sidebar face, no session, or an
   // address no type will open — and a silent no-op reads as a broken button, so
-  // the refusal is reported.
+  // the refusal is reported, WITH the reason the shell gave.
+  //
+  // The session is passed IN rather than looked up inside: on the native surface
+  // this instance's own seat knows it exactly (see `sessionId` above), and a
+  // hand-off addressed to another session's workspace would open the right tab
+  // over the wrong file.
   const openInShell = (path) => {
-    if (openInShellSidebar(path)) flash('已在系统侧边栏打开')
-    else flash('无法在系统侧边栏打开此文件')
+    const res = openInShellSidebar(path, sid)
+    if (res && res.ok) flash('已在系统侧边栏打开')
+    else flash(openShellFailureText(res))
   }
 
   // Opening a file from the TREE. A native tab holds one view and has no file
@@ -7098,7 +7481,14 @@ const ArtifactsContent = (props) => {
             baseVersion: preview.version || null,
             baseSize: typeof preview.size === 'number' ? preview.size : null,
             onSaved: refreshAfterRevert,
-          }, renderPreview(Object.assign({}, preview, { onUndo: undoChange, undoBusy: undoBusy, onOpenInShell: openInShell }))) : null,
+          }, renderPreview(Object.assign({}, preview, {
+            onUndo: undoChange,
+            undoBusy: undoBusy,
+            onOpenInShell: openInShell,
+            // The session the reader is in: a document-relative image is resolved
+            // against ITS workspace by the media route (see mdMedia).
+            sessionId: sid,
+          }))) : null,
         )
         : null,
       // A native tab pinned to the tree draws the tree WHATEVER the floating
@@ -7118,6 +7508,9 @@ const ArtifactsContent = (props) => {
           pinnedPath: null,
           // The artifact records double as the explorer's change letters (A/M).
           items: items,
+          // The seat's own session, so every directory read is fenced to THIS
+          // tab's workspace (see seatSessionId in src/client/filetree.js).
+          sessionId: seatSessionId,
         }),
       ) : null,
       React.createElement('div', {
@@ -7455,6 +7848,38 @@ const SettingsSection = () => {
             },
           }),
           React.createElement('span', { className: 'artifacts-suffix' }, '%'),
+        ),
+      ),
+      // The document skin: which platform typography rendered Markdown wears.
+      // It sits with the renderer switches because it belongs to the same
+      // question — how a document is DRAWN here — and it applies to all three
+      // readers at once (this panel, the shell's document tab, the popout page).
+      //
+      // A row of BUTTONS, not a <select>, for two reasons. It is the shape this
+      // app already uses for a small closed choice (外观: 浅色/深色/跟随系统), so
+      // it reads as part of the same settings page; and a native select popup is
+      // a browser widget this panel can neither style nor test — it was reported
+      // as "cannot be selected" in the running app, which no assertion here can
+      // see into. One button per skin with the current one marked: the state is a
+      // class and an aria-pressed, and choosing is an ordinary onClick.
+      React.createElement('div', { className: 'artifacts-setrow is-stacked' },
+        React.createElement('div', { className: 'artifacts-settext' },
+          React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档皮肤'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤只改排版与结构（标题线、行距、代码块、表格、图片位置），颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
+        ),
+        React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
+          markdownSkinOptions().map((opt) => {
+            const on = markdownSkinName(settings.markdownSkin) === opt.value
+            return React.createElement('button', {
+              key: opt.value,
+              type: 'button',
+              className: 'artifacts-chip' + (on ? ' is-on' : ''),
+              'data-frog-skin': opt.value,
+              'aria-pressed': on ? 'true' : 'false',
+              title: 'Markdown 文档皮肤：' + opt.label,
+              onClick: () => set('markdownSkin', opt.value),
+            }, opt.label)
+          }),
         ),
       ),
       React.createElement('div', { className: 'artifacts-setrow' },
@@ -8190,18 +8615,20 @@ const SettingsSection = () => {
     }
 
     // The session the shell itself calls BLANK: one that has never run a turn.
-    // Read from the same snapshot the product reads (`sessions.list`), and only a
-    // literal `blank: true` counts — an older shell whose summaries say nothing
-    // is left alone rather than guessed at.
+    // The id comes from the SAME reader the panel uses everywhere else
+    // (currentSessionId in src/client/core.js) — the list snapshot has no
+    // `current` field to read, and a private second reader is how this one came
+    // to answer '' forever — and only a literal `blank: true` counts: an older
+    // shell whose summaries say nothing is left alone rather than guessed at.
     const blankSessionId = () => {
       try {
         const sessions = ctx.get('sessions')
         const list = sessions && sessions.list
         if (!list || typeof list.getSnapshot !== 'function') return ''
+        const id = currentSessionId()
+        if (!id) return ''
         const snap = list.getSnapshot()
-        const id = snap && (snap.current != null ? snap.current : snap.active)
-        if (typeof id !== 'string' || !id) return ''
-        const summary = snap.byId && snap.byId[id]
+        const summary = snap && snap.byId && snap.byId[id]
         return summary && summary.blank === true ? id : ''
       } catch (e) { return '' }
     }
@@ -8601,10 +9028,44 @@ const SettingsSection = () => {
     const encodeAddressSegment = (segment) =>
       encodeURIComponent(segment).replace(/%3A/gi, ':')
 
+    // A path INSIDE the session's workspace becomes a session-relative address,
+    // which is the only spelling the shell's document tab can read: it resolves a
+    // session address against that session's workspace root. The product's own
+    // tree does exactly this (`fileAddressFor` in ui-sidebar-files strips the
+    // root off an absolute path before building the address).
+    //
+    // The tree hands us host-issued ABSOLUTE paths (the host answers with
+    // `processPath`, not with the caller's spelling), so without this the address
+    // asked the reader for `<root>/D:/…` — a path that cannot exist, in a tab that
+    // otherwise opened fine. An absolute path OUTSIDE the workspace keeps its
+    // absolute form, which is the product's own answer for that case too.
+    const workspaceRelativePath = (sessionId, path) => {
+      const root = sessionCwd(sessionId).replace(/\\/g, '/').replace(/\/+$/, '')
+      if (!root) return path
+      if (path === root) return ''
+      if (path.indexOf(root + '/') === 0) return path.slice(root.length + 1)
+      return path
+    }
+
     const sessionFileAddress = (sessionId, path) => {
-      const normalized = String(path).replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
+      const normalized = workspaceRelativePath(sessionId, String(path).replace(/\\/g, '/').replace(/^(?:\.\/)+/, ''))
       const encoded = normalized.split('/').map(encodeAddressSegment).join('/')
       return 'dsh-resource://file/session/' + encodeAddressSegment(sessionId) + '/' + encoded
+    }
+
+    // The session a `file:` address carries. A session-scoped address is the only
+    // place a seat hands this plugin an id it can act on (see
+    // MarkdownDocumentBody), and a document-relative image in such a file needs
+    // it: the media route resolves the path against that session's workspace.
+    const sessionFromFileAddress = (address) => {
+      try {
+        const text = String(address || '')
+        const prefix = 'dsh-resource://file/session/'
+        if (text.indexOf(prefix) !== 0) return ''
+        const end = text.search(/[?#]/)
+        const id = text.slice(prefix.length, end === -1 ? undefined : end).split('/')[0]
+        return id ? decodeURIComponent(id) : ''
+      } catch (e) { return '' }
     }
 
     const pathFromFileAddress = (address) => {
@@ -8645,7 +9106,14 @@ const SettingsSection = () => {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(MarkdownView, { content, path: pathFromFileAddress(p.resourceAddress) }),
+        React.createElement(MarkdownView, {
+      content,
+      path: pathFromFileAddress(p.resourceAddress),
+      // The address IS session-scoped, so the session that owns the tab is in
+      // the only thing this body was handed — and a document-relative image in a
+      // file opened that way needs it (see mdMedia).
+      sessionId: sessionFromFileAddress(p.resourceAddress),
+    }),
       )
     }
 
@@ -8862,19 +9330,47 @@ const SettingsSection = () => {
       } catch (e) { return null }
     }
 
-    // Hand a file to whichever renderer the shell would pick. Returns false (and
-    // the caller says so) when the shell has no sidebar face or refuses the
-    // address — `openResource` throws rather than no-ops when nothing can open
-    // it, which is exactly the case the caller is checking for.
-    const openInShellSidebar = (path) => {
+    // Hand a file to whichever renderer the shell would pick.
+    //
+    // It reports WHY when it cannot, instead of a bare `false`. The shell's
+    // `openResource` throws for reasons the user can act on differently — no
+    // right column in this build, no session to open into, or a column in which
+    // no tab type claims the address — and it throws rather than reporting
+    // absence because, from its side, an unclaimed address is a wiring mistake.
+    // Swallowing that reason is what turned a real failure into the message
+    // 「无法在系统侧边栏打开此文件」 with nothing to go on; the reason travels back
+    // to the caller, which says it out loud (see openShellFailureText below).
+    const openInShellSidebar = (path, sessionIdArg) => {
+      let sidebar = null
+      try { sidebar = ctx.get('sidebarRight') } catch (e) { sidebar = null }
+      if (!sidebar || typeof sidebar.openResource !== 'function') {
+        return { ok: false, reason: 'no-face' }
+      }
+      const sessionId = (typeof sessionIdArg === 'string' && sessionIdArg) || currentSessionId()
+      if (!sessionId) return { ok: false, reason: 'no-session' }
+      const address = sessionFileAddress(sessionId, path)
       try {
-        const sidebar = ctx.get('sidebarRight')
-        if (!sidebar || typeof sidebar.openResource !== 'function') return false
-        const sessionId = currentSessionId()
-        if (!sessionId) return false
-        sidebar.openResource(sessionFileAddress(sessionId, path))
-        return true
-      } catch (e) { return false }
+        sidebar.openResource(address)
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'refused',
+          address,
+          detail: (e && e.message) ? String(e.message) : String(e),
+        }
+      }
+      return { ok: true, address }
+    }
+
+    // One sentence per refusal, because a message that names no cause cannot be
+    // acted on: 收起/展开 and which kind this build registers are the user's own
+    // levers, and the shell's own error text names the third case exactly.
+    const openShellFailureText = (res) => {
+      const reason = res && res.reason
+      if (reason === 'no-face') return '无法在系统侧边栏打开：这个 DSH 没有可用的右侧边栏'
+      if (reason === 'no-session') return '无法在系统侧边栏打开：还没有选中的会话'
+      const detail = res && res.detail ? '（' + res.detail + '）' : ''
+      return '无法在系统侧边栏打开此文件' + detail
     }
 
 
@@ -8889,6 +9385,10 @@ const SettingsSection = () => {
           // that registration so the product's renderer wins the suffix again.
           applyDocumentPreviews(slots)
           settingsStore.subscribe(() => { syncDocumentPreviews() })
+          // The document skin's stylesheet, kept in step with the setting (see
+          // syncMarkdownSkin in src/client/preview.js).
+          syncMarkdownSkin()
+          settingsStore.subscribe(() => { syncMarkdownSkin() })
 
           // The panel's surface, in order of preference. Every view registers as a
           // tab of the shell's column when its registry is there; when it takes,

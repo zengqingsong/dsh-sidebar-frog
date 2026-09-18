@@ -62,6 +62,7 @@ export function buildBundles() {
   // ── Shared (portable) ───────────────────────────────────────────────────
   const ext = read('src/shared/ext.js')
   const markdown = read('src/shared/markdown.js')
+  const skins = read('src/shared/skins.js')
   const highlight = read('src/shared/highlight.js')
   // Cross-window protocol + the settings shape. Both halves of the plugin get
   // the same text, which is what keeps them from drifting apart.
@@ -184,6 +185,7 @@ export function buildBundles() {
   page = replaceAll(page, '@@table@@', indent(table, 4))
   page = replaceAll(page, '@@highlight@@', indent(highlight, 4))
   page = replaceAll(page, '@@markdown@@', indent(markdown, 4))
+  page = replaceAll(page, '@@skins@@', indent(skins, 4))
   page = replaceAll(page, '@@editor@@', indent(editor, 4))
   // The office stylesheet goes INSIDE the page's <style> block, at its own
   // indentation (the block is written at column 0).
@@ -229,6 +231,7 @@ export function buildBundles() {
   client = replaceAll(client, '@@gitslice@@', indent(gitslice, 4))
   client = replaceAll(client, '@@highlight@@', indent(highlight, 4))
   client = replaceAll(client, '@@markdown@@', indent(markdown, 4))
+  client = replaceAll(client, '@@skins@@', indent(skins, 4))
   // After core: the editor core reads the theme helpers core declares, and the
   // React half below mounts it.
   client = replaceAll(client, '@@editor@@', indent(editor, 4))

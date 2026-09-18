@@ -69,6 +69,17 @@ const GUIDE_MD = [
   '| key | value |',
   '| --- | --- |',
   '| union | `a \\| b` |',
+  '',
+  // The README shapes: a badge, which is an image INSIDE a link, and a <picture>
+  // whose two URLs are relative to the document.
+  '[![ci](badge.svg)](https://example.com/ci)',
+  '',
+  '<p align="center">',
+  '  <picture>',
+  '    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.svg" />',
+  '    <img src="logo.svg" alt="logo" width="120" height="40" />',
+  '  </picture>',
+  '</p>',
 ].join('\n')
 // A binary container, as the host would send it: no bytes unless the caller asks
 // for them with text=1.
@@ -410,6 +421,15 @@ export async function startHost() {
     // what these tests are about.
     if (u.pathname === '/dsh-sidebar-frog/media') {
       const wanted = String(u.searchParams.get('path') || '').toLowerCase()
+      // A REAL image for the Markdown shapes below: an <img> whose naturalWidth
+      // is still 0 proves the URL was wrong, which is exactly the failure a
+      // document-relative path produced when it resolved against the wrong root.
+      if (wanted.endsWith('.svg')) {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#2f9e7a"/></svg>'
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': Buffer.byteLength(svg), 'Cache-Control': 'no-store' })
+        res.end(svg)
+        return
+      }
       const fixture = Object.keys(officeFixtures).find((name) => wanted.endsWith(name))
       if (fixture) {
         const body = officeFixtures[fixture]
@@ -917,6 +937,44 @@ async function run(s, shots, host) {
     eq(shape.items.join('|'), 'inner one|inner two', 'the nested items')
     eq(shape.owner, 'outerinner oneinner two', 'the parent item owns the nested list')
     eq(shape.cells.join('|'), 'key|value|union|a | b', 'the table cells, escaped pipe intact')
+  })
+
+  await test('a badge and a <picture> logo render, and the document-relative images load', async () => {
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown picture")', { label: 'the picture block to render', timeout: 4000 })
+    const shape = await s.evaluate(`(() => {
+      const root = document.querySelector('#previewArea .markdown')
+      const badge = root.querySelector('a > img')
+      const source = root.querySelector('picture > source')
+      const img = root.querySelector('picture > img')
+      const text = root.innerText || ''
+      return {
+        // The badge is an <img> INSIDE an <a>: nested inline tokens used to leave
+        // the inner one unreplaced, so the reader saw the characters "A1" where
+        // the image should be.
+        badgeSrc: badge ? badge.getAttribute('src') : null,
+        badgeAlt: badge ? badge.getAttribute('alt') : null,
+        sourceMedia: source ? source.getAttribute('media') : null,
+        sourceSrcset: source ? source.getAttribute('srcset') : null,
+        imgSrc: img ? img.getAttribute('src') : null,
+        imgWidth: img ? img.naturalWidth : 0,
+        imgHeight: img ? img.naturalHeight : 0,
+        centered: !!(img && img.closest('[align="center"]')),
+        escaped: (root.innerHTML.match(/&lt;(picture|source|img)/g) || []).length,
+        token: /(^|[^\\w])A\\d+([^\\w]|$)/.test(text),
+      }
+    })()`)
+    eq(shape.badgeSrc, '/dsh-sidebar-frog/media?path=D%3A%2Fws%2Fdocs%2Fbadge.svg', 'the badge image src (rebased onto the media route, against the document directory)')
+    eq(shape.badgeAlt, 'ci', 'the badge alt text')
+    eq(shape.sourceMedia, '(prefers-color-scheme: dark)', 'the dark-mode source media query, kept verbatim')
+    assert(shape.sourceSrcset === '/dsh-sidebar-frog/media?path=D%3A%2Fws%2Fdocs%2Flogo-dark.svg',
+      'the dark source srcset is ' + JSON.stringify(shape.sourceSrcset))
+    eq(shape.imgSrc, '/dsh-sidebar-frog/media?path=D%3A%2Fws%2Fdocs%2Flogo.svg', 'the fallback image src')
+    assert(shape.imgWidth === 120 && shape.imgHeight === 40,
+      'the logo did not load: naturalSize ' + shape.imgWidth + 'x' + shape.imgHeight)
+    assert(shape.centered, 'the picture left its <p align="center"> wrapper')
+    eq(shape.escaped, 0, 'raw HTML was escaped into visible angle brackets')
+    eq(shape.token, false, 'an inline token leaked into the rendered text')
   })
 
   await test('a Chinese file name survives the tree, the request and the preview', async () => {

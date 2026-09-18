@@ -328,6 +328,15 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
 .artifacts-markdown pre code { background: transparent; padding: 0; }
 .artifacts-markdown img { max-width: 100%; }
+/* The raw-HTML shapes a README uses for its logo: <picture> (a light/dark
+   <source> beside a fallback <img>) inside <p align="center">. Alignment comes
+   from an obsolete presentational attribute, so it is stated here rather than
+   trusted to the browser; the image keeps its aspect ratio when a width/height
+   attribute pair is scaled down by max-width. */
+.artifacts-markdown picture { max-width: 100%; }
+.artifacts-markdown picture > img { max-width: 100%; height: auto; }
+.artifacts-markdown [align="center"] { text-align: center; }
+.artifacts-markdown [align="right"] { text-align: right; }
 .artifacts-markdown blockquote { border-left: 3px solid var(--dsw-alias-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--dsw-alias-label-secondary); }
 .artifacts-markdown ul, .artifacts-markdown ol { padding-left: 24px; }
 .artifacts-markdown a { color: var(--dsw-alias-state-business-primary); }
@@ -686,6 +695,17 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-switch input:checked + .artifacts-switch-track .artifacts-switch-thumb { background: var(--dsw-alias-bg-layer-3); transform: translate(16px); }
 .artifacts-switch input:focus-visible + .artifacts-switch-track { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
 .artifacts-setcontrol { flex: none; align-items: center; gap: 6px; display: flex; }
+/* A stacked settings row: the control sits UNDER its label rather than beside it.
+   Four skin names do not fit the control column of a settings row, and squeezing
+   them onto one line made the row unreadable — which is how an operable control
+   starts looking like one that cannot be used. */
+.artifacts-setrow.is-stacked { flex-direction: column; align-items: flex-start; gap: 8px; }
+.artifacts-setchips { flex-wrap: wrap; gap: 6px; }
+/* The skin chips: the same affordance as the panel's own chips, so a small closed
+   choice reads the same wherever it appears. */
+.artifacts-chip { padding: 4px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.artifacts-chip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .12)); color: var(--dsw-alias-label-primary); }
+.artifacts-chip.is-on { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
 .artifacts-widthinput { width: 76px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; border-radius: 6px; padding: 4px 8px; }
 .artifacts-suffix { color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 22px; }
 

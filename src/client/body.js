@@ -191,6 +191,7 @@ window.__ModuleLoader__.load({
           @@gitslice@@
           @@highlight@@
           @@markdown@@
+          @@skins@@
           @@editor@@
 
           @@core@@
@@ -227,6 +228,10 @@ window.__ModuleLoader__.load({
           // that registration so the product's renderer wins the suffix again.
           applyDocumentPreviews(slots)
           settingsStore.subscribe(() => { syncDocumentPreviews() })
+          // The document skin's stylesheet, kept in step with the setting (see
+          // syncMarkdownSkin in src/client/preview.js).
+          syncMarkdownSkin()
+          settingsStore.subscribe(() => { syncMarkdownSkin() })
 
           // The panel's surface, in order of preference. Every view registers as a
           // tab of the shell's column when its registry is there; when it takes,

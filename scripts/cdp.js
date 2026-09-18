@@ -287,7 +287,17 @@ export async function launch({ url, width = 1400, height = 900, timeout = 30000 
   let port = 0
   while (Date.now() < deadline) {
     if (existsSync(portFile)) {
-      const line = readFileSync(portFile, 'utf8').split('\n')[0].trim()
+      // Chrome creates this file and writes it in two steps, so a read that
+      // lands in between fails with EBUSY on Windows. That is the browser
+      // working, not a broken profile: keep polling instead of throwing the
+      // whole run away on a race that resolves in milliseconds.
+      let line = ''
+      try {
+        line = readFileSync(portFile, 'utf8').split('\n')[0].trim()
+      } catch (e) {
+        await sleep(100)
+        continue
+      }
       port = parseInt(line, 10) || 0
       if (port) break
     }

@@ -374,7 +374,44 @@ if (shared) {
     // What the sidebar writes is what the popout reads.
     const roundTrip = parseSettings(serializeSettings(normalizeSettings({ previewHeight: 42 })))
     if (roundTrip.previewHeight !== 42) throw new Error('setting round trip lost previewHeight')
-    ok('settings shape', 'defaults, clamping, boolean coercion and round trip')
+
+    // ── A NAME-valued setting must survive the round trip ────────────────────
+    // Every non-boolean setting used to be read through parseInt, so a name
+    // ("github") arrived as NaN and came back as the DEFAULT: the choice was
+    // stored, re-read as 默认, and the control snapped back under the pointer — a
+    // setting that could not be changed at all, with nothing on screen saying why.
+    const chosen = parseSettings(serializeSettings(normalizeSettings({ markdownSkin: 'wechat' })))
+    if (chosen.markdownSkin !== 'wechat') {
+      throw new Error('a name-valued setting did not survive the round trip: ' + JSON.stringify(chosen.markdownSkin))
+    }
+    if (parseSettings('{"markdownSkin":"nonsense"}').markdownSkin !== DEFAULT_SETTINGS.markdownSkin) {
+      throw new Error('an unknown name did not fall back to the default')
+    }
+    if (parseSettings('{"markdownSkin":42}').markdownSkin !== DEFAULT_SETTINGS.markdownSkin) {
+      throw new Error('a non-string name did not fall back to the default')
+    }
+    // The settings module cannot import the skins module (it is evaluated FIRST in
+    // both bundles, so the reference would read an uninitialized var), which makes
+    // its allow-list a copy — and a copy is only safe when something compares it.
+    // This does, in both directions: every listed name exists, and every skin the
+    // picker offers is accepted.
+    {
+      const skins = new Function(read('src/shared/skins.js') + '\nreturn { MD_SKIN_ORDER, MD_SKIN_CSS, markdownSkinOptions }')()
+      const settingsMod = new Function(read('src/shared/settings.js') + '\nreturn { SETTINGS_CHOICES }')()
+      const listed = settingsMod.SETTINGS_CHOICES.markdownSkin
+      const real = skins.MD_SKIN_ORDER
+      if (JSON.stringify(listed) !== JSON.stringify(real)) {
+        throw new Error('the settings allow-list ' + JSON.stringify(listed) + ' is not the skins list ' + JSON.stringify(real))
+      }
+      const options = skins.markdownSkinOptions().map((o) => o.value)
+      if (JSON.stringify(options) !== JSON.stringify(real)) {
+        throw new Error('the picker offers ' + JSON.stringify(options) + ', not ' + JSON.stringify(real))
+      }
+      for (const name of real) {
+        if (name !== 'default' && !skins.MD_SKIN_CSS[name]) throw new Error(name + ' is listed as a skin but has no CSS')
+      }
+    }
+    ok('settings shape', 'defaults, clamping, boolean coercion, name-valued choices (compared with the skins list) and round trip')
   } catch (e) {
     bad('settings shape', e && e.message ? e.message : String(e))
   }
@@ -708,6 +745,116 @@ console.log('markdown lists and tables')
   }
 }
 
+// ── The two raw-HTML shapes a README is made of ─────────────────────────────
+// Reported from a real README, and both rendered wrong in the shipped build:
+//
+//   [![ci](badge.svg)](link)
+//     The image token is nested INSIDE the link token, and `String.replace`
+//     never rescans what it just wrote — so the inner token survived as the
+//     literal characters "A1" where the badge should have been. Any
+//     image-inside-a-link (every GitHub badge) hit this.
+//
+//   <p align="center"><picture>
+//     <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo-dark.svg" />
+//     <img src="docs/logo/logo.svg" width="448" height="128" />
+//   </picture></p>
+//     Not a whitelisted block tag, so every angle bracket was escaped and the
+//     reader saw the markup itself. And even once emitted, the two URLs are
+//     relative to the MARKDOWN file: left alone they resolve against the app's
+//     own URL and 404, which is a broken image rather than a wrong-looking one.
+console.log('markdown raw html')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') + '\nreturn { mdToHtml }',
+    )()
+    const opts = { path: 'README.md' }
+    const render = (src) => md.mdToHtml(src, opts)
+    const cases = [
+      // ── an image inside a link (the badge shape) ──────────────────────────
+      ['a badge', '[![ci](badge.svg)](https://example.com/ci)', (h) =>
+        h === '<p><a href="https://example.com/ci" target="_blank" rel="noopener noreferrer">'
+          + '<img alt="ci" src="/dsh-sidebar-frog/media?path=badge.svg"></a></p>'],
+      ['a badge with an absolute image', '[![b](https://img.example/x.svg)](https://example.com)', (h) =>
+        h.includes('<img alt="b" src="https://img.example/x.svg">') && h.includes('</a></p>')],
+      ['no token survives', '[![a](i.png)](l)', (h) => !/\x01|\x02/.test(h) && h.indexOf('A1') < 0],
+      // Two badges on adjacent lines are two paragraphs, each with its image.
+      ['two badges', '[![a](a.svg)](x)\n[![b](b.svg)](y)', (h) =>
+        (h.match(/<img /g) || []).length === 2 && (h.match(/<a /g) || []).length === 2],
+      // The shapes that already worked must not move.
+      ['a plain image', '![alt](pic.png)', (h) => h === '<p><img alt="alt" src="/dsh-sidebar-frog/media?path=pic.png"></p>'],
+      ['a plain link', '[text](https://example.com)', (h) =>
+        h === '<p><a href="https://example.com" target="_blank" rel="noopener noreferrer">text</a></p>'],
+
+      // ── the logo block ────────────────────────────────────────────────────
+      ['the picture block', [
+        '<p align="center">',
+        '  <picture>',
+        '    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo-dark.svg" />',
+        '    <img src="docs/logo/logo.svg" alt="dsh-sidebar-frog" width="448" height="128" />',
+        '  </picture>',
+        '</p>',
+      ].join('\n'), (h) =>
+        h === '<p align="center"><picture>'
+          + '<source media="(prefers-color-scheme: dark)" srcset="/dsh-sidebar-frog/media?path=docs%2Flogo%2Flogo-dark.svg">'
+          + '<img src="/dsh-sidebar-frog/media?path=docs%2Flogo%2Flogo.svg" alt="dsh-sidebar-frog" width="448" height="128">'
+          + '</picture></p>'],
+      ['the picture block, not escaped', [
+        '<picture>',
+        '<source media="(prefers-color-scheme: dark)" srcset="a.svg" />',
+        '<img src="b.svg" alt="x" />',
+        '</picture>',
+      ].join('\n'), (h) => h.indexOf('&lt;') < 0 && h.indexOf('<picture><source') === 0],
+      // A srcset keeps its descriptors, and only relative candidates move.
+      ['a srcset with descriptors', [
+        '<picture>',
+        '<source srcset="a.svg 1x, b.svg 2x" />',
+        '<img src="c.svg" alt="x" />',
+        '</picture>',
+      ].join('\n'), (h) =>
+        h.includes('srcset="/dsh-sidebar-frog/media?path=a.svg 1x, /dsh-sidebar-frog/media?path=b.svg 2x"')],
+      ['an absolute srcset is left alone', [
+        '<picture>',
+        '<source srcset="https://cdn.example/a.svg 1x" />',
+        '<img src="c.svg" alt="x" />',
+        '</picture>',
+      ].join('\n'), (h) => h.includes('srcset="https://cdn.example/a.svg 1x"')],
+      // A data: srcset carries commas of its own — splitting it would corrupt it.
+      ['a data srcset is untouched', [
+        '<picture>',
+        '<source srcset="data:image/svg+xml,%3Csvg%2F%3E 1x" />',
+        '<img src="c.svg" alt="x" />',
+        '</picture>',
+      ].join('\n'), (h) => h.includes('srcset="data:image/svg+xml,%3Csvg%2F%3E 1x"')],
+      // The script fence still applies to the picture's own attributes.
+      ['no event handlers survive', [
+        '<picture>',
+        '<source srcset="a.svg" onerror="alert(1)" />',
+        '<img src="b.svg" onload="steal()" />',
+        '</picture>',
+      ].join('\n'), (h) => h.indexOf('onerror') < 0 && h.indexOf('onload') < 0],
+      // A raw <img> in a paragraph is the same rebasing question, and it used to
+      // keep its relative src while every Markdown image was rebased.
+      ['a raw img in a paragraph', 'text <img src="docs/logo/logo.svg" alt="x" /> more', (h) =>
+        h === '<p>text <img src="/dsh-sidebar-frog/media?path=docs%2Flogo%2Flogo.svg" alt="x"> more</p>'],
+    ]
+    const wrong = cases
+      .filter(([, src, want]) => !want(render(src)))
+      .map(([name, src]) => `${name} rendered as ${JSON.stringify(render(src))}`)
+    // A relative URL is relative to the MARKDOWN file, not to the app: a document
+    // in a subdirectory resolves its images under that subdirectory (the same
+    // rule Markdown images always followed, and the reason opts.dir exists).
+    const sub = md.mdToHtml('![a](pic.png)', { path: 'sub/notes.md' })
+    if (sub !== '<p><img alt="a" src="/dsh-sidebar-frog/media?path=sub%2Fpic.png"></p>') {
+      wrong.push('a doc in a subdirectory rendered as ' + JSON.stringify(sub))
+    }
+    if (wrong.length) throw new Error(wrong.join(' | '))
+    ok('markdown raw html', `${cases.length} shapes: ${cases.map(([n]) => n).join(', ')}`)
+  } catch (e) {
+    bad('markdown raw html', e && e.message ? e.message : String(e))
+  }
+}
+
 // ── 3. popout page inline scripts ──────────────────────────────────────────
 // The popout page is a String.raw template holding HTML with inline <script>
 // blocks. As far as the host bundle is concerned that inline JS is just text
@@ -959,7 +1106,14 @@ const bootClient = (options) => {
   const openedResources = []
   const sidebarRight = {
     openTab: (kind) => { openedTabs.push(kind); column.activeTab = kind },
-    openResource: (address) => { openedResources.push(address); column.activeTab = address },
+    // `opts.openResourceThrows` models the shell's own wiring refusal: it THROWS
+    // (with the product's message) rather than reporting absence, which is the
+    // case the plugin must carry back to the user instead of swallowing.
+    openResource: (address) => {
+      if (opts.openResourceThrows) throw new Error(opts.openResourceThrows)
+      openedResources.push(address)
+      column.activeTab = address
+    },
     active: () => column.activeTab,
     isExpanded: () => column.activeTab !== undefined,
   }
@@ -972,17 +1126,55 @@ const bootClient = (options) => {
       if (opts.noComposer) return undefined
       if (name === 'sessions') {
         return {
-          // The product's own shape: a list snapshot with the current id and the
-          // per-session summaries. `blank` is the flag the shell itself uses for
-          // "never ran a turn" (ui-workspace reuses exactly those for 新建会话),
-          // and it is what the plugin's default page keys on — so it is opt-in
-          // here, and every other check boots a session that has been used.
+          // The product's own shape — the REAL one, `SessionListState` from
+          // @deepseek-ai/dsh-api-session-controller: `{ ids, byId, phase,
+          // subagentsByParent, jobsBySession }`.
+          //
+          // There is NO `current`/`active` field, and that absence is the whole
+          // point of this stub: an earlier version of it invented one, so every
+          // check agreed with the plugin's root read while the shipped read
+          // returned '' on every call. The session on screen is the one the MAIN
+          // VIEW retains (`retainedBy.mainView`), which is also the test the
+          // shell's own ui-session makes. `opts.legacyCurrent` covers a shell
+          // that still carries the old field.
+          //
+          //   · `sessionId`       — the session a mounted SEAT belongs to ('s1')
+          //   · `mainViewSession` — the session the root read sees; defaults to
+          //                         the seat's, and set apart from it to prove the
+          //                         seat wins for that tab's file addresses
+          //   · `cwd`             — the workspace root an absolute path is made
+          //                         relative to
+          //
+          // `blank` is the flag the shell itself uses for "never ran a turn"
+          // (ui-workspace reuses exactly those for 新建会话), and it is what the
+          // plugin's default page keys on — so it is opt-in here, and every other
+          // check boots a session that has been used.
           list: {
-            getSnapshot: () => ({
-              current: 's1',
-              ids: ['s1'],
-              byId: { s1: { id: 's1', blank: opts.blankSession === true } },
-            }),
+            getSnapshot: () => {
+              const seat = opts.sessionId === undefined ? 's1' : opts.sessionId
+              const seen = opts.mainViewSession || seat || 's1'
+              const cwd = opts.cwd === undefined ? 'D:/ws' : opts.cwd
+              // Only ONE session is retained by the main view — that is the whole
+              // meaning of the flag. Marking both rows would make the root read
+              // answer whichever happened to come first in `ids`, which is how a
+              // mutation that ignored the seat's session could survive here.
+              const row = (id) => ({
+                id: id,
+                blank: opts.blankSession === true,
+                cwd: cwd,
+                retainedBy: (opts.noMainView === true || id !== seen) ? {} : { mainView: 1 },
+              })
+              const ids = []
+              const byId = {}
+              for (const id of [seat, seen]) {
+                if (!id || byId[id]) continue
+                ids.push(id)
+                byId[id] = row(id)
+              }
+              const snap = { ids: ids, byId: byId, phase: 'ready', subagentsByParent: {}, jobsBySession: {} }
+              if (opts.legacyCurrent) snap.current = seen
+              return snap
+            },
             subscribe: (fn) => {
               sessionSubs.push(fn)
               return () => { sessionSubs = sessionSubs.filter((f) => f !== fn) }
@@ -1059,6 +1251,9 @@ const bootClient = (options) => {
     openedTabs,
     openedResources,
     column,
+    // The options this boot was built with, so a harness can model the SEAT
+    // faithfully (which session it belongs to, above all).
+    opts,
     sessionSubs: () => sessionSubs.slice(),
     listeners,
     store,
@@ -1799,8 +1994,13 @@ const bootHost = (rejection, options) => {
   // revert's freshness guard compares against, so the tests can move the file
   // under the plugin's feet exactly like a second edit would.
   const file = { text: 'old\n', version: 'v1' }
+  // The sandbox root and the session workspace are separate values on purpose:
+  // they are the same directory in most deployments, which is exactly what let
+  // "resolve a document-relative path against the sandbox root" go unnoticed.
+  const policyRoot = (options && options.policyRoot) || injectedRoot || 'D:/ws'
+  const sessionWorkspace = (options && options.sessionCwd) || injectedRoot || 'D:/ws'
   const fs = {
-    resolve: async (p) => { calls.push(['resolve', p]); return p },
+    resolve: async (p, opts) => { calls.push(['resolve', p, opts && opts.cwd]); return p },
     // `gone` is the save route's "not an existing regular file" case: the stub
     // answers for one mutable file, so a path that must NOT exist is spelled
     // rather than probed.
@@ -1859,9 +2059,9 @@ const bootHost = (rejection, options) => {
       if (name === 'connection') return connection
       // The real-fs /delete test injects its own workspace: session s1 resolves
       // to the temporary root, so the fence has a real workspace to contain.
-      if (name === 'sessions') return { get: (id) => (id === 's1' ? { header: { cwd: injectedRoot || 'D:/ws' } } : undefined), list: () => [] }
+      if (name === 'sessions') return { get: (id) => (id === 's1' ? { header: { cwd: sessionWorkspace, createdAt: 1 } } : undefined), list: () => [] }
       if (name === 'fs') return injectedFs || fs
-      if (name === 'sandboxPolicy') return { workspaceRoot: injectedRoot || 'D:/ws' }
+      if (name === 'sandboxPolicy') return { workspaceRoot: policyRoot }
       return undefined
     },
     on: (name, fn) => { handlers[name] = fn },
@@ -2024,6 +2224,38 @@ try {
     const csv = await callRaw(media, '/dsh-sidebar-frog/media?path=D:/ws/data.csv')
     if (String(csv.headers['Content-Type']).indexOf('text/csv') !== 0) throw new Error('a .csv was served as ' + csv.headers['Content-Type'])
     ok('media byte ranges', '200 + Accept-Ranges, 206 with Content-Range, suffix windows, 416 past EOF, multipart falls back, HEAD body-less')
+  }
+
+  // ── a document-relative image resolves against the SESSION's workspace ────
+  // A rendered Markdown document asks for its own images by the path written in
+  // it — docs/logo/logo.svg for a README at the workspace root — and the sandbox
+  // root is NOT necessarily that workspace. Resolving against the sandbox root
+  // answered 404 for every local image, which reads as a broken image rather than
+  // as a routing mistake, so the two roots are placed apart here and the cwd the
+  // route used is asserted.
+  {
+    const rel = bootHost(undefined, { policyRoot: 'D:/sandbox', sessionCwd: 'D:/ws' })
+    const route = rel.routes['/dsh-sidebar-frog/media']
+    await callRaw(route, '/dsh-sidebar-frog/media?path=docs%2Flogo%2Flogo.svg&sessionId=s1')
+    const bySession = rel.calls.filter((c) => c[0] === 'resolve').pop()
+    if (!bySession || bySession[2] !== 'D:/ws') {
+      throw new Error('a relative media path resolved against ' + JSON.stringify(bySession && bySession[2]) + ' instead of the session workspace')
+    }
+    // An ABSOLUTE path needs no root at all — the tree and the artefact list hand
+    // over host-issued absolute paths, and those must keep working.
+    await callRaw(route, '/dsh-sidebar-frog/media?path=' + encodeURIComponent('D:/other/logo.svg') + '&sessionId=s1')
+    const absolute = rel.calls.filter((c) => c[0] === 'resolve').pop()
+    if (String(absolute[1]).indexOf('D:/other/logo.svg') !== 0) {
+      throw new Error('an absolute path was rewritten to ' + JSON.stringify(absolute[1]))
+    }
+    // Unnamed (the popout page before it knows a session) falls back to the
+    // sandbox root rather than answering nothing.
+    await callRaw(route, '/dsh-sidebar-frog/media?path=docs%2Flogo%2Flogo.svg')
+    const unnamed = rel.calls.filter((c) => c[0] === 'resolve').pop()
+    if (!unnamed || unnamed[2] !== 'D:/sandbox') {
+      throw new Error('an unnamed relative media path resolved against ' + JSON.stringify(unnamed && unnamed[2]))
+    }
+    ok('media resolves in the workspace', 'a document-relative path is resolved against the session\'s workspace (the sandbox root only for an unnamed request), and an absolute path is left alone')
   }
 
   // ── a binary container is never decoded as text ──────────────────────────
@@ -2637,6 +2869,9 @@ if (built) {
 const mountPanel = async (override) => {
   const r = createRenderer(() => null, {})
   const styleProps = {}
+  // Every <style> the plugin put on the page, in order (see the document stub
+  // below): the document skin is asserted against this, not against a promise.
+  const styleTags = []
   const intervals = []
   const panelEl = { getAttribute: () => '', getBoundingClientRect: () => ({ left: 1200, width: 720 }) }
   const documentStub = {
@@ -2647,15 +2882,24 @@ const mountPanel = async (override) => {
       },
     },
     body: { setAttribute: () => {}, removeAttribute: () => {} },
-    // `styles.insert` appends the plugin's <style> to <head>.
-    head: { appendChild: () => {}, removeChild: () => {} },
+    // `styles.insert` (and the document skin) append <style> tags to <head>;
+    // they are RECORDED rather than dropped, so a guard can assert what ended up
+    // on the page instead of only that nothing threw.
+    head: {
+      appendChild: (el) => { if (el && String(el.tagName).toLowerCase() === 'style') styleTags.push(el) },
+      removeChild: () => {},
+    },
     addEventListener: () => {},
     removeEventListener: () => {},
     // A shell panel that measures as present keeps watchShellRight from
     // installing its fallback poll.
     querySelector: (sel) => (sel === '[data-sidebar-right-panel]' ? panelEl : null),
     getElementById: () => null,
-    createElement: () => ({ style: {}, select() {}, appendChild() {}, removeChild() {}, setAttribute() {} }),
+    createElement: (tag) => ({
+      tagName: tag, id: '', textContent: '', style: {}, attrs: {},
+      select() {}, appendChild() {}, removeChild() {},
+      setAttribute(k, v) { this.attrs[k] = v },
+    }),
   }
   const boot = bootClient(Object.assign({
     react: r.React,
@@ -2666,18 +2910,25 @@ const mountPanel = async (override) => {
   }, override))
   const flush = async () => { r.flush(); await settle(6); r.flush() }
   // Mount the component a registration carries. The registered body is a
-  // one-line arrow (`() => createElement(ArtifactsContent, {surface:'native'})`),
+  // one-line arrow (`(props) => createElement(ArtifactsContent, {surface:'native'})`),
   // and minireact does not render child components — so call the arrow, then
   // mount the component it names, and hand the arrow's element back so a caller
   // can reuse it for the other surface.
-  const mount = async (registered) => {
-    const el = registered.component()
+  //
+  // The arrow is called WITH the props a session-scoped seat hands down — above
+  // all `sessionId`, the id the tab belongs to. Calling it with nothing is what
+  // let "which session is this panel showing" go unasserted: the real seat always
+  // passes one, and the panel's host calls, its file addresses and its popout
+  // link are all keyed by it.
+  const seatProps = { sessionId: boot.opts.sessionId || 's1' }
+  const mount = async (registered, props) => {
+    const el = registered.component(props === undefined ? seatProps : props)
     r.setComponent(el.type)
     r.setProps(el.props)
     await flush()
     return el
   }
-  return { r, boot, styleProps, intervals, flush, mount }
+  return { r, boot, styleProps, styleTags, intervals, flush, mount }
 }
 
 // The tab id each view's body is registered under. The seat looks a body up by
@@ -2723,11 +2974,11 @@ const mountOverlayContent = async (panel) => {
 
 // The body registered for one view, mounted exactly as the shell's seat renders
 // it. Each native tab draws ONE view, so every per-view assertion starts here.
-const mountView = async (view) => {
-  const panel = await mountPanel({ sidebarRight: true })
+const mountView = async (view, props, options) => {
+  const panel = await mountPanel(Object.assign({ sidebarRight: true }, options))
   const body = panel.boot.registrations.find((r) => r.def.key === VIEW_TAB_IDS[view])
   if (!body) throw new Error('no body registered for the ' + view + ' view')
-  await panel.mount(body)
+  await panel.mount(body, props)
   return panel
 }
 
@@ -2835,6 +3086,17 @@ if (shared) {
   // such strip to land in when the column itself is what is missing, so it keeps
   // its internal file tabs. Both are driven here by calling the tree's own
   // `onOpen` prop, which is the same function the row's click handler calls.
+  //
+  // The ADDRESS is the whole assertion, in three parts, because each one was
+  // broken in the shipped build and each failure is silent — the tab either
+  // opens onto the wrong file or nothing opens at all:
+  //   · the session id must be the one the SEAT handed down (the mainView read
+  //     is only the fallback), because a hand-off addressed to another session
+  //     opens the right tab over the wrong workspace;
+  //   · an absolute path INSIDE that session's workspace must be made
+  //     workspace-relative, which is the only spelling the document reader can
+  //     resolve (`fileAddressFor` in ui-sidebar-files does the same thing);
+  //   · an absolute path OUTSIDE it keeps its absolute form.
   try {
     const treeElement = (mounted) => {
       let found = null
@@ -2858,8 +3120,112 @@ if (shared) {
     if (opened.length !== 1) {
       throw new Error('a click in the native tree did not hand the file to the shell (' + opened.length + ' opens)')
     }
-    if (opened[0] !== 'dsh-resource://file/session/s1/D:/ws/notes.md') {
+    if (opened[0] !== 'dsh-resource://file/session/s1/notes.md') {
       throw new Error('the handed-over address is ' + JSON.stringify(opened[0]))
+    }
+
+    // A path outside the session workspace (the stub's cwd is D:/ws) stays
+    // absolute — the product's own answer for that case, and NOT a relative
+    // address that would silently resolve inside the workspace instead.
+    const outside = await mountView('tree')
+    treeElement(outside).props.onOpen('D:/other/readme.md')
+    await outside.flush()
+    if (outside.boot.openedResources[0] !== 'dsh-resource://file/session/s1/D:/other/readme.md') {
+      throw new Error('a path outside the workspace was not kept absolute: ' + JSON.stringify(outside.boot.openedResources[0]))
+    }
+
+    // The SEAT's session wins over the root read. Here the root read answers
+    // 's2' (that is the session the main view retains) while this tab belongs to
+    // s1 — the tab's own rows came from s1, so its hand-off must be addressed in
+    // s1 too. Getting this backwards opens the right tab over the wrong file.
+    const seated = await mountView('tree', { sessionId: 's1' }, { sessionId: 's1', mainViewSession: 's2' })
+    const seatOpened = seated.boot.openedResources
+    treeElement(seated).props.onOpen('D:/ws/notes.md')
+    await seated.flush()
+    if (seatOpened[0] !== 'dsh-resource://file/session/s1/notes.md') {
+      throw new Error('the seat\'s session was not used for the hand-off: ' + JSON.stringify(seatOpened[0]))
+    }
+
+    // A directory read must carry the SEAT's session too: the host answers an
+    // unnamed request with the most recent session's workspace, which looks right
+    // until the user switches workspace — the tree would list the wrong project
+    // while claiming to be rooted in this one.
+    //
+    // The tree element is mounted directly (this runtime renders ONE component
+    // and never renders children, exactly as scripts/tree-tests.js does it), and
+    // its props come from the panel's own render — so this also proves the seat's
+    // session was FORWARDED from the panel down to the tree.
+    const calls = []
+    const recording = await mountPanel({
+      sidebarRight: true,
+      sessionId: 's1',
+      mainViewSession: 's2',
+      fetch: (url) => {
+        calls.push(String(url))
+        return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true, path: 'D:/ws', entries: [] }) })
+      },
+    })
+    const recordingBody = recording.boot.registrations.find((r) => r.def.key === VIEW_TAB_IDS.tree)
+    await recording.mount(recordingBody, { sessionId: 's1' })
+    const treeForRead = treeElement(recording)
+    // The panel must FORWARD the seat's session to the tree. Asserted on the
+    // rendered props, not only on the request below: this runtime merges props
+    // between component changes, so a panel that stopped passing `sessionId`
+    // down would still see the panel's own prop and the request would still look
+    // right — the tree would silently fall back to the root read instead.
+    if (treeForRead.props.sessionId !== 's1') {
+      throw new Error('the panel did not hand the seat\'s session down to the tree: ' + JSON.stringify(treeForRead.props.sessionId))
+    }
+    recording.r.hooks.length = 0
+    recording.r.setComponent(treeForRead.type)
+    recording.r.setProps(treeForRead.props)
+    await recording.flush()
+    const listdir = calls.filter((u) => u.indexOf('/dsh-sidebar-frog/listdir') === 0)
+    if (!listdir.length) throw new Error('the tree asked for no directory at all')
+    if (listdir[0].indexOf('sessionId=s1') < 0) {
+      throw new Error('the tree\'s directory read did not carry the seat\'s session: ' + JSON.stringify(listdir[0]))
+    }
+
+    // The notice pill is its own registration (the shell's frame-wide
+    // `shell.overlay` seat), so it is mounted the way the shell mounts it and
+    // read from there — the text the USER sees, not the store behind it.
+    //
+    // `hooks.length = 0` first, and it is not optional: this runtime keeps ONE
+    // hook array per renderer and does not reset it when the component changes,
+    // so the pill's `useState(noticeStore.text)` would otherwise inherit the
+    // slots of whatever was mounted before it — reading '' no matter what was
+    // just flashed. (The renderer is exposed for exactly this kind of driving.)
+    const noticeText = async (panel) => {
+      const pill = panel.boot.registrations.find((r) => r.def.id === 'dsh-sidebar-frog-notice')
+      if (!pill) throw new Error('the notice pill was not registered')
+      panel.r.hooks.length = 0
+      panel.r.setComponent(pill.component)
+      await panel.flush()
+      const el = panel.r.findAll('artifacts-notice-pill')[0]
+      if (!el) return '<<no pill element>>'
+      return panel.r.textOf(el)
+    }
+    // No session at all: the seat handed none down AND the root read finds no
+    // main-view retention, so there is nothing to address a file in.
+    const noSession = await mountView('tree', { sessionId: '' }, { sessionId: '', noMainView: true })
+    treeElement(noSession).props.onOpen('D:/ws/notes.md')
+    await noSession.flush()
+    if (noSession.boot.openedResources.length) throw new Error('a hand-off with no session still called the shell')
+    const noSessionNotice = await noticeText(noSession)
+    if (noSessionNotice.indexOf('还没有选中的会话') < 0) {
+      throw new Error('a missing session was not named in the notice: ' + JSON.stringify(noSessionNotice))
+    }
+
+    // The shell's own throw is carried through verbatim, so the wiring error it
+    // reports is visible where the user is looking.
+    const refusal = await mountPanel({ sidebarRight: true, openResourceThrows: 'no registered tab type claims "x"' })
+    const refusalBody = refusal.boot.registrations.find((r) => r.def.key === VIEW_TAB_IDS.tree)
+    await refusal.mount(refusalBody)
+    treeElement(refusal).props.onOpen('D:/ws/notes.md')
+    await refusal.flush()
+    const refusalNotice = await noticeText(refusal)
+    if (refusalNotice.indexOf('no registered tab type claims') < 0) {
+      throw new Error('the shell\'s own refusal reason was swallowed: ' + JSON.stringify(refusalNotice))
     }
 
     // The floating panel with the shell face AVAILABLE (only the takeover is off):
@@ -2891,7 +3257,7 @@ if (shared) {
     if (!overlay.r.findAll('artifacts-tab-file').length) {
       throw new Error('the floating panel did not open an internal file tab')
     }
-    ok('file click routing', 'native tree hands the file to the shell as a dsh-resource address; the floating panel opens its own tab')
+    ok('file click routing', 'native tree hands the file to the shell as a session-relative dsh-resource address (an outside path stays absolute, the seat\'s session wins); a refusal names its reason; the floating panel opens its own tab')
   } catch (e) {
     bad('file click routing', e && e.message ? e.message : String(e))
   }
@@ -3040,7 +3406,57 @@ if (shared) {
     if (!mounted.r.texts('artifacts-hint').length) {
       throw new Error('a byte payload did not degrade to a hint')
     }
-    ok('lent markdown body (rendered)', 'delegates to the panel\'s own MarkdownView; byte payloads degrade to a hint')
+    // The SESSION travels with the render, taken from the address the seat handed
+    // over: that is what makes a document-relative image resolve in the right
+    // workspace (see the media route's own guard), and the address is the only
+    // session-scoped thing this body receives.
+    {
+      mounted.r.hooks.length = 0
+      mounted.r.setComponent(bodyReg.component)
+      mounted.r.setProps({
+        resourceAddress: 'dsh-resource://file/session/s1/notes.md',
+        content: { kind: 'text', text: '![a](pic.png)', pages: [], eof: true },
+        wrap: false,
+      })
+      await mounted.flush()
+      const delegated = mounted.r.element
+      const inner = delegated && (delegated.props.children || [])[0]
+      if (!inner || inner.props.sessionId !== 's1') {
+        throw new Error('the session was not carried from the address into the render: ' + JSON.stringify(inner && inner.props))
+      }
+    }
+    // The document SKIN reaches the render: the class on the root selects its
+    // rules and syncMarkdownSkin puts that skin's stylesheet on the page. The
+    // MarkdownView ELEMENT is mounted by hand — this runtime renders one
+    // component and never renders children, so the element the body delegates to
+    // is otherwise only an element.
+    {
+      const skinned = await mountPanel({
+        shellMarkdown: true,
+        storage: { [BRIDGE.settings]: serializeSettings(normalizeSettings({ markdownSkin: 'github' })) },
+      })
+      const reg = skinned.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document')
+      const el = reg.component({
+        resourceAddress: 'dsh-resource://file/session/s1/notes.md',
+        content: { kind: 'text', text: '# t', pages: [], eof: true },
+        wrap: false,
+      })
+      const inner = (el.props.children || [])[0]
+      if (!inner || typeof inner.type !== 'function') throw new Error('the skinned body did not delegate to a MarkdownView')
+      skinned.r.setComponent(inner.type)
+      skinned.r.setProps(inner.props)
+      await skinned.flush()
+      const rendered = skinned.r.findAll('artifacts-markdown')[0]
+      if (!rendered) throw new Error('the skinned render produced no markdown root')
+      if (String(rendered.props.className).indexOf('md-skin-github') < 0) {
+        throw new Error('the chosen skin is not on the render root: ' + JSON.stringify(rendered.props.className))
+      }
+      const tags = skinned.styleTags || []
+      if (!tags.some((t) => t.id === 'dsh-sidebar-frog-skin' && String(t.textContent).indexOf('.md-skin-github h1') >= 0)) {
+        throw new Error('the skin stylesheet was not put on the page: ' + JSON.stringify(tags.map((t) => t.id)))
+      }
+    }
+    ok('lent markdown body (rendered)', 'delegates to the panel\'s own MarkdownView, carries the address\'s session, wears the chosen document skin (class + one stylesheet), and byte payloads degrade to a hint')
   } catch (e) {
     bad('lent markdown body (rendered)', e && e.message ? e.message : String(e))
   }
@@ -4466,6 +4882,54 @@ try {
     ok('settings honesty', booleans.length + ' switches, every one reachable from the settings UI, no fake switches on the native surface, the width copy states the real default, and the lending state lists all four suffixes')
   } catch (e) {
     bad('settings honesty', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── The document-skin picker must be OPERABLE, not merely present ───────────
+// Reported from the running app: 「配置页面的 Markdown 文档皮肤设置无法选中」. The
+// control shipped as a native <select>, which this plugin can neither style nor
+// position nor test — its popup is a browser widget, so "it does not respond" had
+// no assertion that could see it. It is a row of buttons now, and this guard
+// drives the very click a user makes: the setting must be written, the chosen
+// chip marked, and the others left alone.
+{
+  try {
+    const { BRIDGE } = shared
+    const panel = await mountPanel()
+    const reg = panel.boot.registrations.find((r) => r.def.name === 'settings.section')
+    if (!reg) throw new Error('the settings section was not registered')
+    panel.r.setComponent(reg.component)
+    await panel.flush()
+    const chips = panel.r.findAll('artifacts-chip')
+    const skins = chips.map((c) => c.props['data-frog-skin'])
+    for (const want of ['default', 'github', 'wechat', 'zhihu']) {
+      if (skins.indexOf(want) < 0) throw new Error('no ' + want + ' chip in the skin picker (' + JSON.stringify(skins) + ')')
+    }
+    const marked = chips.filter((c) => /(^|\s)is-on(\s|$)/.test(String(c.props.className)))
+    if (marked.length !== 1 || marked[0].props['data-frog-skin'] !== 'default') {
+      throw new Error('the picker does not mark the current skin: ' + JSON.stringify(marked.map((c) => c.props['data-frog-skin'])))
+    }
+    if (chips.some((c) => typeof c.props.onClick !== 'function')) {
+      throw new Error('a skin chip has no click handler — the picker would be as unselectable as the select it replaced')
+    }
+    // The click a user makes on 「GitHub」.
+    chips.find((c) => c.props['data-frog-skin'] === 'github').props.onClick()
+    await panel.flush()
+    const stored = JSON.parse(String(panel.boot.store[BRIDGE.settings] || '{}'))
+    if (stored.markdownSkin !== 'github') {
+      throw new Error('choosing a skin wrote ' + JSON.stringify(stored.markdownSkin) + ', expected "github"')
+    }
+    const after = panel.r.findAll('artifacts-chip')
+    const on = after.filter((c) => /(^|\s)is-on(\s|$)/.test(String(c.props.className)))
+    if (on.length !== 1 || on[0].props['data-frog-skin'] !== 'github') {
+      throw new Error('the chosen chip is not the marked one: ' + JSON.stringify(on.map((c) => c.props['data-frog-skin'])))
+    }
+    if (String(on[0].props['aria-pressed']) !== 'true') {
+      throw new Error('the chosen chip does not report itself pressed')
+    }
+    ok('skin picker (operable)', 'four skin chips, the current one marked, and a click writes the setting — a control that cannot be operated is a missing feature')
+  } catch (e) {
+    bad('skin picker (operable)', e && e.message ? e.message : String(e))
   }
 }
 

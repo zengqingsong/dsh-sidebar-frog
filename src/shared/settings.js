@@ -45,6 +45,12 @@ var DEFAULT_SETTINGS = {
   // switch is about the SHELL's sidebar, not about this plugin's own previews.
   // See src/client/docpreview.js and src/shared/office.js.
   nativeOffice: true,
+  // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the
+  // platform typographies in src/shared/skins.js (GitHub, 微信, 知乎). Typography
+  // and layout only — colors come from the theme, so a skin is right in light and
+  // dark alike. Applied to the panel, the shell's own document tab and the popout
+  // page from this one value; see markdownSkinClass.
+  markdownSkin: 'default',
 };
 
 var SETTINGS_RANGES = {
@@ -53,6 +59,24 @@ var SETTINGS_RANGES = {
   defaultPanelWidth: [20, 85],
   minPanelWidth: [20, 60],
   previewHeight: [20, 80],
+};
+
+// Settings whose value is one of a fixed set of names rather than a number.
+// EVERY string-valued setting must be listed here WITH its fallback among the
+// allowed names, or it can never be changed at all:
+// clampSetting reads a setting through parseInt, so a name like "github"
+// arrives as NaN and comes back out as the DEFAULT — which is exactly how the
+// Markdown skin picker shipped unselectable (the choice was stored, read back as
+// the default, and the control snapped back under the user's pointer).
+//
+// The list is a literal on purpose, not a reference to MD_SKIN_ORDER in
+// src/shared/skins.js: this module is evaluated BEFORE the skins module in both
+// bundles (the popout page reads its settings at the top of its script), so a
+// cross-reference would read an uninitialized var. The two are held together by
+// a guard in scripts/check.js instead — a copy that can be checked beats a
+// coupling that cannot be loaded.
+var SETTINGS_CHOICES = {
+  markdownSkin: ['default', 'github', 'wechat', 'zhihu'],
 };
 
 function clampSetting(key, value) {
@@ -64,7 +88,17 @@ function clampSetting(key, value) {
   return Math.max(range[0], Math.min(range[1], n));
 }
 
-// Fills in defaults, drops unknown keys, coerces booleans and clamps numbers.
+// One of a fixed set of names: an unknown or missing name is the default, so a
+// hand-edited localStorage entry degrades to a usable value instead of leaving a
+// setting nothing can interpret.
+function choiceSetting(key, value) {
+  var allowed = SETTINGS_CHOICES[key] || [];
+  var text = typeof value === 'string' ? value : '';
+  return allowed.indexOf(text) >= 0 ? text : DEFAULT_SETTINGS[key];
+}
+
+// Fills in defaults, drops unknown keys, and normalizes every value by its own
+// kind — booleans coerced, numbers clamped, names checked against their list.
 // Applied on both sides of every read and write, so a malformed entry (partial
 // JSON, a string where a number belongs, 5000%) degrades to a usable object
 // instead of propagating.
@@ -73,7 +107,9 @@ function normalizeSettings(raw) {
   Object.keys(DEFAULT_SETTINGS).forEach(function (key) {
     var fallback = DEFAULT_SETTINGS[key];
     var value = raw && Object.prototype.hasOwnProperty.call(raw, key) ? raw[key] : fallback;
-    out[key] = typeof fallback === 'boolean' ? !!value : clampSetting(key, value);
+    if (typeof fallback === 'boolean') out[key] = !!value;
+    else if (typeof fallback === 'string') out[key] = choiceSetting(key, value);
+    else out[key] = clampSetting(key, value);
   });
   return out;
 }

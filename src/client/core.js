@@ -68,19 +68,58 @@
       return parts[parts.length - 1] || text
     }
 
-    // The current session id, read from the client sessions store. The file
-    // tree passes it to the host so it can root at the session's workspace.
+    // ── Which session is on screen ──────────────────────────────────────────
+    // The list snapshot carries NO `current`/`active` field in the DSH this
+    // plugin runs against: `SessionListState` is
+    // `{ ids, byId, phase, subagentsByParent, jobsBySession }`
+    // (@deepseek-ai/dsh-api-session-controller). Reading `snap.current` — the
+    // shape this used to assume — therefore returned '' on EVERY call, silently,
+    // for every consumer at once.
+    //
+    // What is left as the truth is the retention count: the session the MAIN
+    // VIEW holds is the session being shown, which is exactly the test the
+    // shell's own session surface makes (`isMain` in ui-session reads
+    // `list.getSnapshot().byId[id].retainedBy.mainView`). So that is what is read
+    // here, with the explicit field still honored first for a shell that has one.
+    //
+    // An empty id is not cosmetic. It roots the file tree at "the most recent
+    // session's workspace" (the host's own fallback for an unnamed request),
+    // which looks right until the user switches workspace or session; it drops
+    // the `?sessionId=` from the popout page; it makes `@引用` give up on the
+    // composer and copy to the clipboard instead; and it is why 「在系统侧边栏
+    // 打开」 refused with no reason at all.
     const currentSessionId = () => {
       try {
         const sessions = ctx.get('sessions')
         const list = sessions && sessions.list
-        if (list && typeof list.getSnapshot === 'function') {
-          const snap = list.getSnapshot()
-          const id = snap && (snap.current != null ? snap.current : snap.active)
-          return typeof id === 'string' ? id : ''
+        if (!list || typeof list.getSnapshot !== 'function') return ''
+        const snap = list.getSnapshot()
+        if (!snap) return ''
+        const explicit = snap.current != null ? snap.current : snap.active
+        if (typeof explicit === 'string' && explicit) return explicit
+        const byId = snap.byId || {}
+        const ids = Array.isArray(snap.ids) && snap.ids.length ? snap.ids : Object.keys(byId)
+        for (const id of ids) {
+          const row = byId[id]
+          if (row && row.retainedBy && row.retainedBy.mainView > 0) return id
         }
       } catch (e) {}
       return ''
+    }
+
+    // The workspace root of one session, from the same list snapshot. It is what
+    // makes an absolute path INSIDE that workspace addressable as a session file
+    // (see sessionFileAddress in src/client/docpreview.js).
+    const sessionCwd = (sessionId) => {
+      try {
+        if (typeof sessionId !== 'string' || !sessionId) return ''
+        const sessions = ctx.get('sessions')
+        const list = sessions && sessions.list
+        if (!list || typeof list.getSnapshot !== 'function') return ''
+        const snap = list.getSnapshot()
+        const row = snap && snap.byId ? snap.byId[sessionId] : null
+        return row && typeof row.cwd === 'string' ? row.cwd : ''
+      } catch (e) { return '' }
     }
 
     // Write `@path` into the current session's composer draft. Returns true on
@@ -91,13 +130,8 @@
         const sessions = ctx.get('sessions')
         const conversation = ctx.get('conversation')
         if (!sessions || !conversation) return false
-        const list = sessions.list
-        let sessionId
-        if (list && typeof list.getSnapshot === 'function') {
-          const snap = list.getSnapshot()
-          sessionId = snap && (snap.current != null ? snap.current : snap.active)
-        }
-        if (sessionId == null) return false
+        const sessionId = currentSessionId()
+        if (!sessionId) return false
         const actx = typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined
         if (!actx) return false
         const input = conversation.input && typeof conversation.input.for === 'function' ? conversation.input.for(actx) : undefined

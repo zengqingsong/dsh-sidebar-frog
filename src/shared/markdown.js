@@ -53,7 +53,14 @@ function sanitizeAttrValue(v) {
 // Rewrite one raw <tag ...> opener (no content): drops on* handlers and other
 // dangerous attributes, scrubs attribute values, and escapes what remains so
 // the tag cannot be reinterpreted. Returns the sanitized opener string.
-function sanitizeHtmlTag(open) {
+//
+// opts (dir/media, see mdMedia) additionally REBASES the URLs the tag carries:
+// a raw <img src="docs/logo/logo.svg"> in a Markdown file is relative to THAT
+// file, and left alone it resolved against the app's own URL — where it 404s, so
+// the image silently did not appear. ![alt](relative.svg) already went through
+// mdMedia; raw HTML images now do too. Omitted opts (no document path) keep the
+// old behavior: no rebasing.
+function sanitizeHtmlTag(open, opts) {
   var nm = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(open) || [];
   var name = nm[1] || '';
   var body = open.slice(1, -1).replace(/^[a-zA-Z][a-zA-Z0-9-]*/, '');
@@ -70,6 +77,10 @@ function sanitizeHtmlTag(open) {
     var q = raw.charAt(0);
     if (q === '"' || q === '\'') raw = raw.slice(1, -1);
     var safe = sanitizeAttrValue(raw);
+    if (opts) {
+      if (/^(src|poster)$/i.test(an)) safe = mdMedia(safe, opts);
+      else if (/^srcset$/i.test(an)) safe = mdRebaseSrcset(safe, opts);
+    }
     attrs.push(an + '="' + safe.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"');
   }
   return '<' + name + (attrs.length ? ' ' + attrs.join(' ') : '') + '>';
@@ -82,7 +93,43 @@ var BLOCK_HTML_TAGS = {
   details: 1, div: 1, figure: 1, figcaption: 1, summary: 1, p: 1,
   ul: 1, ol: 1, li: 1, dl: 1, dt: 1, dd: 1,
   table: 1, thead: 1, tbody: 1, tfoot: 1, tr: 1, th: 1, td: 1,
+  // <picture> is the light/dark image switch GitHub READMEs use — a <source
+  // media="(prefers-color-scheme: dark)"> beside a fallback <img>. It is
+  // gathered as a block so a multi-line one survives (line-by-line paragraph
+  // handling split it), and rendered by renderPicture.
+  picture: 1,
 };
+// A <picture> element, rebuilt from its own children: the <source> elements and
+// the fallback <img> are sanitized and their URLs rebased (see sanitizeHtmlTag),
+// and the browser keeps making the light/dark choice itself — that IS the
+// element's contract, and re-implementing it here would only disagree with the
+// engine on the cases it already handles (width media queries, image formats).
+// Anything else inside is escaped: a <picture> holds sources and an image, so
+// stray text or markup is not silently swallowed.
+function renderPicture(block, opts) {
+  var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
+  var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+  var afterOpen = open ? block.slice(open.index + open[0].length) : block;
+  var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
+  var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
+  var out = [];
+  var re = /<(?:source|img)\b[^>]*>/gi;
+  var m;
+  var last = 0;
+  while ((m = re.exec(inner))) {
+    if (m.index > last) {
+      var gap = inner.slice(last, m.index);
+      if (gap.trim()) out.push(htmlEscape(gap));
+    }
+    out.push(sanitizeHtmlTag(m[0], opts));
+    last = m.index + m[0].length;
+  }
+  if (last < inner.length) {
+    var tail = inner.slice(last);
+    if (tail.trim()) out.push(htmlEscape(tail));
+  }
+  return opener + out.join('') + '</picture>';
+}
 // Collect the raw source of a block-level HTML element: starts at its opening
 // tag (already on the current line) and runs until the matching closing tag
 // (case-insensitive, closer-tag), counting nested openers so a nested
@@ -121,7 +168,7 @@ function renderTr(block, opts) {
     var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
     var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
     cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-    out.push(cellAttr + mdInline(mdEscape(cellText), opts) + '</' + m[1] + '>');
+    out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
     last = m.index + m[0].length;
   }
   if (last < inner.length) out.push(htmlEscape(inner.slice(last)));
@@ -149,14 +196,15 @@ function renderBlockHtml(block, tag, opts) {
     inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
   }
   if (tag === 'tr') return renderTr(block, opts);
+  if (tag === 'picture') return renderPicture(block, opts);
   if (INLINE_BLOCK_TAGS[tag]) {
     var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-    return openTag + mdInline(mdEscape(text), opts) + closeTag;
+    return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
   }
   return openTag + mdToHtml(inner, opts) + closeTag;
 }
 
-function mdEscape(s) {
+function mdEscape(s, opts) {
   s = String(s);
   // Protect whitelisted raw inline HTML so the escaping below cannot turn it
   // into visible entity text. Whole elements (opener + content + closer) are
@@ -165,15 +213,21 @@ function mdEscape(s) {
   //     i, em, u, s, small, mark, del, ins, q, span, font, abbr, a — with
   //     any attribute list (colors, sizes, href…); each opener is sanitized
   //     (on* handlers and script-ish URLs dropped, values scrubbed)
-  //   - void: br, hr, wbr
+  //   - void: br, hr, wbr, and img — an image's src is REBASED onto the media
+  //     route when opts carries one (see sanitizeHtmlTag), which is what makes a
+  //     raw <img src="docs/logo/logo.svg"> in a README actually appear
+  //   - picture: the whole element (sources + fallback image) is rebuilt by
+  //     renderPicture, so a <picture> inside a paragraph renders as the image
+  //     instead of as visible angle brackets
   //   - single-line svg (sanitized)
   var toks = [];
-  s = s.replace(/<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
+  s = s.replace(/<picture\b[^>]*>[\s\S]*?<\/picture>|<(b|strong|i|em|u|s|small|mark|del|ins|q|span|font|abbr|a|figcaption)\b[^>]*>[\s\S]*?<\/\1>|<(kbd|sub|sup)>[\s\S]*?<\/\2>|<img\b[^>]*>|<wbr\s*\/?>|<br\s*\/?>|<hr\s*\/?>|<svg[\s\S]*?<\/svg>/gi, function (m) {
     if (/^<svg/i.test(m)) { m = sanitizeSvg(m); }
+    else if (/^<picture/i.test(m)) { m = renderPicture(m, opts); }
     else if (/^<(kbd|sub|sup)>/i.test(m)) { /* content is plain text — keep as-is */ }
     else {
       var gi = m.indexOf('>');
-      m = sanitizeHtmlTag(m.slice(0, gi + 1)) + m.slice(gi + 1);
+      m = sanitizeHtmlTag(m.slice(0, gi + 1), opts) + m.slice(gi + 1);
     }
     toks.push(m);
     return '\x01K' + toks.length + '\x02';
@@ -236,14 +290,35 @@ function cellAlign(cell) {
 // (scheme:, data:, #fragment, /absolute) are passed through untouched; relative
 // targets are rebased onto the Markdown file's directory. media is only set
 // when the caller supplied opts.path (i.e. a real document is being rendered).
-function mdMedia(url, dir, media) {
+function mdMedia(url, opts) {
+  var media = (opts && opts.media) || '';
   if (!media) return url;
   if (/^(?:[a-z][a-z0-9+.-]*:|data:|#|\/)/i.test(url)) return url;
-  return media + encodeURIComponent(dir + url);
+  var out = media + encodeURIComponent(((opts && opts.dir) || '') + url);
+  // The session the document is being read in. The media route resolves a
+  // relative path against that session's workspace (see src/host/routes.js), so
+  // without it a document-relative image resolves against whatever the sandbox
+  // root happens to be — a 404, i.e. a silently broken image.
+  if (opts && opts.sessionId) out += '&sessionId=' + encodeURIComponent(opts.sessionId);
+  return out;
+}
+// srcset is a comma-separated list of "url [descriptor]" candidates, so each
+// candidate's URL is rebased on its own and its descriptor (2x, 640w) is
+// kept. A srcset carrying a data: URL is passed through untouched: those
+// contain commas of their own, and splitting them would corrupt the value —
+// and a data URL needs no rebasing anyway.
+function mdRebaseSrcset(value, opts) {
+  var text = String(value);
+  if (!(opts && opts.media) || /data\s*:/i.test(text)) return text;
+  return text.split(',').map(function (part) {
+    var m = /^(\s*)(\S+)([\s\S]*)$/.exec(part);
+    if (!m) return part;
+    return m[1] + mdMedia(m[2], opts) + m[3];
+  }).join(',');
 }
 function mdCell(src, tag, align, opts) {
   var st = align ? ' style="text-align:' + align + '"' : '';
-  return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim()), opts) + '</' + tag + '>';
+  return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
 }
 
 // ── Inline pass ─────────────────────────────────────────────────────────
@@ -262,7 +337,7 @@ function mdInline(s, opts) {
   // Images and links are shelved as tokens while auto-linking runs, so a URL
   // inside a rendered href/src cannot be wrapped in a second anchor.
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-    kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts.dir || '', opts.media || '') + '">');
+    kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts) + '">');
     return '\x01A' + kept.length + '\x02';
   });
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
@@ -287,8 +362,29 @@ function mdInline(s, opts) {
     var href = /^www\./i.test(core) ? 'http://' + core : core;
     return pre + '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + core + '</a>' + suffix;
   });
-  s = s.replace(/\x01A(\d+)\x02/g, function (m, d) { return kept[Number(d) - 1] || m; });
-  return s.replace(/\x01M(\d+)\x02/g, function (m, d) { return math[Number(d) - 1] || m; });
+  // Tokens can nest — a badge is [![alt](image)](link), so the link token's
+  // replacement text CONTAINS the image token. String.replace never rescans
+  // what it just wrote, so a single pass left the inner token in the output and
+  // the badge rendered as the literal characters "A1" instead of the image.
+  // Restoring repeatedly until nothing is left fixes every nesting depth, and the
+  // bound is only there so a malformed token cannot spin.
+  s = restoreTokens(s, kept, 'A');
+  return restoreTokens(s, math, 'M');
+}
+
+// Replace the \x01<t>\x02 tokens with what they stand for, repeatedly: a token's
+// replacement text may hold another token (see the badge note above). An
+// out-of-range index is left as-is rather than dropped — a missing token must not
+// be able to delete text.
+function restoreTokens(s, list, letter) {
+  var re = new RegExp('\\x01' + letter + '(\\d+)\\x02');
+  var once = function (text) {
+    return text.replace(new RegExp('\\x01' + letter + '(\\d+)\\x02', 'g'), function (m, d) {
+      return list[Number(d) - 1] || m;
+    });
+  };
+  for (var pass = 0; pass < 6 && re.test(s); pass += 1) s = once(s);
+  return s;
 }
 
 // ── Lists ───────────────────────────────────────────────────────────────
@@ -329,7 +425,7 @@ function mdListBlock(lines, start, opts) {
     if (task) {
       html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
     } else {
-      html.push('<li>' + mdInline(mdEscape(body), opts));
+      html.push('<li>' + mdInline(mdEscape(body, opts), opts));
     }
     open = true;
   };
@@ -337,7 +433,7 @@ function mdListBlock(lines, start, opts) {
   // a second block in it after a blank line. Both are item text — this renderer
   // has no indented-code rule, so that is the least surprising reading.
   var continuation = function (line) {
-    html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, '')), opts));
+    html.push(' ' + mdInline(mdEscape(line.replace(/^[ \t]+/, ''), opts), opts));
   };
   while (i < lines.length) {
     var mark = mdListMarker(lines[i]);
@@ -383,6 +479,11 @@ function mdToHtml(src, opts) {
   var mdOpts = {
     dir: opts.dir != null ? opts.dir : (lastSlash >= 0 ? docPath.slice(0, lastSlash + 1) : ''),
     media: opts.media != null ? opts.media : (opts.path ? '/dsh-sidebar-frog/media?path=' : ''),
+    // Carried through to every media URL this render produces (see mdMedia).
+    sessionId: opts.sessionId || '',
+    // The chosen document skin (see src/shared/skins.js): the class the Markdown
+    // root carries, so a skin is pure CSS and costs the renderer nothing.
+    skin: opts.skin || '',
   };
   var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
   var out = [];
@@ -441,7 +542,7 @@ function mdToHtml(src, opts) {
         }
       }
       var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-      out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$') + '</div>');
+      out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
       continue;
     }
     // Standalone SVG block: gather until the closing tag, then emit sanitized.
@@ -501,7 +602,7 @@ function mdToHtml(src, opts) {
     var hd = /^(#{1,6})\s+(.*)$/.exec(line);
     if (hd) {
       var lv = hd[1].length;
-      out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2]), mdOpts) + '</h' + lv + '>');
+      out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
       i += 1;
       continue;
     }
@@ -542,12 +643,12 @@ function mdToHtml(src, opts) {
     // '=====' cannot be anything but an underline, and today it renders as a
     // paragraph containing '=====', which is never what was meant.
     if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-      out.push('<h1>' + mdInline(mdEscape(line.trim()), mdOpts) + '</h1>');
+      out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
       i += 2;
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
-    out.push('<p>' + mdInline(mdEscape(line), mdOpts) + '</p>');
+    out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
     i += 1;
   }
   return out.join('\n');

@@ -167,10 +167,44 @@
     const encodeAddressSegment = (segment) =>
       encodeURIComponent(segment).replace(/%3A/gi, ':')
 
+    // A path INSIDE the session's workspace becomes a session-relative address,
+    // which is the only spelling the shell's document tab can read: it resolves a
+    // session address against that session's workspace root. The product's own
+    // tree does exactly this (`fileAddressFor` in ui-sidebar-files strips the
+    // root off an absolute path before building the address).
+    //
+    // The tree hands us host-issued ABSOLUTE paths (the host answers with
+    // `processPath`, not with the caller's spelling), so without this the address
+    // asked the reader for `<root>/D:/…` — a path that cannot exist, in a tab that
+    // otherwise opened fine. An absolute path OUTSIDE the workspace keeps its
+    // absolute form, which is the product's own answer for that case too.
+    const workspaceRelativePath = (sessionId, path) => {
+      const root = sessionCwd(sessionId).replace(/\\/g, '/').replace(/\/+$/, '')
+      if (!root) return path
+      if (path === root) return ''
+      if (path.indexOf(root + '/') === 0) return path.slice(root.length + 1)
+      return path
+    }
+
     const sessionFileAddress = (sessionId, path) => {
-      const normalized = String(path).replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
+      const normalized = workspaceRelativePath(sessionId, String(path).replace(/\\/g, '/').replace(/^(?:\.\/)+/, ''))
       const encoded = normalized.split('/').map(encodeAddressSegment).join('/')
       return 'dsh-resource://file/session/' + encodeAddressSegment(sessionId) + '/' + encoded
+    }
+
+    // The session a `file:` address carries. A session-scoped address is the only
+    // place a seat hands this plugin an id it can act on (see
+    // MarkdownDocumentBody), and a document-relative image in such a file needs
+    // it: the media route resolves the path against that session's workspace.
+    const sessionFromFileAddress = (address) => {
+      try {
+        const text = String(address || '')
+        const prefix = 'dsh-resource://file/session/'
+        if (text.indexOf(prefix) !== 0) return ''
+        const end = text.search(/[?#]/)
+        const id = text.slice(prefix.length, end === -1 ? undefined : end).split('/')[0]
+        return id ? decodeURIComponent(id) : ''
+      } catch (e) { return '' }
     }
 
     const pathFromFileAddress = (address) => {
@@ -211,7 +245,14 @@
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(MarkdownView, { content, path: pathFromFileAddress(p.resourceAddress) }),
+        React.createElement(MarkdownView, {
+      content,
+      path: pathFromFileAddress(p.resourceAddress),
+      // The address IS session-scoped, so the session that owns the tab is in
+      // the only thing this body was handed — and a document-relative image in a
+      // file opened that way needs it (see mdMedia).
+      sessionId: sessionFromFileAddress(p.resourceAddress),
+    }),
       )
     }
 
@@ -428,17 +469,45 @@
       } catch (e) { return null }
     }
 
-    // Hand a file to whichever renderer the shell would pick. Returns false (and
-    // the caller says so) when the shell has no sidebar face or refuses the
-    // address — `openResource` throws rather than no-ops when nothing can open
-    // it, which is exactly the case the caller is checking for.
-    const openInShellSidebar = (path) => {
+    // Hand a file to whichever renderer the shell would pick.
+    //
+    // It reports WHY when it cannot, instead of a bare `false`. The shell's
+    // `openResource` throws for reasons the user can act on differently — no
+    // right column in this build, no session to open into, or a column in which
+    // no tab type claims the address — and it throws rather than reporting
+    // absence because, from its side, an unclaimed address is a wiring mistake.
+    // Swallowing that reason is what turned a real failure into the message
+    // 「无法在系统侧边栏打开此文件」 with nothing to go on; the reason travels back
+    // to the caller, which says it out loud (see openShellFailureText below).
+    const openInShellSidebar = (path, sessionIdArg) => {
+      let sidebar = null
+      try { sidebar = ctx.get('sidebarRight') } catch (e) { sidebar = null }
+      if (!sidebar || typeof sidebar.openResource !== 'function') {
+        return { ok: false, reason: 'no-face' }
+      }
+      const sessionId = (typeof sessionIdArg === 'string' && sessionIdArg) || currentSessionId()
+      if (!sessionId) return { ok: false, reason: 'no-session' }
+      const address = sessionFileAddress(sessionId, path)
       try {
-        const sidebar = ctx.get('sidebarRight')
-        if (!sidebar || typeof sidebar.openResource !== 'function') return false
-        const sessionId = currentSessionId()
-        if (!sessionId) return false
-        sidebar.openResource(sessionFileAddress(sessionId, path))
-        return true
-      } catch (e) { return false }
+        sidebar.openResource(address)
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'refused',
+          address,
+          detail: (e && e.message) ? String(e.message) : String(e),
+        }
+      }
+      return { ok: true, address }
+    }
+
+    // One sentence per refusal, because a message that names no cause cannot be
+    // acted on: 收起/展开 and which kind this build registers are the user's own
+    // levers, and the shell's own error text names the third case exactly.
+    const openShellFailureText = (res) => {
+      const reason = res && res.reason
+      if (reason === 'no-face') return '无法在系统侧边栏打开：这个 DSH 没有可用的右侧边栏'
+      if (reason === 'no-session') return '无法在系统侧边栏打开：还没有选中的会话'
+      const detail = res && res.detail ? '（' + res.detail + '）' : ''
+      return '无法在系统侧边栏打开此文件' + detail
     }
