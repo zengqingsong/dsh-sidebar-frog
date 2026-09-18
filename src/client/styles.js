@@ -328,11 +328,49 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
 .artifacts-markdown pre code { background: transparent; padding: 0; }
 .artifacts-markdown img { max-width: 100%; }
+/* The selection bar for a rendered document (see attachMarkdownSelectionBar in
+   src/shared/markdown.js). Appended to <body>, fixed to the viewport, so it is
+   outside any panel scope and carries fallbacks for the theme tokens. */
+.artifacts-mdselbar { position: fixed; z-index: 2147483000; display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,.18)); background: var(--dsw-alias-bg-layer-2, rgba(28,28,30,.96)); color: var(--dsw-alias-label-primary, #fff); box-shadow: 0 6px 20px rgba(0,0,0,.24); font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; user-select: none; }
+.artifacts-mdselbar-label { white-space: nowrap; color: var(--dsw-alias-label-secondary, rgba(255,255,255,.7)); }
+.artifacts-mdselbar-btn { font: inherit; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent; background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.12)); color: inherit; cursor: pointer; }
+.artifacts-mdselbar-btn:hover { background: var(--dsw-alias-state-business-primary, #4b7bec); color: #fff; }
 /* The raw-HTML shapes a README uses for its logo: <picture> (a light/dark
    <source> beside a fallback <img>) inside <p align="center">. Alignment comes
    from an obsolete presentational attribute, so it is stated here rather than
    trusted to the browser; the image keeps its aspect ratio when a width/height
    attribute pair is scaled down by max-width. */
+/* ── source-line gutter (设置 › 预览显示行号) ─────────────────────────────────
+   The reader's answer to "which line is this?". The numbers are NOT counted from
+   what is drawn: they are the anchors the renderer already stamps on every block
+   (data-lineno = the source line it starts on, with the range when it covers
+   several — see mdAnchor in src/shared/markdown.js), so the gutter and the
+   "引用/定位" bar can never disagree about which line a block is.
+
+   Only DIRECT children of the document root carry a number. They all begin at the
+   root's left edge, so one negative offset lines them up; a nested block (a list
+   item, a table cell, a blockquote's inner paragraph) starts at a different x, so
+   its number would sit at a different x too and read as a stray glyph rather than
+   a column.
+
+   The gutter is chrome this plugin adds, so it is opt-in and it is pure CSS on
+   markup that is already there: no extra elements, nothing to keep in sync. */
+.artifacts-markdown.is-lines { padding-left: 3.9em; }
+.artifacts-markdown.is-lines > [data-lineno] { position: relative; }
+.artifacts-markdown.is-lines > [data-lineno]::before {
+  content: attr(data-lineno);
+  position: absolute;
+  left: -3.5em;
+  width: 2.9em;
+  text-align: right;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--dsw-alias-label-tertiary, #94a3b8);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .artifacts-markdown picture { max-width: 100%; }
 .artifacts-markdown picture > img { max-width: 100%; height: auto; }
 .artifacts-markdown [align="center"] { text-align: center; }
@@ -480,6 +518,17 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-tree-row.is-selected { background: var(--dsw-alias-interactive-bg-active); --frog-row-bg: var(--dsw-alias-interactive-bg-active); }
 /* Depth guides, drawn inside each row so they never leak across levels. */
 .artifacts-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--dsw-alias-border-l1); pointer-events: none; }
+/* 新建: the inline name row. It is a tree row (same guides, icons, indentation)
+   with an input where the label would be, so the new entry is visibly about to
+   exist at that level. The row is not clickable — a click in it must land in the
+   input, not open anything. */
+.artifacts-tree-createrow { cursor: default; background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-tree-createrow:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-tree-createrow.is-invalid { box-shadow: inset 0 0 0 1px var(--dsw-alias-state-error-primary, #e5484d); }
+.artifacts-tree-create { flex: 1 1 auto; min-width: 0; height: calc(var(--frog-h-tree-row) - 6px); box-sizing: border-box; padding: 0 4px; font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-state-business-primary); border-radius: 3px; outline: none; }
+.artifacts-tree-create::placeholder { color: var(--dsw-alias-label-tertiary); }
+.artifacts-tree-create-error { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--dsw-alias-state-error-primary, #e5484d); }
+.artifacts-tree-create-hint { flex: none; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .artifacts-tree-twisty { flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }
 .artifacts-tree-twisty svg { transition: transform .1s var(--ds-ease-in-out, ease); }
 .artifacts-tree-twisty.is-open svg { transform: rotate(90deg); }

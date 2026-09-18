@@ -248,6 +248,20 @@ const page = String.raw`<!doctype html>
   .docbtn:focus-visible { outline: 2px solid var(--p-accent); outline-offset: 1px; }
   .docbtn:disabled { opacity: 0.6; cursor: default; }
   .markdown { padding: 16px 20px; line-height: 1.6; word-wrap: break-word; }
+  /* Source-line gutter (设置 › 预览显示行号). The panel's twin of these rules lives
+     in src/client/styles.js under .artifacts-markdown.is-lines — the two class
+     names differ (this page's root is .markdown), so the rules are written twice
+     on purpose and a guard in scripts/check.js requires both to exist. The number
+     comes from data-lineno, which the renderer stamps on every block. */
+  .markdown.is-lines { padding-left: 4.4em; }
+  .markdown.is-lines > [data-lineno] { position: relative; }
+  .markdown.is-lines > [data-lineno]::before {
+    content: attr(data-lineno);
+    position: absolute; left: -4em; width: 3.4em; text-align: right;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.75; color: var(--p-text-tertiary);
+    pointer-events: none; -webkit-user-select: none; user-select: none;
+  }
   .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 16px 0 8px; line-height: 1.3; }
   .markdown h1 { font-size: 1.5em; border-bottom: 1px solid var(--p-border-l2); padding-bottom: 6px; }
   .markdown h2 { font-size: 1.3em; border-bottom: 1px solid var(--p-border-l1); padding-bottom: 4px; }
@@ -358,6 +372,14 @@ const page = String.raw`<!doctype html>
   .tree-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tree-name.is-preview { font-style: italic; }
   .tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--p-border-l1); pointer-events: none; }
+  /* 新建: the inline name row (see beginTreeCreate) — a tree row with an input
+     where the label would be, so the new entry is visibly about to exist there. */
+  .tree-createrow { cursor: default; background: var(--p-hover); }
+  .tree-createrow.is-invalid { box-shadow: inset 0 0 0 1px var(--p-error); }
+  .tree-create-input { flex: 1 1 auto; min-width: 0; height: 20px; box-sizing: border-box; padding: 0 4px; font: inherit; font-size: 13px; color: var(--p-text); background: var(--p-bg); border: 1px solid var(--p-accent); border-radius: 3px; outline: none; }
+  .tree-create-input::placeholder { color: var(--p-text-tertiary); }
+  .tree-create-error { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--p-error); }
+  .tree-create-hint { flex: none; font-size: 11px; color: var(--p-text-tertiary); }
   .tree-twisty { flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--p-text-tertiary); }
   .tree-twisty svg { transition: transform .1s ease; }
   .tree-twisty.is-open svg { transform: rotate(90deg); }
@@ -482,6 +504,7 @@ const page = String.raw`<!doctype html>
         <div class="tree-head">
           <span class="tree-root" id="treeRoot">…</span>
           <span class="tree-tools">
+            <button class="tree-tool" id="treeNew" type="button" title="新建文件 / 文件夹"></button>
             <button class="tree-tool" id="treeFilter" type="button"></button>
             <button class="tree-tool" id="treeExpandAll" type="button"></button>
             <button class="tree-tool" id="treeCollapseAll" type="button"></button>
@@ -510,6 +533,7 @@ const page = String.raw`<!doctype html>
     var MEDIA_URL = '/dsh-sidebar-frog/media';
     var LISTDIR_URL = '/dsh-sidebar-frog/listdir';
     var DELETE_URL = '/dsh-sidebar-frog/delete';
+    var CREATE_URL = '/dsh-sidebar-frog/create';
     var _sm = /[?&]sessionId=([^&]+)/.exec(location.search);
     // A malformed percent-escape must never throw here: this runs at the top
     // level of the inline script, so one bad query string would kill the page.
@@ -816,6 +840,125 @@ const page = String.raw`<!doctype html>
         toast('删除失败');
       });
     }
+    // ── 新建 (create a file or a folder) ────────────────────────────────────
+    // The same two verbs the sidebar's tree offers, with the same inline name
+    // row and the same host route, so the popout is not a viewer with fewer
+    // capabilities than the panel it mirrors. The name travels beside a PARENT
+    // DIRECTORY (never as a path): the host validates it, joins it and fences the
+    // result to the session's workspace, and answers a reason this page shows in
+    // the row itself when it refuses.
+    //
+    // treeCreating is the pending row's state: { parent, kind, error, busy }.
+    var treeCreating = null;
+    function treeCreateTargetFor(entry) {
+      if (entry && entry.isDir) return entry.path;
+      if (entry && entry.path) return parentDirOf(entry.path);
+      return (treeRoot && treeRoot.path) || '';
+    }
+    function beginTreeCreate(entry, kind) {
+      var parent = treeCreateTargetFor(entry);
+      treeCreating = { parent: parent || '', kind: kind === 'dir' ? 'dir' : 'file', error: '', busy: false };
+      closeTreeMenu();
+      if (parent && relTreePath(parent) !== '') toggleTree(parent, true);
+      renderTree();
+    }
+    function doTreeCreate() {
+      var c = treeCreating;
+      if (!c || c.busy) return;
+      var input = document.querySelector('.tree-create-input');
+      var name = String((input && input.value) || '').trim();
+      if (!name) { treeCreating.error = '请输入名称'; renderTree(); return; }
+      treeCreating.busy = true;
+      treeCreating.error = '';
+      renderTree();
+      fetch(CREATE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent: c.parent, name: name, kind: c.kind, sessionId: currentSessionId() }),
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (!res || !res.ok) {
+          treeCreating = c;
+          treeCreating.busy = false;
+          treeCreating.error = (res && res.error) || '新建失败';
+          renderTree();
+          return;
+        }
+        treeCreating = null;
+        toast(c.kind === 'dir' ? '已新建文件夹 ' + (res.name || name) : '已新建文件 ' + (res.name || name));
+        // Re-read the level that now holds the entry — the ROOT when it was
+        // created at the top level, exactly as 删除 has to distinguish.
+        if (c.parent && relTreePath(c.parent) !== '') refreshTreeDir(c.parent); else loadTreeRoot(false);
+        if (res.path) {
+          treeFlash = res.path;
+          if (c.kind === 'dir') { toggleTree(res.path, true); renderTree(); }
+          else openPath(res.path, diffOf(res.path), false);
+        } else {
+          renderTree();
+        }
+      }).catch(function () {
+        if (treeCreating) { treeCreating.busy = false; treeCreating.error = '新建失败'; renderTree(); }
+      });
+    }
+    // The row the input lives in: same guides, same icons, same indentation as a
+    // real row, so it reads as "this is about to exist here".
+    function renderTreeCreateRow(depth) {
+      var c = treeCreating || { kind: 'file', error: '' };
+      var unit = 12;
+      var row = el('div', 'tree-row tree-createrow' + (c.error ? ' is-invalid' : ''));
+      row.style.paddingLeft = (4 + depth * unit) + 'px';
+      for (var i = 0; i < depth; i += 1) {
+        var guide = el('span', 'tree-guide');
+        guide.style.left = (6 + i * unit) + 'px';
+        row.appendChild(guide);
+      }
+      row.appendChild(el('span', 'tree-twisty is-file'));
+      var ico = el('span', 'tree-ico ' + (c.kind === 'dir' ? 'tree-ico-folder' : 'tree-ico-text'));
+      ico.appendChild(c.kind === 'dir' ? folderClosedIcon() : treeFileIcon());
+      row.appendChild(ico);
+      var input = document.createElement('input');
+      input.className = 'tree-create-input';
+      input.type = 'text';
+      input.value = c.name || '';
+      input.placeholder = c.kind === 'dir' ? '新文件夹名称' : '新文件名称（如 notes.md）';
+      input.setAttribute('aria-label', c.kind === 'dir' ? '新文件夹名称' : '新文件名称');
+      input.disabled = !!c.busy;
+      input.spellcheck = false;
+      input.addEventListener('input', function () { if (treeCreating) { treeCreating.name = input.value; treeCreating.error = ''; } });
+      input.addEventListener('keydown', function (ev) {
+        ev.stopPropagation();
+        if (ev.key === 'Escape') { ev.preventDefault(); treeCreating = null; renderTree(); return; }
+        if (ev.key === 'Enter') { ev.preventDefault(); doTreeCreate(); }
+      });
+      // Clicking elsewhere means "never mind" — and a submit sets busy, which
+      // skips this so the row cannot vanish under a request in flight.
+      input.addEventListener('blur', function () {
+        if (treeCreating && !treeCreating.busy) { treeCreating = null; renderTree(); }
+      });
+      row.appendChild(input);
+      if (c.error) row.appendChild(el('span', 'tree-create-error', c.error));
+      if (c.busy) row.appendChild(el('span', 'tree-create-hint', '新建中…'));
+      return row;
+    }
+
+    // The row the keyboard cursor is on, as an entry — how the + button stays
+    // predictable: whatever the tree is pointing at receives the new entry.
+    function treeCursorEntry() {
+      if (!treeCursor) return null;
+      var find = function (entries) {
+        for (var i = 0; i < (entries || []).length; i += 1) {
+          var e = entries[i];
+          if (e.path === treeCursor) return e;
+          var node = treeChildren[e.path];
+          if (e.isDir && node && node.entries) {
+            var hit = find(node.entries);
+            if (hit) return hit;
+          }
+        }
+        return null;
+      };
+      return find(treeRoot && treeRoot.entries);
+    }
+
     // The directory a tree entry lives in, spelled the way the host spells it.
     // Empty for a top-level entry, whose level is the workspace root.
     function parentDirOf(path) {
@@ -1355,6 +1498,10 @@ const page = String.raw`<!doctype html>
         path: path,
         value: d.text,
         dark: isDarkTheme(),
+        // 设置 › 编辑器显示行号. The panel's editor mounts this same controller, so
+        // one preference covers both faces; a change arrives through the storage
+        // event below and is applied in place (applySettings).
+        lineNumbers: SETTINGS.editorLineNumbers !== false,
         onChange: function () { d.dirty = true; },
         onDirty: function (isDirty) {
           d.dirty = isDirty;
@@ -1551,8 +1698,12 @@ const page = String.raw`<!doctype html>
         } else if (type === 'markdown') {
           var md = el('div', 'markdown');
           // opts.path lets relative image/svg links resolve next to the doc.
-          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin);
-        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId() });
+          // The class carries the skin AND the line-number gutter: both are
+          // settings, both are pure CSS over markup that is already there (the
+          // renderer stamps data-lineno on every block — see mdAnchor).
+          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin) +
+            (SETTINGS.previewLineNumbers === true ? ' is-lines' : '');
+        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId(), lineAnchors: true });
           area.appendChild(md);
           typesetMath(md);
           typesetMermaid(md);
@@ -1975,6 +2126,20 @@ const page = String.raw`<!doctype html>
         });
       };
       walk(treeRoot && treeRoot.entries, 0);
+      // The 新建 input row takes its place where the entry will appear: right
+      // under the folder that will receive it, or at the top for the workspace
+      // root — the same placement the sidebar's tree uses.
+      if (treeCreating) {
+        var at = 0;
+        var depth0 = 0;
+        var parent = treeCreating.parent;
+        if (parent && relTreePath(parent) !== '') {
+          for (var i = 0; i < rows.length; i += 1) {
+            if (rows[i].entry && rows[i].entry.path === parent) { at = i + 1; depth0 = rows[i].depth + 1; break; }
+          }
+        }
+        rows.splice(at, 0, { create: true, depth: depth0 });
+      }
       return rows;
     }
 
@@ -2011,6 +2176,12 @@ const page = String.raw`<!doctype html>
       });
       return svg;
     }
+    // The tree header's plus (新建). It opens the two verbs rather than guessing
+    // a kind, which is why it is a plus and not a "new file" glyph.
+    function plusToolIcon() {
+      return strokeIcon(['M8 3.2 V12.8', 'M3.2 8 H12.8'], 14);
+    }
+
     function searchToolIcon() {
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('width', 14); svg.setAttribute('height', 14);
@@ -2061,6 +2232,15 @@ const page = String.raw`<!doctype html>
         return;
       }
       treeRows().forEach(function (row) { bodyEl.appendChild(renderTreeRow(row)); });
+      // The 新建 input is brand new on every render (the body is rebuilt from
+      // scratch), so it has to be focused and its caret put back here — the
+      // data-path carry-over above cannot help a row that has no data-path.
+      if (treeCreating) {
+        var createInput = bodyEl.querySelector('.tree-create-input');
+        if (createInput && document.activeElement !== createInput && !treeCreating.busy) {
+          if (createInput.focus) createInput.focus();
+        }
+      }
       if (focusPath) {
         var again = bodyEl.querySelector('[data-path="' + cssEscapeAttr(focusPath) + '"]');
         if (again && again.focus) again.focus();
@@ -2075,6 +2255,7 @@ const page = String.raw`<!doctype html>
 
     function renderTreeRow(row) {
       var unit = 12;
+      if (row.create) return renderTreeCreateRow(row.depth);
       if (!row.entry) {
         var msg = el('div', 'tree-row ' + (row.error ? 'tree-error' : 'tree-loading'), row.error || '加载中…');
         msg.style.paddingLeft = (4 + row.depth * unit + 16) + 'px';
@@ -2180,8 +2361,13 @@ const page = String.raw`<!doctype html>
     }
 
     // ── context menu ─────────────────────────────────────────────────────
-    function treeMenuItems(entry) {
+    function treeMenuItems(entry, only) {
       var list = [];
+      if (only === 'create') {
+        list.push({ label: '新建文件', run: function () { beginTreeCreate(entry, 'file'); } });
+        list.push({ label: '新建文件夹', run: function () { beginTreeCreate(entry, 'dir'); } });
+        return list;
+      }
       if (entry.isDir) {
         var open = !!treeExpanded[entry.path];
         list.push({ label: open ? '折叠文件夹' : '展开文件夹', run: function () { toggleTree(entry.path, !open); } });
@@ -2189,6 +2375,11 @@ const page = String.raw`<!doctype html>
         list.push({ label: '打开预览', run: function () { openPath(entry.path, diffOf(entry.path), false); } });
         list.push({ label: '固定预览', run: function () { openPath(entry.path, diffOf(entry.path), true); } });
       }
+      list.push({ sep: true });
+      // 新建 first in the action group, the way every explorer orders it: on a
+      // folder it creates inside it, on a file it creates a sibling.
+      list.push({ label: entry.isDir ? '新建文件' : '新建同级文件', run: function () { beginTreeCreate(entry, 'file'); } });
+      list.push({ label: entry.isDir ? '新建文件夹' : '新建同级文件夹', run: function () { beginTreeCreate(entry, 'dir'); } });
       list.push({ sep: true });
       list.push({ label: '复制路径', run: function () { copyText(entry.path, '已复制路径'); } });
       list.push({ label: '复制相对路径', run: function () { copyText(relTreePath(entry.path), '已复制相对路径'); } });
@@ -2216,8 +2407,8 @@ const page = String.raw`<!doctype html>
     // The item list is built ONCE per opened menu (buildTreeMenu): highlight,
     // arrow keys and Enter all index the SAME array, and navigation skips
     // separators so Enter can never call run() on one.
-    function buildTreeMenu(entry) {
-      treeMenuList = treeMenuItems(entry);
+    function buildTreeMenu(entry, only) {
+      treeMenuList = treeMenuItems(entry, only);
       treeMenuNav = [];
       for (var i = 0; i < treeMenuList.length; i += 1) {
         if (!treeMenuList[i].sep) treeMenuNav.push(i);
@@ -2255,13 +2446,16 @@ const page = String.raw`<!doctype html>
       window.removeEventListener('scroll', closeTreeMenu, true);
     }
 
-    function openTreeMenu(ev, entry) {
+    // only === 'create' opens the + button's short menu: the two create verbs
+    // and nothing else. The row menu passes nothing and gets the full list, with
+    // the same two items on it — one wording for one action on both surfaces.
+    function openTreeMenu(ev, entry, only) {
       ev.preventDefault();
       ev.stopPropagation();
       closeTreeMenu();
       treeCursor = entry.path;
       treeMenuEntry = entry;
-      buildTreeMenu(entry);
+      buildTreeMenu(entry, only);
       treeMenuEl = el('div', 'tree-menu');
       treeMenuEl.setAttribute('role', 'menu');
       treeMenuEl.tabIndex = -1;
@@ -2382,6 +2576,10 @@ const page = String.raw`<!doctype html>
     function treeBodyEl() { return document.getElementById('treeBody'); }
 
     function onTreeKeyDown(ev) {
+      // The 新建 input owns the keyboard while it is open: an arrow key there
+      // must move the caret, not the tree cursor. (The input stops propagation
+      // too; this is the belt to that braces.)
+      if (treeCreating) return;
       if (treeMenuEl) { onTreeMenuKey(ev); return; }
       var rows = treeRows();
       var index = -1;
@@ -2490,6 +2688,21 @@ const page = String.raw`<!doctype html>
       var clearBtn = document.getElementById('treeFilterClear');
       var bar = document.getElementById('treeFilterBar');
       var closeFilter = closeTreeFilter;
+      // 新建: the menu holds the two verbs (a + alone would have to guess which
+      // one you meant), aimed at whatever the tree is pointed at — the keyboard
+      // cursor's row, else the workspace root.
+      var newBtn = document.getElementById('treeNew');
+      if (newBtn) {
+        newBtn.appendChild(plusToolIcon());
+        newBtn.setAttribute('aria-label', '新建');
+        newBtn.setAttribute('aria-haspopup', 'menu');
+        newBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          var entry = treeCursorEntry() || { path: (treeRoot && treeRoot.path) || '', name: '工作区', isDir: true };
+          openTreeMenu(ev, entry, 'create');
+        });
+      }
       if (filterBtn) {
         filterBtn.appendChild(searchToolIcon());
         filterBtn.title = '过滤文件';
@@ -2731,6 +2944,17 @@ const page = String.raw`<!doctype html>
     }
     function applySettings() {
       applyMarkdownSkin();
+      // The line-number pair is applied to what is already on screen, not just to
+      // the next document: the gutter is a class on the open Markdown roots, and
+      // the editor's column is reconfigured in place (CodeMirror compartment), so
+      // a flip keeps the cursor, the undo history and any unsaved draft.
+      var roots = document.querySelectorAll('.markdown');
+      for (var ri = 0; ri < roots.length; ri += 1) {
+        roots[ri].classList.toggle('is-lines', SETTINGS.previewLineNumbers === true);
+      }
+      if (editorCtl && typeof editorCtl.setLineNumbers === 'function') {
+        editorCtl.setLineNumbers(SETTINGS.editorLineNumbers !== false);
+      }
       var wanted = SETTINGS.autoRefresh !== false;
       if (wanted && !_pollTimer) _pollTimer = setInterval(load, 2000);
       else if (!wanted && _pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }

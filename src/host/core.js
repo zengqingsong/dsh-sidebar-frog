@@ -948,6 +948,133 @@
     //     must not rely on the UI.
     //   · TYPE. What is deleted is what the tree showed — a regular file or a
     //     directory. `other` (a socket, a FIFO) is refused rather than unlinked.
+    // Create ONE entry inside a directory the person picked in the file tree:
+    // an empty text file, or a folder.
+    //
+    // The caller sends a PARENT DIRECTORY and a NAME, never a path: the name is
+    // checked here and joined here, so a crafted name cannot walk out of the
+    // directory it was typed in, and every refusal below is a sentence the tree
+    // can show next to the input instead of a silent no-op.
+    //
+    // Two properties matter more than the happy path:
+    //   · it never overwrites. A file is created with `wx` (fails if it exists)
+    //     and a folder with a plain mkdir (fails on EEXIST), so an existing
+    //     entry is refused by the OPERATING SYSTEM rather than by a stat-then-
+    //     write race the user could lose.
+    //   · the target stays inside the session's workspace, fenced on the
+    //     canonical spellings the backend handed us — the same fence 删除 uses,
+    //     because this is the other route in this plugin that creates or removes
+    //     something on disk.
+    //
+    // Like deletePath, this has no `fs` service method to call: the workspace
+    // filesystem exposes readText / listDir / writeText / editText, and the two
+    // operations that ADD or REMOVE a path are this plugin's own, through the
+    // host's node:fs (see the note above deletePath).
+    const CREATE_NAME_MAX = 200
+    // Names Windows refuses outright: reserved devices, with or without an
+    // extension. Applied only where the workspace itself is Windows-shaped.
+    const CREATE_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+    // A name is ONE path component, and which characters are legal in one is a
+    // property of the platform, not of this plugin: on POSIX almost anything
+    // goes, on Windows ten characters are outlawed forever. Refusing on both is
+    // worse than a small asymmetry — the check is stated in the terms of the
+    // machine the file is actually being written to.
+    const validateEntryName = (name, windows) => {
+      const text = String(name == null ? '' : name)
+      const trimmed = text.trim()
+      if (!trimmed) return { ok: false, error: '请输入名称' }
+      if (trimmed === '.' || trimmed === '..') return { ok: false, error: '名称不能是 . 或 ..' }
+      if (/[\\/]/.test(trimmed)) return { ok: false, error: '名称不能包含路径分隔符（/ 或 \\）' }
+      if (trimmed.length > CREATE_NAME_MAX) return { ok: false, error: '名称过长（上限 ' + CREATE_NAME_MAX + ' 个字符）' }
+      if (windows) {
+        if (/[<>:"|?*]/.test(trimmed) || /[\u0000-\u001f]/.test(trimmed)) {
+          return { ok: false, error: 'Windows 不允许名称里出现 < > : " | ? * 或控制字符' }
+        }
+        if (/[. ]$/.test(trimmed)) return { ok: false, error: 'Windows 不允许名称以空格或点结尾' }
+        if (CREATE_RESERVED.test(trimmed)) {
+          return { ok: false, error: '这是 Windows 的保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）' }
+        }
+      } else if (/[\u0000]/.test(trimmed)) {
+        return { ok: false, error: '名称不能包含 NUL 字符' }
+      }
+      return { ok: true, name: trimmed }
+    }
+
+    const createEntry = async (opts) => {
+      const args = opts || {}
+      const kind = args.kind === 'dir' ? 'dir' : 'file'
+      const fs = ctx.get('fs')
+      if (!fs || typeof fs.resolve !== 'function' || typeof fs.processPath !== 'function') {
+        return { ok: false, error: '宿主未提供文件系统接口' }
+      }
+      let cwd
+      try { cwd = await resolveCwd(args.sessionId) } catch (e) { cwd = undefined }
+      if (!cwd) return { ok: false, error: '工作区不可用，未新建' }
+      let parentTarget
+      try {
+        parentTarget = await fs.resolve(typeof args.parent === 'string' && args.parent ? args.parent : cwd, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该目录：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      const parentAbs = fs.processPath(parentTarget)
+      const rootAbs = typeof fs.processPath === 'function' ? fs.processPath(cwd) : String(cwd)
+      // Fence on canonical spellings, exactly like 删除: a directory outside the
+      // workspace is refused before the name is even looked at.
+      let inside = true
+      if (typeof fs.contains === 'function') {
+        let rootTarget
+        try { rootTarget = await fs.resolve(cwd, { cwd: cwd }) } catch (e) { rootTarget = undefined }
+        if (rootTarget) inside = fs.contains(rootTarget, parentTarget)
+      } else {
+        inside = pathUnder(parentAbs, rootAbs)
+      }
+      if (!inside) return { ok: false, error: '该目录在工作区之外，不能新建' }
+      const windows = /^[A-Za-z]:[\\/]/.test(parentAbs) || parentAbs.indexOf('\\') >= 0
+      const named = validateEntryName(args.name, windows)
+      if (!named.ok) return named
+      let info
+      try { info = await fs.stat(parentTarget) } catch (e) { info = undefined }
+      if (!info || info.type !== 'directory') return { ok: false, error: '目标目录不存在或不是文件夹' }
+      const wanted = parentAbs + (parentAbs.slice(-1) === '/' || parentAbs.slice(-1) === '\\' ? '' : '/') + named.name
+      let target
+      try {
+        target = await fs.resolve(wanted, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该路径：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      const abs = fs.processPath(target)
+      // The fence again, on the JOINED path: the name is a single component, so
+      // this can only fail if the platform mangled the join — which is precisely
+      // when the check earns its keep.
+      if (!pathUnder(abs, rootAbs)) return { ok: false, error: '该路径在工作区之外，不能新建' }
+      let existing
+      try { existing = await fs.stat(target) } catch (e) { existing = undefined }
+      if (existing) {
+        const what = existing.type === 'directory' ? '文件夹' : '文件'
+        return { ok: false, error: '已存在同名' + what + '「' + named.name + '」' }
+      }
+      let nodeFs
+      try {
+        nodeFs = await nodeFsMod()
+      } catch (e) {
+        return { ok: false, error: '宿主无法写入文件系统' }
+      }
+      try {
+        if (kind === 'dir') await nodeFs.mkdir(abs)
+        // `wx` — create, fail if it exists. The no-clobber promise is the
+        // filesystem's, not a stat-then-write this code could lose a race on.
+        else await nodeFs.writeFile(abs, '', { flag: 'wx' })
+      } catch (e) {
+        const code = e && e.code
+        if (code === 'EEXIST') return { ok: false, error: '已存在同名文件或文件夹「' + named.name + '」' }
+        if (code === 'ENOENT') return { ok: false, error: '目标目录已不存在' }
+        if (code === 'EPERM' || code === 'EACCES') return { ok: false, error: '没有写入权限（目录可能被占用或只读）' }
+        if (code === 'EINVAL' || code === 'ENAMETOOLONG') return { ok: false, error: '这个名称在本机文件系统上不合法' }
+        return { ok: false, error: e && e.message ? String(e.message) : '新建失败' }
+      }
+      return { ok: true, kind: kind === 'dir' ? 'directory' : 'file', path: abs, name: named.name, parent: parentAbs }
+    }
+
     const deletePath = async (path, sessionId) => {
       if (typeof path !== 'string' || !path) return { ok: false, error: '缺少路径' }
       const fs = ctx.get('fs')
@@ -1349,6 +1476,7 @@
       harness.handle('artifacts.list', () => ({ artifacts: snapshot() }))
       harness.handle('artifacts.remove', (args) => removeFile(args && args.path))
       harness.handle('artifacts.delete', (args) => deletePath(args && args.path, args && args.sessionId))
+      harness.handle('artifacts.create', (args) => createEntry(args))
       harness.handle('artifacts.revert', (args) => revertFile(args && args.path, args && args.opId))
       harness.handle('artifacts.save', (args) => saveFile(args && args.path, args && args.content, args))
       harness.handle('artifacts.read', (args) => readFile(args && args.path, args))

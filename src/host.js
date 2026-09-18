@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = '84a506d3'
+    const BUILD = '4751a11e'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -1444,6 +1444,133 @@ return {
     //     must not rely on the UI.
     //   · TYPE. What is deleted is what the tree showed — a regular file or a
     //     directory. `other` (a socket, a FIFO) is refused rather than unlinked.
+    // Create ONE entry inside a directory the person picked in the file tree:
+    // an empty text file, or a folder.
+    //
+    // The caller sends a PARENT DIRECTORY and a NAME, never a path: the name is
+    // checked here and joined here, so a crafted name cannot walk out of the
+    // directory it was typed in, and every refusal below is a sentence the tree
+    // can show next to the input instead of a silent no-op.
+    //
+    // Two properties matter more than the happy path:
+    //   · it never overwrites. A file is created with `wx` (fails if it exists)
+    //     and a folder with a plain mkdir (fails on EEXIST), so an existing
+    //     entry is refused by the OPERATING SYSTEM rather than by a stat-then-
+    //     write race the user could lose.
+    //   · the target stays inside the session's workspace, fenced on the
+    //     canonical spellings the backend handed us — the same fence 删除 uses,
+    //     because this is the other route in this plugin that creates or removes
+    //     something on disk.
+    //
+    // Like deletePath, this has no `fs` service method to call: the workspace
+    // filesystem exposes readText / listDir / writeText / editText, and the two
+    // operations that ADD or REMOVE a path are this plugin's own, through the
+    // host's node:fs (see the note above deletePath).
+    const CREATE_NAME_MAX = 200
+    // Names Windows refuses outright: reserved devices, with or without an
+    // extension. Applied only where the workspace itself is Windows-shaped.
+    const CREATE_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+    // A name is ONE path component, and which characters are legal in one is a
+    // property of the platform, not of this plugin: on POSIX almost anything
+    // goes, on Windows ten characters are outlawed forever. Refusing on both is
+    // worse than a small asymmetry — the check is stated in the terms of the
+    // machine the file is actually being written to.
+    const validateEntryName = (name, windows) => {
+      const text = String(name == null ? '' : name)
+      const trimmed = text.trim()
+      if (!trimmed) return { ok: false, error: '请输入名称' }
+      if (trimmed === '.' || trimmed === '..') return { ok: false, error: '名称不能是 . 或 ..' }
+      if (/[\\/]/.test(trimmed)) return { ok: false, error: '名称不能包含路径分隔符（/ 或 \\）' }
+      if (trimmed.length > CREATE_NAME_MAX) return { ok: false, error: '名称过长（上限 ' + CREATE_NAME_MAX + ' 个字符）' }
+      if (windows) {
+        if (/[<>:"|?*]/.test(trimmed) || /[\u0000-\u001f]/.test(trimmed)) {
+          return { ok: false, error: 'Windows 不允许名称里出现 < > : " | ? * 或控制字符' }
+        }
+        if (/[. ]$/.test(trimmed)) return { ok: false, error: 'Windows 不允许名称以空格或点结尾' }
+        if (CREATE_RESERVED.test(trimmed)) {
+          return { ok: false, error: '这是 Windows 的保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）' }
+        }
+      } else if (/[\u0000]/.test(trimmed)) {
+        return { ok: false, error: '名称不能包含 NUL 字符' }
+      }
+      return { ok: true, name: trimmed }
+    }
+
+    const createEntry = async (opts) => {
+      const args = opts || {}
+      const kind = args.kind === 'dir' ? 'dir' : 'file'
+      const fs = ctx.get('fs')
+      if (!fs || typeof fs.resolve !== 'function' || typeof fs.processPath !== 'function') {
+        return { ok: false, error: '宿主未提供文件系统接口' }
+      }
+      let cwd
+      try { cwd = await resolveCwd(args.sessionId) } catch (e) { cwd = undefined }
+      if (!cwd) return { ok: false, error: '工作区不可用，未新建' }
+      let parentTarget
+      try {
+        parentTarget = await fs.resolve(typeof args.parent === 'string' && args.parent ? args.parent : cwd, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该目录：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      const parentAbs = fs.processPath(parentTarget)
+      const rootAbs = typeof fs.processPath === 'function' ? fs.processPath(cwd) : String(cwd)
+      // Fence on canonical spellings, exactly like 删除: a directory outside the
+      // workspace is refused before the name is even looked at.
+      let inside = true
+      if (typeof fs.contains === 'function') {
+        let rootTarget
+        try { rootTarget = await fs.resolve(cwd, { cwd: cwd }) } catch (e) { rootTarget = undefined }
+        if (rootTarget) inside = fs.contains(rootTarget, parentTarget)
+      } else {
+        inside = pathUnder(parentAbs, rootAbs)
+      }
+      if (!inside) return { ok: false, error: '该目录在工作区之外，不能新建' }
+      const windows = /^[A-Za-z]:[\\/]/.test(parentAbs) || parentAbs.indexOf('\\') >= 0
+      const named = validateEntryName(args.name, windows)
+      if (!named.ok) return named
+      let info
+      try { info = await fs.stat(parentTarget) } catch (e) { info = undefined }
+      if (!info || info.type !== 'directory') return { ok: false, error: '目标目录不存在或不是文件夹' }
+      const wanted = parentAbs + (parentAbs.slice(-1) === '/' || parentAbs.slice(-1) === '\\' ? '' : '/') + named.name
+      let target
+      try {
+        target = await fs.resolve(wanted, { cwd: cwd })
+      } catch (e) {
+        return { ok: false, error: '无法解析该路径：' + (e && e.message ? String(e.message) : 'resolve failed') }
+      }
+      const abs = fs.processPath(target)
+      // The fence again, on the JOINED path: the name is a single component, so
+      // this can only fail if the platform mangled the join — which is precisely
+      // when the check earns its keep.
+      if (!pathUnder(abs, rootAbs)) return { ok: false, error: '该路径在工作区之外，不能新建' }
+      let existing
+      try { existing = await fs.stat(target) } catch (e) { existing = undefined }
+      if (existing) {
+        const what = existing.type === 'directory' ? '文件夹' : '文件'
+        return { ok: false, error: '已存在同名' + what + '「' + named.name + '」' }
+      }
+      let nodeFs
+      try {
+        nodeFs = await nodeFsMod()
+      } catch (e) {
+        return { ok: false, error: '宿主无法写入文件系统' }
+      }
+      try {
+        if (kind === 'dir') await nodeFs.mkdir(abs)
+        // `wx` — create, fail if it exists. The no-clobber promise is the
+        // filesystem's, not a stat-then-write this code could lose a race on.
+        else await nodeFs.writeFile(abs, '', { flag: 'wx' })
+      } catch (e) {
+        const code = e && e.code
+        if (code === 'EEXIST') return { ok: false, error: '已存在同名文件或文件夹「' + named.name + '」' }
+        if (code === 'ENOENT') return { ok: false, error: '目标目录已不存在' }
+        if (code === 'EPERM' || code === 'EACCES') return { ok: false, error: '没有写入权限（目录可能被占用或只读）' }
+        if (code === 'EINVAL' || code === 'ENAMETOOLONG') return { ok: false, error: '这个名称在本机文件系统上不合法' }
+        return { ok: false, error: e && e.message ? String(e.message) : '新建失败' }
+      }
+      return { ok: true, kind: kind === 'dir' ? 'directory' : 'file', path: abs, name: named.name, parent: parentAbs }
+    }
+
     const deletePath = async (path, sessionId) => {
       if (typeof path !== 'string' || !path) return { ok: false, error: '缺少路径' }
       const fs = ctx.get('fs')
@@ -1845,6 +1972,7 @@ return {
       harness.handle('artifacts.list', () => ({ artifacts: snapshot() }))
       harness.handle('artifacts.remove', (args) => removeFile(args && args.path))
       harness.handle('artifacts.delete', (args) => deletePath(args && args.path, args && args.sessionId))
+      harness.handle('artifacts.create', (args) => createEntry(args))
       harness.handle('artifacts.revert', (args) => revertFile(args && args.path, args && args.opId))
       harness.handle('artifacts.save', (args) => saveFile(args && args.path, args && args.content, args))
       harness.handle('artifacts.read', (args) => readFile(args && args.path, args))
@@ -1873,7 +2001,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="84a506d3" />
+<meta name="dsh-sidebar-frog-build" content="4751a11e" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -2115,6 +2243,20 @@ return {
   .docbtn:focus-visible { outline: 2px solid var(--p-accent); outline-offset: 1px; }
   .docbtn:disabled { opacity: 0.6; cursor: default; }
   .markdown { padding: 16px 20px; line-height: 1.6; word-wrap: break-word; }
+  /* Source-line gutter (设置 › 预览显示行号). The panel's twin of these rules lives
+     in src/client/styles.js under .artifacts-markdown.is-lines — the two class
+     names differ (this page's root is .markdown), so the rules are written twice
+     on purpose and a guard in scripts/check.js requires both to exist. The number
+     comes from data-lineno, which the renderer stamps on every block. */
+  .markdown.is-lines { padding-left: 4.4em; }
+  .markdown.is-lines > [data-lineno] { position: relative; }
+  .markdown.is-lines > [data-lineno]::before {
+    content: attr(data-lineno);
+    position: absolute; left: -4em; width: 3.4em; text-align: right;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.75; color: var(--p-text-tertiary);
+    pointer-events: none; -webkit-user-select: none; user-select: none;
+  }
   .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 16px 0 8px; line-height: 1.3; }
   .markdown h1 { font-size: 1.5em; border-bottom: 1px solid var(--p-border-l2); padding-bottom: 6px; }
   .markdown h2 { font-size: 1.3em; border-bottom: 1px solid var(--p-border-l1); padding-bottom: 4px; }
@@ -2225,6 +2367,14 @@ return {
   .tree-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tree-name.is-preview { font-style: italic; }
   .tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--p-border-l1); pointer-events: none; }
+  /* 新建: the inline name row (see beginTreeCreate) — a tree row with an input
+     where the label would be, so the new entry is visibly about to exist there. */
+  .tree-createrow { cursor: default; background: var(--p-hover); }
+  .tree-createrow.is-invalid { box-shadow: inset 0 0 0 1px var(--p-error); }
+  .tree-create-input { flex: 1 1 auto; min-width: 0; height: 20px; box-sizing: border-box; padding: 0 4px; font: inherit; font-size: 13px; color: var(--p-text); background: var(--p-bg); border: 1px solid var(--p-accent); border-radius: 3px; outline: none; }
+  .tree-create-input::placeholder { color: var(--p-text-tertiary); }
+  .tree-create-error { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--p-error); }
+  .tree-create-hint { flex: none; font-size: 11px; color: var(--p-text-tertiary); }
   .tree-twisty { flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--p-text-tertiary); }
   .tree-twisty svg { transition: transform .1s ease; }
   .tree-twisty.is-open svg { transform: rotate(90deg); }
@@ -2477,6 +2627,7 @@ return {
         <div class="tree-head">
           <span class="tree-root" id="treeRoot">…</span>
           <span class="tree-tools">
+            <button class="tree-tool" id="treeNew" type="button" title="新建文件 / 文件夹"></button>
             <button class="tree-tool" id="treeFilter" type="button"></button>
             <button class="tree-tool" id="treeExpandAll" type="button"></button>
             <button class="tree-tool" id="treeCollapseAll" type="button"></button>
@@ -2639,6 +2790,22 @@ return {
       // dark alike. Applied to the panel, the shell's own document tab and the popout
       // page from this one value; see markdownSkinClass.
       markdownSkin: 'default',
+      // Show each block's SOURCE line in a gutter down the left edge of a rendered
+      // document — the answer to "which line is this?" without leaving the reader.
+      // The numbers come from the anchors the renderer already stamps on every block
+      // (data-lineno, see mdAnchor in src/shared/markdown.js), so they are the file's
+      // real line numbers and not a count of drawn rows.
+      //
+      // Off by default: it is chrome added around a document, and a reader who wants
+      // the text alone should get the text alone. The EDITOR's gutter is a separate
+      // switch (editorLineNumbers) so the two can be had independently — which is the
+      // point of asking for two settings instead of one.
+      previewLineNumbers: false,
+      // CodeMirror's own line-number column, in the panel's editor and the popout
+      // page's alike (both mount the same controller — src/shared/editor.js).
+      // On by default: it is the editor's own convention, and switching it off buys
+      // the width back on a narrow panel.
+      editorLineNumbers: true,
     };
 
     var SETTINGS_RANGES = {
@@ -3201,6 +3368,7 @@ return {
     var MEDIA_URL = '/dsh-sidebar-frog/media';
     var LISTDIR_URL = '/dsh-sidebar-frog/listdir';
     var DELETE_URL = '/dsh-sidebar-frog/delete';
+    var CREATE_URL = '/dsh-sidebar-frog/create';
     var _sm = /[?&]sessionId=([^&]+)/.exec(location.search);
     // A malformed percent-escape must never throw here: this runs at the top
     // level of the inline script, so one bad query string would kill the page.
@@ -4257,9 +4425,10 @@ return {
     // engine on the cases it already handles (width media queries, image formats).
     // Anything else inside is escaped: a <picture> holds sources and an image, so
     // stray text or markup is not silently swallowed.
-    function renderPicture(block, opts) {
+    function renderPicture(block, opts, startLine, endLine) {
       var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
-      var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var rawOpen = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var opener = startLine ? mdTag(opts, rawOpen, startLine, endLine) : rawOpen;
       var afterOpen = open ? block.slice(open.index + open[0].length) : block;
       var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
       var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
@@ -4305,18 +4474,21 @@ return {
     var INLINE_BLOCK_TAGS = { summary: 1, p: 1, li: 1, dt: 1, dd: 1, figcaption: 1, th: 1, td: 1 };
     // <tr>: render each <th>/<td> cell separately (Markdown inside every cell),
     // keeping the row structure verbatim.
-    function renderTr(block, opts) {
+    function renderTr(block, opts, startLine) {
       var reClose = /<\/tr\b[^>]*>/i;
       var cIdx = block.lastIndexOf('</tr');
       var inner = cIdx >= 0 ? block.slice(0, cIdx) : block;
       var closeTag = (block.match(reClose) || ['</tr>'])[0];
       var out = [];
+      // The row's own <tr> is emitted by renderBlockHtml, not here; the cells carry
+      // the row's line so that a selection inside a cell still resolves to it.
+      var cellLine = startLine || 0;
       var reCell = /<(th|td)((?:\s[^>]*)?)\s*>[\s\S]*?<\/\1\s*>/gi;
       var m;
       var last = 0;
       while ((m = reCell.exec(inner))) {
         if (m.index > last) out.push(htmlEscape(inner.slice(last, m.index)));
-        var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
+        var cellAttr = mdTag(opts, sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>'), cellLine);
         var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
         cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
         out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
@@ -4334,9 +4506,14 @@ return {
     //   - everything else (details, div, figure, ul, ol, dl, table, thead, tbody,
     //     tfoot): the inner source is a mini Markdown document, re-rendered via
     //     mdToHtml — lists, math, nested blocks, fences all work inside
-    function renderBlockHtml(block, tag, opts) {
+    function renderBlockHtml(block, tag, opts, startLine, nextLine) {
       var m = new RegExp('<' + tag + '((?:\\s[^>]*)?)\\s*>', 'i').exec(block);
       var openTag = sanitizeHtmlTag(m ? ('<' + tag + (m[1] || '') + '>') : ('<' + tag + '>'));
+      // The block's span is known to the caller (gatherBlockHtml counted the lines),
+      // so the opener carries it; the INNER render only needs to know where the
+      // source it was handed begins.
+      var span = mdAnchor(opts, startLine || 0, nextLine || 0);
+      if (span) openTag = openTag.slice(0, -1) + span + '>';
       var reClose = new RegExp('</' + tag + '\\b[^>]*>', 'i');
       var closeMatch = block.match(reClose);
       var closeTag = closeMatch ? closeMatch[0] : '</' + tag + '>';
@@ -4346,13 +4523,16 @@ return {
         var cIdx = closeMatch ? block.lastIndexOf(closeTag) : -1;
         inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
       }
-      if (tag === 'tr') return renderTr(block, opts);
-      if (tag === 'picture') return renderPicture(block, opts);
+      if (tag === 'tr') return renderTr(block, opts, startLine);
+      if (tag === 'picture') return renderPicture(block, opts, startLine, nextLine);
       if (INLINE_BLOCK_TAGS[tag]) {
         var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
         return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
       }
-      return openTag + mdToHtml(inner, opts) + closeTag;
+      // What follows the opening tag on its own line is inner line 1, so the offset
+      // is the opener's line MINUS one: inner line k is source line startLine+k-1.
+      var innerOpts = Object.assign({}, opts, { lineOffset: (opts.lineOffset || 0) + (startLine || 1) - 1 });
+      return openTag + mdToHtml(inner, innerOpts) + closeTag;
     }
 
     function mdEscape(s, opts) {
@@ -4467,9 +4647,9 @@ return {
         return m[1] + mdMedia(m[2], opts) + m[3];
       }).join(',');
     }
-    function mdCell(src, tag, align, opts) {
+    function mdCell(src, tag, align, opts, startLine) {
       var st = align ? ' style="text-align:' + align + '"' : '';
-      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
+      return '<' + tag + st + mdAnchor(opts, startLine || 0) + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
     }
 
     // ── Inline pass ─────────────────────────────────────────────────────────
@@ -4571,12 +4751,39 @@ return {
       var html = ['<' + tag + (tag === 'ol' && first.number !== 1 ? ' start="' + first.number + '"' : '') + '>'];
       var open = false;
       var i = start;
-      var item = function (body) {
+      // Where the open item started, so its <li> can carry a span once the item's
+      // last line (a wrapped line, a nested list, a second block) is known. The
+      // span is closed when the NEXT item opens, which is the only point at which
+      // "the end of this item" is known at all.
+      var itemLine = 0;
+      var itemIndex = -1;
+      var closeItem = function (endLine) {
+        if (!open) return;
+        var end = endLine || itemLine;
+        if (end > itemLine && itemIndex >= 0 && typeof html[itemIndex] === 'string') {
+          // The opener was pushed with data-line only (the end was unknown then), so
+          // the full span replaces it: strip ALL THREE anchor attributes — the range
+          // pair and the label — and splice in the pair. Stripping only the range
+          // would leave the element with a stale label beside the new one, and the
+          // browser reads the FIRST of two data-lineno attributes: the reader's gutter
+          // would draw "6" for an item that spans 6-7.
+          var span = mdAnchor(opts, itemLine, end);
+          html[itemIndex] = html[itemIndex].replace(/ data-(?:line|line-end|lineno)="[^"]*"/g, '').replace('>', span + '>');
+        }
+        html.push('</li>');
+        open = false;
+      };
+      var item = function (body, lineNo) {
+        itemLine = lineNo;
         var task = /^\[([ xX])\][ \t]?([\s\S]*)$/.exec(body);
+        // The mdEscape here used to be called WITHOUT opts, so a task item holding
+        // an image kept a document-relative src that never got rebased onto the
+        // media route (the plain item below always passed them).
+        itemIndex = html.length;
         if (task) {
-          html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
+          html.push('<li class="task-list-item"' + mdAnchor(opts, lineNo) + '><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2], opts), opts));
         } else {
-          html.push('<li>' + mdInline(mdEscape(body, opts), opts));
+          html.push('<li' + mdAnchor(opts, lineNo) + '>' + mdInline(mdEscape(body, opts), opts));
         }
         open = true;
       };
@@ -4590,8 +4797,8 @@ return {
         var mark = mdListMarker(lines[i]);
         if (mark && mark.indent === base) {
           if ((mark.ordered ? 'ol' : 'ul') !== tag) break;
-          if (open) html.push('</li>');
-          item(mark.body);
+          if (open) closeItem(i);
+          item(mark.body, i + 1);
           i += 1;
           continue;
         }
@@ -4615,8 +4822,12 @@ return {
         if (open && lines[i].search(/\S/) > base) { continuation(lines[i]); i += 1; continue; }
         break;
       }
-      if (open) html.push('</li>');
+      if (open) closeItem(i);
       html.push('</' + tag + '>');
+      // The list element carries the whole list's span; each li carries its own, so
+      // selecting one item resolves to that item and not to the list.
+      var listSpan = mdAnchor(opts, start + 1, i);
+      if (listSpan) html[0] = html[0].slice(0, -1) + listSpan + '>';
       return { html: html.join(''), next: i };
     }
 
@@ -4635,6 +4846,16 @@ return {
         // The chosen document skin (see src/shared/skins.js): the class the Markdown
         // root carries, so a skin is pure CSS and costs the renderer nothing.
         skin: opts.skin || '',
+        // Source-line anchors are OPT-IN. The reader surfaces ask for them (the
+        // panel, the shell's document tab, the popout page) because they are what
+        // turns "the paragraph I selected" into "lines 12-14 of this file"; every
+        // other caller keeps the plain shapes it has always produced, so nothing
+        // about the rendered document moves for a caller that did not ask.
+        lineAnchors: opts.lineAnchors === true,
+        // Added to every anchored line number. Nested renders (a blockquote inside a
+        // details, an item inside a list) are handed a slice of the source, so their
+        // own line 1 is not the document's line 1.
+        lineOffset: opts.lineOffset || 0,
       };
       var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
       var out = [];
@@ -4643,6 +4864,7 @@ return {
         var line = lines[i];
         var fenceOpen = /^\s*(\x60{3,}|~{3,})([\w+-]*)/.exec(line);
         if (fenceOpen) {
+          var fenceStart = i + 1;
           var fenceCh = fenceOpen[1].charAt(0);
           var langHint = fenceOpen[2];
           // Only the fence character that opened the block closes it: a tilde
@@ -4651,20 +4873,27 @@ return {
           var buf = [];
           i += 1;
           while (i < lines.length && !fenceClose.test(lines[i])) { buf.push(lines[i]); i += 1; }
+          var fenceEnd = (i < lines.length ? i : i - 1) + 1;
           i += 1;
           var codeText = buf.join('\n');
+          // The whole fence is one anchored block. Its lines are NOT anchored
+          // individually: the highlighted HTML is produced by highlightCode, whose
+          // multi-line tokens would be cut in half by a per-line wrapper, and a
+          // document that copies badly is worse than one that quotes a few lines too
+          // many. Selecting inside a fence resolves to the fence.
+          var fenceAnchor = mdAnchor(mdOpts, fenceStart, fenceEnd);
           if (langHint === 'mermaid') {
             // Keep the diagram source verbatim inside a .mermaid container; the
             // renderer replaces it with Mermaid's SVG. tex2jax_ignore keeps the
             // MathJax pass from reading '$'-looking text inside diagram labels.
-            out.push('<div class="mermaid tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+            out.push('<div class="mermaid tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
           } else if (langHint === 'jsxgraph') {
             // Keep the JSXGraph script verbatim inside a .jsxgraph container; the
             // renderer later runs it (with the generated board id in scope) to
             // build an interactive board. Same MathJax ignore rationale.
-            out.push('<div class="jsxgraph tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+            out.push('<div class="jsxgraph tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
           } else {
-            out.push('<pre><code>' + highlightCode(codeText, langHint) + '</code></pre>');
+            out.push('<pre' + fenceAnchor + '><code>' + highlightCode(codeText, langHint) + '</code></pre>');
           }
           continue;
         }
@@ -4675,6 +4904,7 @@ return {
         // MathJax can typeset as a single $$...$$ block. Newlines inside the
         // formula are collapsed to spaces — TeX treats them as whitespace.
         if (/^\s*\$\$/.test(line)) {
+          var mathStart = i + 1;
           var rest = line.replace(/^\s*\$\$/, '');
           var closeIdx = rest.indexOf('$$');
           var parts = [];
@@ -4693,11 +4923,12 @@ return {
             }
           }
           var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
+          out.push('<div class="math-display"' + mdAnchor(mdOpts, mathStart, i) + '>' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
           continue;
         }
         // Standalone SVG block: gather until the closing tag, then emit sanitized.
         if (/^\s*<svg/i.test(line)) {
+          var svgStart = i + 1;
           var svgBuf = [line];
           var closed = /<\/svg>/i.test(line);
           while (!closed && i + 1 < lines.length) {
@@ -4705,7 +4936,13 @@ return {
             svgBuf.push(lines[i]);
             closed = /<\/svg>/i.test(lines[i]);
           }
-          out.push(sanitizeSvg(svgBuf.join('\n')));
+          var svgEnd = i + 1;
+          // The sanitized SVG is emitted as-is; the anchor rides on a wrapper so the
+          // svg element itself is untouched (a bare <svg> with an extra attribute
+          // would be a second thing to sanitize).
+          out.push(mdOpts.lineAnchors
+            ? '<div class="artifacts-md-svgblock"' + mdAnchor(mdOpts, svgStart, svgEnd) + '>' + sanitizeSvg(svgBuf.join('\n')) + '</div>'
+            : sanitizeSvg(svgBuf.join('\n')));
           i += 1;
           continue;
         }
@@ -4719,48 +4956,58 @@ return {
         if (bhMatch && BLOCK_HTML_TAGS[bhMatch[1].toLowerCase()]) {
           var bhTag = bhMatch[1].toLowerCase();
           if (!(bhTag === 'summary' && /\/\s*>$/.test(line))) {
+            var bhStart = i + 1;
             var bh = gatherBlockHtml(line, i, lines, bhTag);
-            out.push(renderBlockHtml(bh.block, bhTag, mdOpts));
+            out.push(renderBlockHtml(bh.block, bhTag, mdOpts, bhStart, bh.next));
             i = bh.next;
             continue;
           }
         }
         // GFM table: header row + delimiter row (+ optional body rows).
         if (isTableRow(line) && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
+          var tblStart = i + 1;
           var headCells = tableCells(line);
           var delimCells = tableCells(lines[i + 1]);
           var aligns = [];
           for (var a = 0; a < headCells.length; a += 1) aligns.push(cellAlign(delimCells[a] || ''));
           var tbl = ['<table>'];
-          tbl.push('<thead><tr>');
-          for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts));
+          tbl.push('<thead><tr' + mdAnchor(mdOpts, tblStart) + '>');
+          for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts, tblStart));
           tbl.push('</tr></thead>');
           i += 2;
           var openedBody = false;
           while (i < lines.length && isTableRow(lines[i]) && !isDelimRow(lines[i])) {
             var cells = tableCells(lines[i]);
             if (!openedBody) { tbl.push('<tbody>'); openedBody = true; }
-            tbl.push('<tr>');
-            for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts));
+            tbl.push('<tr' + mdAnchor(mdOpts, i + 1) + '>');
+            for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts, i + 1));
             tbl.push('</tr>');
             i += 1;
           }
           if (openedBody) tbl.push('</tbody>');
           tbl.push('</table>');
+          // The table element carries the whole span; its rows carry their own line,
+          // so a selected ROW resolves to that row rather than to the whole table.
+          // The opener is rewritten here rather than spliced into the finished HTML:
+          // the end line is only known once the body rows have been read.
+          var tableSpan = mdAnchor(mdOpts, tblStart, i);
+          if (tableSpan) tbl[0] = '<table' + tableSpan + '>';
           out.push(tbl.join(''));
           continue;
         }
         var hd = /^(#{1,6})\s+(.*)$/.exec(line);
         if (hd) {
           var lv = hd[1].length;
-          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
+          out.push('<h' + lv + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
           i += 1;
           continue;
         }
-        if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+        if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr' + mdAnchor(mdOpts, i + 1) + '>'); i += 1; continue; }
         if (/^\s*>\s?/.test(line)) {
+          var qStart = i + 1;
           var q = [];
           while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, '')); i += 1; }
+          var qEnd = i;
           // A quote holds BLOCKS, not a run of inline text. Stripping the marker and
           // running the remainder through mdInline — which is what this did — drew
           // a quoted "- a" as the literal characters "- a": every list, heading,
@@ -4776,10 +5023,13 @@ return {
           // closer, and the first closer is the last four characters — because a
           // greedy /^<p>([\s\S]*)<\/p>$/ matches from the first opener to the LAST
           // closer and would tear the tags out of a two-paragraph quote.
-          var quoted = mdToHtml(q.join('\n'), mdOpts);
+          // Each stripped line is the next source line, so the inner render is offset
+          // by one less than the quote's first line.
+          var quoted = mdToHtml(q.join('\n'), Object.assign({}, mdOpts, { lineOffset: (mdOpts.lineOffset || 0) + qStart - 1 }));
           var oneParagraph = quoted.slice(0, 3) === '<p>' && quoted.slice(-4) === '</p>' &&
             quoted.indexOf('</p>') === quoted.length - 4;
-          out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
+          var quoteInner = oneParagraph ? quoted.slice(quoted.indexOf('>') + 1, -4) : quoted;
+          out.push('<blockquote' + mdAnchor(mdOpts, qStart, qEnd) + '>' + quoteInner + '</blockquote>');
           continue;
         }
         if (mdListMarker(line)) {
@@ -4794,15 +5044,256 @@ return {
         // '=====' cannot be anything but an underline, and today it renders as a
         // paragraph containing '=====', which is never what was meant.
         if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-          out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
+          out.push('<h1' + mdAnchor(mdOpts, i + 1, i + 2) + '>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
           i += 2;
           continue;
         }
         if (line.trim() === '') { i += 1; continue; }
-        out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
+        out.push('<p' + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
         i += 1;
       }
       return out.join('\n');
+    }
+
+    // ── Source-line anchors ─────────────────────────────────────────────────────
+    // The block pass stamps every element a reader can see with the 1-based SOURCE
+    // line it came from, and with the last line it covers when that is more than
+    // one. That attribute is the whole mechanism: a selection inside the rendered
+    // document can be walked up to the nearest anchored element, and the reader gets
+    // "lines 12-14 of this file" — precise enough to quote into a request, or to
+    // send an editor straight to it — without the renderer having to keep a second,
+    // parallel map of the document.
+    //
+    // It is opt-in (mdToHtml's lineAnchors) because these attributes are decoration:
+    // a caller that asked for none must keep the exact markup it always produced.
+    function mdAnchor(opts, start, end) {
+      if (!opts || opts.lineAnchors !== true) return '';
+      var base = opts.lineOffset || 0;
+      var from = base + start;
+      var to = base + (end == null ? start : end);
+      if (!(from > 0)) return '';
+      // data-lineno is the LABEL a reader displays, decided here beside the range it
+      // describes so that "12" and "12–18" can never disagree with the data-line pair
+      // the selection bar quotes (see .artifacts-markdown.is-lines in styles.js).
+      var label = to > from ? from + '\u2013' + to : String(from);
+      return ' data-line="' + from + '"' + (to > from ? ' data-line-end="' + to + '"' : '') +
+        ' data-lineno="' + label + '"';
+    }
+
+    // Same anchor, spliced into an already-built opening tag: <p ...> becomes <p ... ...>.
+    function mdTag(opts, tagHtml, start, end) {
+      var a = mdAnchor(opts, start, end);
+      return a && tagHtml.charAt(tagHtml.length - 1) === '>' ? tagHtml.slice(0, -1) + a + '>' : tagHtml;
+    }
+
+    // The source lines one rendered node stands for: the node itself when it is an
+    // anchored element, otherwise its nearest anchored ancestor. Null when there is
+    // no anchor above it (inline-only content, or a document rendered without them).
+    function mdLinesOfNode(node) {
+      var el = node;
+      try {
+        if (el && el.nodeType === 3) el = el.parentElement;
+        if (el && typeof el.closest === 'function') el = el.closest('[data-line]');
+        else { while (el && !(el.getAttribute && el.getAttribute('data-line'))) el = el.parentNode; }
+      } catch (e) { return null; }
+      if (!el || typeof el.getAttribute !== 'function') return null;
+      var start = parseInt(el.getAttribute('data-line'), 10);
+      if (!(start > 0)) return null;
+      var endAttr = parseInt(el.getAttribute('data-line-end'), 10);
+      return { start: start, end: endAttr > start ? endAttr : start };
+    }
+
+    // The range a live selection covers. Both ends are resolved and then ordered, so
+    // a selection dragged upwards reads the same as one dragged down. Null when
+    // either end is unanchored, or when the selection is not inside root — a
+    // selection in the file tree must not be read as a line range of the document.
+    function mdSelectionLines(root, sel) {
+      if (!sel) return null;
+      var a = mdLinesOfNode(sel.anchorNode);
+      var b = mdLinesOfNode(sel.focusNode || sel.anchorNode);
+      if (!a || !b) return null;
+      if (root && typeof root.contains === 'function') {
+        var node = sel.anchorNode && sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+        if (node && !root.contains(node)) return null;
+      }
+      return a.start <= b.end ? { start: a.start, end: b.end } : { start: b.start, end: a.end };
+    }
+
+    // Lines [start, end] (1-based, inclusive) of a source text. Out-of-range values
+    // are clamped rather than refused: a document that changed under the reader must
+    // still produce a quote of what is there now.
+    function mdSourceLines(text, start, end) {
+      var all = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+      var from = Math.max(1, parseInt(start, 10) || 1);
+      var to = Math.max(from, parseInt(end, 10) || from);
+      if (from > all.length) return '';
+      return all.slice(from - 1, Math.min(to, all.length)).join('\n');
+    }
+
+    // The info string of a fenced quote, from the file's own extension: a quote the
+    // model reads should say what language it is, and guessing from the content is
+    // how a shell transcript ends up highlighted as Python.
+    function mdQuoteLang(path) {
+      var m = /\.([A-Za-z0-9]+)$/.exec(String(path || ''));
+      if (!m) return '';
+      var ext = m[1].toLowerCase();
+      var map = {
+        md: 'md', markdown: 'md', js: 'js', mjs: 'js', cjs: 'js', ts: 'ts', tsx: 'tsx', jsx: 'jsx',
+        py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', c: 'c', h: 'c',
+        cpp: 'cpp', hpp: 'cpp', cs: 'csharp', php: 'php', sh: 'bash', bash: 'bash', ps1: 'powershell',
+        json: 'json', jsonc: 'json', yml: 'yaml', yaml: 'yaml', toml: 'toml', ini: 'ini', xml: 'xml',
+        html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less', sql: 'sql', txt: '',
+      };
+      return Object.prototype.hasOwnProperty.call(map, ext) ? map[ext] : ext;
+    }
+
+    // The payload a reader gets for one selected range: a locator the agent can act
+    // on (path:12-14) followed by exactly those source lines in a fence.
+    //
+    // The line numbers stay OUT of the fence on purpose. A model handed
+    // "12 | const a = 1" will happily write the numbers back into the file, and a
+    // patch that corrupts the document is a worse failure than a quote that carries
+    // one less hint. The locator above the fence is the only place they appear, and
+    // it names the same range the fence holds.
+    function mdLineQuote(path, start, end, text) {
+      var p = String(path || '').replace(/\\/g, '/');
+      var from = parseInt(start, 10) || 1;
+      var to = Math.max(from, parseInt(end, 10) || from);
+      var body = mdSourceLines(text, from, to);
+      // A quote that contains its own closing fence would end early; the longer
+      // fence is the standard answer and needs no escaping.
+      var fence = /(^|\n)\s*\x60{3}/.test(body) ? '~~~~' : '\x60\x60\x60';
+      var lang = mdQuoteLang(p);
+      return '@' + p + ':' + from + (to > from ? '-' + to : '') + '\n' +
+        fence + lang + '\n' + body + '\n' + fence + '\n';
+    }
+
+    // ── The selection bar ───────────────────────────────────────────────────────
+    // One floating bar, positioned over the current selection of a RENDERED
+    // document: it names the source range and offers the two things a reader wants
+    // from it — quote those lines, or open them where they can be edited.
+    //
+    // Plain DOM and no framework, because the panel (React) and the popout page
+    // (plain DOM) both need it; it is appended to <body> rather than into the
+    // document, because the panel is a CSS containing block (container-type:
+    // inline-size) and a fixed child of it would be positioned against the panel
+    // instead of the viewport — the trap that once put the file tree's context menu
+    // off screen entirely.
+    //
+    // opts:
+    //   root     — the rendered container a selection must be inside
+    //   path     — the document's path (the locator's left half)
+    //   text     — the document's SOURCE (the quote is taken from here, not from
+    //              the selection, so the reply names exactly the lines it shows)
+    //   onQuote  — (payload, range) → void
+    //   onLocate — optional (start, end) → void; when absent the 定位 button is not
+    //              drawn at all (a button that cannot do anything is worse than none)
+    function attachMarkdownSelectionBar(opts) {
+      opts = opts || {};
+      var root = opts.root;
+      var doc = (root && root.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !root || typeof doc.createElement !== 'function') return function () {};
+
+      var bar = doc.createElement('div');
+      bar.className = 'artifacts-mdselbar';
+      bar.setAttribute('role', 'toolbar');
+      var label = doc.createElement('span');
+      label.className = 'artifacts-mdselbar-label';
+      bar.appendChild(label);
+      var quoteBtn = doc.createElement('button');
+      quoteBtn.type = 'button';
+      quoteBtn.className = 'artifacts-mdselbar-btn';
+      quoteBtn.textContent = '引用';
+      quoteBtn.title = '把这部分（含文件路径与行号）放进输入框';
+      bar.appendChild(quoteBtn);
+      var locateBtn = null;
+      if (typeof opts.onLocate === 'function') {
+        locateBtn = doc.createElement('button');
+        locateBtn.type = 'button';
+        locateBtn.className = 'artifacts-mdselbar-btn';
+        locateBtn.textContent = '定位';
+        locateBtn.title = '在编辑器里打开并选中这几行';
+        bar.appendChild(locateBtn);
+      }
+      bar.style.display = 'none';
+      if (doc.body && doc.body.appendChild) doc.body.appendChild(bar);
+
+      var current = null;
+      var raf = null;
+      var hide = function () {
+        current = null;
+        bar.style.display = 'none';
+      };
+      var show = function (range, rect) {
+        current = range;
+        label.textContent = range.start === range.end ? '第 ' + range.start + ' 行' : '第 ' + range.start + '–' + range.end + ' 行';
+        bar.style.display = 'flex';
+        // Measured after it is visible: a hidden element has no box to center on.
+        var w = bar.offsetWidth || 180;
+        var h = bar.offsetHeight || 28;
+        var viewportW = (doc.documentElement && doc.documentElement.clientWidth) || 1024;
+        var left = Math.max(8, Math.min((rect.left + rect.width / 2) - w / 2, viewportW - w - 8));
+        var top = rect.top - h - 6;
+        // A selection at the very top of the viewport gets the bar below it instead
+        // of under the toolbar, where it would be unreachable.
+        if (top < 8) top = Math.min(rect.bottom + 6, ((doc.documentElement && doc.documentElement.clientHeight) || 768) - h - 8);
+        bar.style.left = Math.round(left) + 'px';
+        bar.style.top = Math.round(top) + 'px';
+      };
+      var update = function () {
+        raf = null;
+        var sel = typeof doc.getSelection === 'function' ? doc.getSelection() : null;
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hide(); return; }
+        var range = mdSelectionLines(root, sel);
+        if (!range) { hide(); return; }
+        var rect = null;
+        try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch (e) { rect = null; }
+        if (!rect || (!rect.width && !rect.height)) { hide(); return; }
+        show(range, rect);
+      };
+      var schedule = function () {
+        if (raf !== null) return;
+        // Deferred by a frame: selectionchange fires while the browser is still
+        // moving the selection, and reading a rect mid-gesture is how a bar lands
+        // one selection behind the pointer.
+        raf = (typeof requestAnimationFrame === 'function')
+          ? requestAnimationFrame(update)
+          : setTimeout(update, 16);
+      };
+      var onKey = function (e) { if (e && (e.key === 'Escape' || e.key === 'Esc')) hide(); };
+      var onQuote = function () {
+        if (!current) return;
+        var payload = mdLineQuote(opts.path, current.start, current.end, opts.text);
+        var range = current;
+        hide();
+        try { opts.onQuote(payload, range); } catch (e) {}
+      };
+      var onLocateClick = function () {
+        if (!current) return;
+        var range = current;
+        hide();
+        try { opts.onLocate(range.start, range.end); } catch (e) {}
+      };
+
+      doc.addEventListener('selectionchange', schedule);
+      doc.addEventListener('mouseup', schedule);
+      doc.addEventListener('keyup', schedule);
+      doc.addEventListener('keydown', onKey);
+      // Capture, so a scroll inside the document pane counts: a fixed bar left over
+      // a scrolled-away paragraph is worse than no bar.
+      (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).addEventListener('scroll', hide, true);
+      quoteBtn.addEventListener('click', onQuote);
+      if (locateBtn) locateBtn.addEventListener('click', onLocateClick);
+
+      return function dispose() {
+        doc.removeEventListener('selectionchange', schedule);
+        doc.removeEventListener('mouseup', schedule);
+        doc.removeEventListener('keyup', schedule);
+        doc.removeEventListener('keydown', onKey);
+        (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).removeEventListener('scroll', hide, true);
+        if (bar.parentNode) bar.parentNode.removeChild(bar);
+        current = null;
+      };
     }
 
     // ── Document skins for rendered Markdown ────────────────────────────────────
@@ -5145,6 +5636,7 @@ return {
     //   .isDirty()       changed since the last markClean()
     //   .markClean()     rebase the "saved" marker to the current document
     //   .setTheme(dark)  swap the theme without touching the text or the history
+    //   .setLineNumbers(on)  show/hide the line-number column, same guarantee
     //   .focus() .undo() .redo() .destroy()
     //
     // opts.onChange fires on every document change — the draft keeper needs the
@@ -5156,6 +5648,24 @@ return {
     // a comparison against the live one, which is the recipe CodeMirror itself
     // documents: a plain string comparison on every keystroke would be O(document)
     // per character typed.
+    // Put one view on lines [start, end] (1-based, inclusive) and bring them into
+    // view. Out-of-range lines are CLAMPED rather than refused: the file may have
+    // changed under the reader since the preview was rendered, and "somewhere
+    // sensible" beats throwing inside a scroll handler or selecting nothing.
+    // Returns whether the view accepted it.
+    function revealLinesIn(view, start, end) {
+      if (!view || !view.state || !view.state.doc || typeof view.dispatch !== 'function') return false
+      try {
+        var docLines = view.state.doc.lines
+        var clamp = function (n) { return Math.max(1, Math.min(parseInt(n, 10) || 1, docLines)) }
+        var from = view.state.doc.line(clamp(start))
+        var to = view.state.doc.line(clamp(end || start))
+        view.dispatch({ selection: { anchor: from.from, head: to.to }, scrollIntoView: true })
+        if (typeof view.focus === 'function') view.focus()
+        return true
+      } catch (e) { return false }
+    }
+
     function createEditor(container, options) {
       var opts = options || {}
       return loadEditor().then(function (CM) {
@@ -5176,6 +5686,16 @@ return {
         })
 
         var themeSlot = new CM.Compartment()
+        // The line-number column is a compartment for the same reason the theme is:
+        // it is a PREFERENCE (设置 › 编辑器显示行号), and reconfiguring it must not
+        // throw away the document, the cursor, the scroll position or an unsaved
+        // draft. Remounting the view to hide a gutter would do all four.
+        var lineNumberSlot = new CM.Compartment()
+        // Absent means on: every caller that predates the setting keeps the gutter it
+        // always had. Only an explicit false takes it away.
+        var lineNumberExtensions = function (on) {
+          return on === false ? [] : [CM.lineNumbers(), CM.highlightActiveLineGutter()]
+        }
 
         var keymap = []
         if (editorLanguageName(opts.path) === 'markdown') {
@@ -5210,8 +5730,7 @@ return {
         var state = CM.EditorState.create({
           doc: String(opts.value == null ? '' : opts.value),
           extensions: [
-            CM.lineNumbers(),
-            CM.highlightActiveLineGutter(),
+            lineNumberSlot.of(lineNumberExtensions(opts.lineNumbers)),
             CM.highlightSpecialChars(),
             CM.highlightActiveLine(),
             CM.history(),
@@ -5266,7 +5785,22 @@ return {
               ],
             })
           },
+          // Show or hide the line-number column in place (the caller drives this from
+          // 设置 › 编辑器显示行号). Returns whether the view took it.
+          setLineNumbers: function (on) {
+            try {
+              view.dispatch({ effects: lineNumberSlot.reconfigure(lineNumberExtensions(on)) })
+              return true
+            } catch (e) { return false }
+          },
           focus: function () { try { view.focus() } catch (e) {} },
+          // Select lines [start, end] (1-based, inclusive) and bring them into view.
+          // This is what turns "the paragraph I selected in the preview" into the
+          // same lines selected in the editor: one document, two views of it, and the
+          // reader should not have to find the place twice. The math sits in
+          // revealLinesIn, beside this module's other pure helpers, so it can be
+          // asserted against a fake view (see scripts/check.js).
+          revealLines: function (start, end) { return revealLinesIn(view, start, end) },
           undo: function () { CM.undo(view) },
           redo: function () { CM.redo(view) },
           openSearch: function () { try { CM.openSearchPanel(view) } catch (e) {} },
@@ -5389,6 +5923,125 @@ return {
         toast('删除失败');
       });
     }
+    // ── 新建 (create a file or a folder) ────────────────────────────────────
+    // The same two verbs the sidebar's tree offers, with the same inline name
+    // row and the same host route, so the popout is not a viewer with fewer
+    // capabilities than the panel it mirrors. The name travels beside a PARENT
+    // DIRECTORY (never as a path): the host validates it, joins it and fences the
+    // result to the session's workspace, and answers a reason this page shows in
+    // the row itself when it refuses.
+    //
+    // treeCreating is the pending row's state: { parent, kind, error, busy }.
+    var treeCreating = null;
+    function treeCreateTargetFor(entry) {
+      if (entry && entry.isDir) return entry.path;
+      if (entry && entry.path) return parentDirOf(entry.path);
+      return (treeRoot && treeRoot.path) || '';
+    }
+    function beginTreeCreate(entry, kind) {
+      var parent = treeCreateTargetFor(entry);
+      treeCreating = { parent: parent || '', kind: kind === 'dir' ? 'dir' : 'file', error: '', busy: false };
+      closeTreeMenu();
+      if (parent && relTreePath(parent) !== '') toggleTree(parent, true);
+      renderTree();
+    }
+    function doTreeCreate() {
+      var c = treeCreating;
+      if (!c || c.busy) return;
+      var input = document.querySelector('.tree-create-input');
+      var name = String((input && input.value) || '').trim();
+      if (!name) { treeCreating.error = '请输入名称'; renderTree(); return; }
+      treeCreating.busy = true;
+      treeCreating.error = '';
+      renderTree();
+      fetch(CREATE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent: c.parent, name: name, kind: c.kind, sessionId: currentSessionId() }),
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (!res || !res.ok) {
+          treeCreating = c;
+          treeCreating.busy = false;
+          treeCreating.error = (res && res.error) || '新建失败';
+          renderTree();
+          return;
+        }
+        treeCreating = null;
+        toast(c.kind === 'dir' ? '已新建文件夹 ' + (res.name || name) : '已新建文件 ' + (res.name || name));
+        // Re-read the level that now holds the entry — the ROOT when it was
+        // created at the top level, exactly as 删除 has to distinguish.
+        if (c.parent && relTreePath(c.parent) !== '') refreshTreeDir(c.parent); else loadTreeRoot(false);
+        if (res.path) {
+          treeFlash = res.path;
+          if (c.kind === 'dir') { toggleTree(res.path, true); renderTree(); }
+          else openPath(res.path, diffOf(res.path), false);
+        } else {
+          renderTree();
+        }
+      }).catch(function () {
+        if (treeCreating) { treeCreating.busy = false; treeCreating.error = '新建失败'; renderTree(); }
+      });
+    }
+    // The row the input lives in: same guides, same icons, same indentation as a
+    // real row, so it reads as "this is about to exist here".
+    function renderTreeCreateRow(depth) {
+      var c = treeCreating || { kind: 'file', error: '' };
+      var unit = 12;
+      var row = el('div', 'tree-row tree-createrow' + (c.error ? ' is-invalid' : ''));
+      row.style.paddingLeft = (4 + depth * unit) + 'px';
+      for (var i = 0; i < depth; i += 1) {
+        var guide = el('span', 'tree-guide');
+        guide.style.left = (6 + i * unit) + 'px';
+        row.appendChild(guide);
+      }
+      row.appendChild(el('span', 'tree-twisty is-file'));
+      var ico = el('span', 'tree-ico ' + (c.kind === 'dir' ? 'tree-ico-folder' : 'tree-ico-text'));
+      ico.appendChild(c.kind === 'dir' ? folderClosedIcon() : treeFileIcon());
+      row.appendChild(ico);
+      var input = document.createElement('input');
+      input.className = 'tree-create-input';
+      input.type = 'text';
+      input.value = c.name || '';
+      input.placeholder = c.kind === 'dir' ? '新文件夹名称' : '新文件名称（如 notes.md）';
+      input.setAttribute('aria-label', c.kind === 'dir' ? '新文件夹名称' : '新文件名称');
+      input.disabled = !!c.busy;
+      input.spellcheck = false;
+      input.addEventListener('input', function () { if (treeCreating) { treeCreating.name = input.value; treeCreating.error = ''; } });
+      input.addEventListener('keydown', function (ev) {
+        ev.stopPropagation();
+        if (ev.key === 'Escape') { ev.preventDefault(); treeCreating = null; renderTree(); return; }
+        if (ev.key === 'Enter') { ev.preventDefault(); doTreeCreate(); }
+      });
+      // Clicking elsewhere means "never mind" — and a submit sets busy, which
+      // skips this so the row cannot vanish under a request in flight.
+      input.addEventListener('blur', function () {
+        if (treeCreating && !treeCreating.busy) { treeCreating = null; renderTree(); }
+      });
+      row.appendChild(input);
+      if (c.error) row.appendChild(el('span', 'tree-create-error', c.error));
+      if (c.busy) row.appendChild(el('span', 'tree-create-hint', '新建中…'));
+      return row;
+    }
+
+    // The row the keyboard cursor is on, as an entry — how the + button stays
+    // predictable: whatever the tree is pointing at receives the new entry.
+    function treeCursorEntry() {
+      if (!treeCursor) return null;
+      var find = function (entries) {
+        for (var i = 0; i < (entries || []).length; i += 1) {
+          var e = entries[i];
+          if (e.path === treeCursor) return e;
+          var node = treeChildren[e.path];
+          if (e.isDir && node && node.entries) {
+            var hit = find(node.entries);
+            if (hit) return hit;
+          }
+        }
+        return null;
+      };
+      return find(treeRoot && treeRoot.entries);
+    }
+
     // The directory a tree entry lives in, spelled the way the host spells it.
     // Empty for a top-level entry, whose level is the workspace root.
     function parentDirOf(path) {
@@ -5928,6 +6581,10 @@ return {
         path: path,
         value: d.text,
         dark: isDarkTheme(),
+        // 设置 › 编辑器显示行号. The panel's editor mounts this same controller, so
+        // one preference covers both faces; a change arrives through the storage
+        // event below and is applied in place (applySettings).
+        lineNumbers: SETTINGS.editorLineNumbers !== false,
         onChange: function () { d.dirty = true; },
         onDirty: function (isDirty) {
           d.dirty = isDirty;
@@ -6124,8 +6781,12 @@ return {
         } else if (type === 'markdown') {
           var md = el('div', 'markdown');
           // opts.path lets relative image/svg links resolve next to the doc.
-          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin);
-        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId() });
+          // The class carries the skin AND the line-number gutter: both are
+          // settings, both are pure CSS over markup that is already there (the
+          // renderer stamps data-lineno on every block — see mdAnchor).
+          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin) +
+            (SETTINGS.previewLineNumbers === true ? ' is-lines' : '');
+        md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId(), lineAnchors: true });
           area.appendChild(md);
           typesetMath(md);
           typesetMermaid(md);
@@ -6548,6 +7209,20 @@ return {
         });
       };
       walk(treeRoot && treeRoot.entries, 0);
+      // The 新建 input row takes its place where the entry will appear: right
+      // under the folder that will receive it, or at the top for the workspace
+      // root — the same placement the sidebar's tree uses.
+      if (treeCreating) {
+        var at = 0;
+        var depth0 = 0;
+        var parent = treeCreating.parent;
+        if (parent && relTreePath(parent) !== '') {
+          for (var i = 0; i < rows.length; i += 1) {
+            if (rows[i].entry && rows[i].entry.path === parent) { at = i + 1; depth0 = rows[i].depth + 1; break; }
+          }
+        }
+        rows.splice(at, 0, { create: true, depth: depth0 });
+      }
       return rows;
     }
 
@@ -6584,6 +7259,12 @@ return {
       });
       return svg;
     }
+    // The tree header's plus (新建). It opens the two verbs rather than guessing
+    // a kind, which is why it is a plus and not a "new file" glyph.
+    function plusToolIcon() {
+      return strokeIcon(['M8 3.2 V12.8', 'M3.2 8 H12.8'], 14);
+    }
+
     function searchToolIcon() {
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('width', 14); svg.setAttribute('height', 14);
@@ -6634,6 +7315,15 @@ return {
         return;
       }
       treeRows().forEach(function (row) { bodyEl.appendChild(renderTreeRow(row)); });
+      // The 新建 input is brand new on every render (the body is rebuilt from
+      // scratch), so it has to be focused and its caret put back here — the
+      // data-path carry-over above cannot help a row that has no data-path.
+      if (treeCreating) {
+        var createInput = bodyEl.querySelector('.tree-create-input');
+        if (createInput && document.activeElement !== createInput && !treeCreating.busy) {
+          if (createInput.focus) createInput.focus();
+        }
+      }
       if (focusPath) {
         var again = bodyEl.querySelector('[data-path="' + cssEscapeAttr(focusPath) + '"]');
         if (again && again.focus) again.focus();
@@ -6648,6 +7338,7 @@ return {
 
     function renderTreeRow(row) {
       var unit = 12;
+      if (row.create) return renderTreeCreateRow(row.depth);
       if (!row.entry) {
         var msg = el('div', 'tree-row ' + (row.error ? 'tree-error' : 'tree-loading'), row.error || '加载中…');
         msg.style.paddingLeft = (4 + row.depth * unit + 16) + 'px';
@@ -6753,8 +7444,13 @@ return {
     }
 
     // ── context menu ─────────────────────────────────────────────────────
-    function treeMenuItems(entry) {
+    function treeMenuItems(entry, only) {
       var list = [];
+      if (only === 'create') {
+        list.push({ label: '新建文件', run: function () { beginTreeCreate(entry, 'file'); } });
+        list.push({ label: '新建文件夹', run: function () { beginTreeCreate(entry, 'dir'); } });
+        return list;
+      }
       if (entry.isDir) {
         var open = !!treeExpanded[entry.path];
         list.push({ label: open ? '折叠文件夹' : '展开文件夹', run: function () { toggleTree(entry.path, !open); } });
@@ -6762,6 +7458,11 @@ return {
         list.push({ label: '打开预览', run: function () { openPath(entry.path, diffOf(entry.path), false); } });
         list.push({ label: '固定预览', run: function () { openPath(entry.path, diffOf(entry.path), true); } });
       }
+      list.push({ sep: true });
+      // 新建 first in the action group, the way every explorer orders it: on a
+      // folder it creates inside it, on a file it creates a sibling.
+      list.push({ label: entry.isDir ? '新建文件' : '新建同级文件', run: function () { beginTreeCreate(entry, 'file'); } });
+      list.push({ label: entry.isDir ? '新建文件夹' : '新建同级文件夹', run: function () { beginTreeCreate(entry, 'dir'); } });
       list.push({ sep: true });
       list.push({ label: '复制路径', run: function () { copyText(entry.path, '已复制路径'); } });
       list.push({ label: '复制相对路径', run: function () { copyText(relTreePath(entry.path), '已复制相对路径'); } });
@@ -6789,8 +7490,8 @@ return {
     // The item list is built ONCE per opened menu (buildTreeMenu): highlight,
     // arrow keys and Enter all index the SAME array, and navigation skips
     // separators so Enter can never call run() on one.
-    function buildTreeMenu(entry) {
-      treeMenuList = treeMenuItems(entry);
+    function buildTreeMenu(entry, only) {
+      treeMenuList = treeMenuItems(entry, only);
       treeMenuNav = [];
       for (var i = 0; i < treeMenuList.length; i += 1) {
         if (!treeMenuList[i].sep) treeMenuNav.push(i);
@@ -6828,13 +7529,16 @@ return {
       window.removeEventListener('scroll', closeTreeMenu, true);
     }
 
-    function openTreeMenu(ev, entry) {
+    // only === 'create' opens the + button's short menu: the two create verbs
+    // and nothing else. The row menu passes nothing and gets the full list, with
+    // the same two items on it — one wording for one action on both surfaces.
+    function openTreeMenu(ev, entry, only) {
       ev.preventDefault();
       ev.stopPropagation();
       closeTreeMenu();
       treeCursor = entry.path;
       treeMenuEntry = entry;
-      buildTreeMenu(entry);
+      buildTreeMenu(entry, only);
       treeMenuEl = el('div', 'tree-menu');
       treeMenuEl.setAttribute('role', 'menu');
       treeMenuEl.tabIndex = -1;
@@ -6955,6 +7659,10 @@ return {
     function treeBodyEl() { return document.getElementById('treeBody'); }
 
     function onTreeKeyDown(ev) {
+      // The 新建 input owns the keyboard while it is open: an arrow key there
+      // must move the caret, not the tree cursor. (The input stops propagation
+      // too; this is the belt to that braces.)
+      if (treeCreating) return;
       if (treeMenuEl) { onTreeMenuKey(ev); return; }
       var rows = treeRows();
       var index = -1;
@@ -7063,6 +7771,21 @@ return {
       var clearBtn = document.getElementById('treeFilterClear');
       var bar = document.getElementById('treeFilterBar');
       var closeFilter = closeTreeFilter;
+      // 新建: the menu holds the two verbs (a + alone would have to guess which
+      // one you meant), aimed at whatever the tree is pointed at — the keyboard
+      // cursor's row, else the workspace root.
+      var newBtn = document.getElementById('treeNew');
+      if (newBtn) {
+        newBtn.appendChild(plusToolIcon());
+        newBtn.setAttribute('aria-label', '新建');
+        newBtn.setAttribute('aria-haspopup', 'menu');
+        newBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          var entry = treeCursorEntry() || { path: (treeRoot && treeRoot.path) || '', name: '工作区', isDir: true };
+          openTreeMenu(ev, entry, 'create');
+        });
+      }
       if (filterBtn) {
         filterBtn.appendChild(searchToolIcon());
         filterBtn.title = '过滤文件';
@@ -7304,6 +8027,17 @@ return {
     }
     function applySettings() {
       applyMarkdownSkin();
+      // The line-number pair is applied to what is already on screen, not just to
+      // the next document: the gutter is a class on the open Markdown roots, and
+      // the editor's column is reconfigured in place (CodeMirror compartment), so
+      // a flip keeps the cursor, the undo history and any unsaved draft.
+      var roots = document.querySelectorAll('.markdown');
+      for (var ri = 0; ri < roots.length; ri += 1) {
+        roots[ri].classList.toggle('is-lines', SETTINGS.previewLineNumbers === true);
+      }
+      if (editorCtl && typeof editorCtl.setLineNumbers === 'function') {
+        editorCtl.setLineNumbers(SETTINGS.editorLineNumbers !== false);
+      }
       var wanted = SETTINGS.autoRefresh !== false;
       if (wanted && !_pollTimer) _pollTimer = setInterval(load, 2000);
       else if (!wanted && _pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
@@ -7504,6 +8238,42 @@ return {
           res.end(JSON.stringify(out))
         },
       }), 'artifacts: remove route')
+      // 新建: create one empty file or one folder inside a directory of the
+      // workspace. POST with a JSON body {parent, name, kind, sessionId} — a
+      // mutation, so it travels in a body for the same reason 删除 and 保存 do,
+      // and it sits behind the identical cookie guard.
+      //
+      // The body carries a PARENT + a NAME, not a path: the host validates the
+      // name, joins it and fences the result to the session workspace (see
+      // createEntry in core.js). The response is always JSON, so a refusal —
+      // a name Windows will not take, an entry that already exists, a directory
+      // outside the workspace — is a sentence the tree shows next to the input.
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/dsh-sidebar-frog/create',
+        handler: async (req, res) => {
+          if (rejectRequest(req, res)) return
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+            return
+          }
+          let body
+          try { body = await readJsonBody(req) } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: e && e.message ? String(e.message) : 'bad request' }))
+            return
+          }
+          const out = await createEntry({
+            parent: body && body.parent,
+            name: body && body.name,
+            kind: body && body.kind,
+            sessionId: body && body.sessionId,
+          })
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify(out))
+        },
+      }), 'artifacts: create route')
       // Delete a file or folder from DISK (the file tree's 删除). POST with a JSON
       // body {path, sessionId} — a mutation, so the parameters travel in a body
       // rather than in a URL that ends up in logs, and the route sits behind the

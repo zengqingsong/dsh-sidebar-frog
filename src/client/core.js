@@ -125,7 +125,13 @@
     // Write `@path` into the current session's composer draft. Returns true on
     // success, false when the input API is unavailable (caller then falls back
     // to clipboard copy).
-    const quoteToComposer = (path) => {
+    const quoteToComposer = (path) => quoteTextToComposer('@' + path)
+
+    // The general form: whatever text a caller wants in the composer. A line
+    // selection inserts a locator plus the quoted lines (see mdLineQuote), which
+    // is the same operation the file tree performs with a bare path — the draft
+    // is read first so an existing message is never overwritten.
+    const quoteTextToComposer = (text) => {
       try {
         const sessions = ctx.get('sessions')
         const conversation = ctx.get('conversation')
@@ -140,10 +146,34 @@
         try {
           if (input.state && typeof input.state.getSnapshot === 'function') draft = input.state.getSnapshot().draft || ''
         } catch (e) {}
-        const text = '@' + path
-        input.setDraft(draft && draft.trim() !== '' ? draft + ' ' + text : text)
+        const body = String(text == null ? '' : text)
+        if (!draft || draft.trim() === '') { input.setDraft(body); return true }
+        const separator = body.indexOf('\n') >= 0 ? '\n\n' : ' '
+        input.setDraft(draft.replace(/\s+$/, '') + separator + body)
         return true
       } catch (e) {
+        return false
+      }
+    }
+
+    // Copy text with the panel's own notice, or say that it could not be done.
+    // Separate from the plain copy helper because the notice text differs per
+    // caller and a silent failure here loses what the reader selected.
+    const copyToClipboard = (text, okMessage) => {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = String(text == null ? '' : text)
+        ta.setAttribute('readonly', 'readonly')
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        noticeStore.flash(ok ? (okMessage || '已复制') : '复制失败：浏览器拒绝了剪贴板操作')
+        return !!ok
+      } catch (e) {
+        noticeStore.flash('复制失败：' + (e && e.message ? e.message : '剪贴板不可用'))
         return false
       }
     }

@@ -113,6 +113,25 @@ window.__ModuleLoader__.load({
             body: body,
           })
         }
+        if (method === 'artifacts.create') {
+          // 新建: one empty file or one folder inside a directory of the
+          // workspace. The body carries a PARENT + a NAME rather than a path —
+          // the host validates the name, joins it and fences the result to the
+          // session workspace, and answers a reason the tree shows next to the
+          // input when it refuses (an existing entry, a name Windows will not
+          // take, a directory outside the workspace).
+          const body = JSON.stringify({
+            parent: args && typeof args.parent === 'string' ? args.parent : '',
+            name: args && typeof args.name === 'string' ? args.name : '',
+            kind: args && args.kind === 'dir' ? 'dir' : 'file',
+            sessionId: args && typeof args.sessionId === 'string' ? args.sessionId : '',
+          })
+          return fetchJson('/dsh-sidebar-frog/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+          })
+        }
         if (method === 'artifacts.revert') {
           // The one mutating call that carries a body: {path, opId}. A refusal
           // ("file moved on", "no snapshot") comes back as JSON with ok:false and

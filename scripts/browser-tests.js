@@ -102,6 +102,12 @@ const PREVIEW_PERCENT = new Function(
 const SPLIT_LIST_MIN = Number(
   /var SPLIT_LIST_MIN = (\d+)/.exec(readFileSync(join(HERE, '..', 'src/host/page.js'), 'utf8'))[1])
 
+// The localStorage key the settings live under (src/shared/bridge.js), read from
+// source rather than re-typed: the line-number test writes settings the way the
+// sidebar does, and a renamed key would otherwise make that test pass vacuously.
+const SETTINGS_KEY = /settings:\s*'([^']+)'/.exec(
+  readFileSync(join(HERE, '..', 'src/shared/bridge.js'), 'utf8'))[1]
+
 // A vendored UMD build, evaluated for Node. `require()` cannot be used: this
 // package is `"type": "module"`, so Node parses these files as ES modules, where
 // `module`/`exports` do not exist — the UMD then takes its BROWSER branch and
@@ -976,6 +982,204 @@ async function run(s, shots, host) {
     eq(shape.escaped, 0, 'raw HTML was escaped into visible angle brackets')
     eq(shape.token, false, 'an inline token leaked into the rendered text')
   })
+
+  await test('the rendered document carries source lines, and a selection resolves to them', async () => {
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown [data-line]")', { label: 'anchored markdown', timeout: 4000 })
+    // The page exposes the shared helpers as top-level functions of its inline
+    // script; the bar is wired through the same module, so this is the link that
+    // would break silently if the page stopped inlining markdown.js.
+    eq(await s.evaluate('typeof mdSelectionLines'), 'function', 'mdSelectionLines is reachable from the popout page')
+    const shape = await s.evaluate(`(() => {
+      const root = document.querySelector('#previewArea .markdown')
+      const span = (el) => el ? {
+        start: Number(el.getAttribute('data-line')),
+        end: Number(el.getAttribute('data-line-end') || el.getAttribute('data-line')),
+      } : null
+      const rangeOf = (el) => {
+        const r = document.createRange()
+        r.selectNodeContents(el)
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(r)
+        return mdSelectionLines(root, sel)
+      }
+      const quote = rangeOf(root.querySelector('blockquote li'))
+      const badge = root.querySelector('p > a > img')
+      const outside = document.createElement('div')
+      outside.textContent = 'not the document'
+      document.body.appendChild(outside)
+      const refused = rangeOf(outside)
+      outside.remove()
+      window.getSelection().removeAllRanges()
+      return {
+        heading: span(root.querySelector('h1')),
+        quote: span(root.querySelector('blockquote')),
+        quoteItem: span(root.querySelector('blockquote li')),
+        // The first ul on the page is the quoted one, the OUTER list is the one
+        // that is neither in a blockquote nor inside an li, and the nested one is
+        // last in document order (it lives inside the outer li).
+        quotedList: span(root.querySelector('blockquote ul')),
+        list: span([...root.querySelectorAll('ul')].find((u) => !u.closest('blockquote') && !u.closest('li'))),
+        nestedList: span([...root.querySelectorAll('ul')].pop()),
+        table: span(root.querySelector('table')),
+        // A <picture> inside a <p align="center"> is inline content of that
+        // paragraph (the paragraph's own span covers it), so the block that
+        // answers for a selection in the logo is the <p>.
+        pictureBlock: span(root.querySelector('picture') ? root.querySelector('picture').closest('[data-line]') : null),
+        pictureRange: (() => { const img = root.querySelector('picture > img'); return img ? rangeOf(img) : null })(),
+        badge: span(badge ? badge.closest('p') : null),
+        quoteRange: quote ? { start: quote.start, end: quote.end } : null,
+        outside: refused,
+      }
+    })()`)
+    eq(shape.heading.start, 1, 'the heading reports line 1')
+    // 3-6 is the whole quote; 5 is the li INSIDE it, which only comes out right
+    // if the inner render was offset by the quote's own first line.
+    eq(shape.quote.start + '-' + shape.quote.end, '3-6', 'the blockquote span')
+    eq(shape.quoteItem.start, 5, 'the quoted list item (an offset inner render)')
+    // The FIRST ul in the document is the one inside the quote (line 5), so the
+    // outer list is the last one — both spans are asserted, and the quoted one is
+    // a second proof that a nested render is offset correctly.
+    eq(shape.quotedList.start + '-' + shape.quotedList.end, '5-6', 'the quoted list span')
+    eq(shape.list.start + '-' + shape.list.end, '10-12', 'the outer list span')
+    eq(shape.nestedList.start + '-' + shape.nestedList.end, '11-12', 'the nested list span')
+    eq(shape.table.start + '-' + shape.table.end, '14-16', 'the table span')
+    eq(shape.pictureBlock.start + '-' + shape.pictureBlock.end, '20-25', 'the paragraph wrapping the picture')
+    eq(shape.pictureRange.start + '-' + shape.pictureRange.end, '20-25', 'a selection inside the picture resolves to its block')
+    eq(shape.badge.start, 18, 'the badge paragraph line')
+    eq(shape.quoteRange.start + '-' + shape.quoteRange.end, '5-5', 'the range a selection inside the quoted item resolves to')
+    eq(shape.outside, null, 'a selection outside the document is not read as a line range')
+  })
+
+  // ── 设置 › 行号: the reader's gutter and the editor's column, in a real engine ─
+  // Two switches, two mechanisms: the preview's numbers are a CSS ::before drawing
+  // attr(data-lineno) off the anchors the renderer already wrote (so they are the
+  // file's REAL lines), and the editor's are a CodeMirror compartment. Both are
+  // asserted in BOTH directions — a switch that is always on, or always off is the
+  // failure mode a one-sided test cannot see.
+  //
+  // Exactly ONE reload, at the very start, on a page with nothing unsaved: the
+  // popout asks before unloading a dirty draft, and that dialog blocks the browser
+  // (it hung this test until the reloads were removed). Every later flip goes
+  // through the same storage event the sidebar raises, which is the harder path
+  // anyway — repainting a document that is already on screen, and reconfiguring a
+  // RUNNING editor instead of one that is about to be rebuilt.
+  await test('the line-number pair switches the preview gutter and the editor column', async () => {
+    const put = async (preview, editor) => {
+      await s.evaluate(`(() => {
+        const key = ${JSON.stringify(SETTINGS_KEY)}
+        const raw = localStorage.getItem(key)
+        const data = raw ? JSON.parse(raw) : {}
+        data.previewLineNumbers = ${preview ? 'true' : 'false'}
+        data.editorLineNumbers = ${editor ? 'true' : 'false'}
+        localStorage.setItem(key, JSON.stringify(data))
+        // The same event the sidebar's write raises in another tab/window.
+        window.dispatchEvent(new StorageEvent('storage', { key: key, newValue: JSON.stringify(data) }))
+      })()`)
+    }
+    // The one reload, so the gutter is proven to survive a BOOT with the setting
+    // already on (not merely to appear when a switch is flipped).
+    await s.evaluate(`(() => {
+      const key = ${JSON.stringify(SETTINGS_KEY)}
+      const raw = localStorage.getItem(key)
+      const data = raw ? JSON.parse(raw) : {}
+      data.previewLineNumbers = true
+      data.editorLineNumbers = true
+      localStorage.setItem(key, JSON.stringify(data))
+    })()`)
+    await s.send('Page.reload')
+    await s.waitFor('!!document.getElementById("tabs")', { label: 'the page to boot with the gutter on', timeout: 15000 })
+    // A reload forgets the 文件树 tab and the loaded root: every other test in this
+    // file assumes both, so they are restored here.
+    const tab = await s.center('.tab[data-view="tree"]')
+    if (tab) await s.click(tab.x, tab.y)
+    await s.waitFor('document.querySelectorAll("#treeBody [data-path]").length > 0', { label: 'the tree to come back after a reload', timeout: 8000 })
+
+    // What the gutter actually DRAWS, read off the pseudo-element the stylesheet
+    // creates: computed content is the substituted attribute value.
+    const gutterOf = () => s.evaluate(`(() => {
+      const root = document.querySelector('#previewArea .markdown')
+      if (!root) return { root: false }
+      const block = root.querySelector(':scope > [data-lineno]')
+      return {
+        root: true,
+        cls: root.className,
+        padLeft: getComputedStyle(root).paddingLeft,
+        label: block ? block.getAttribute('data-lineno') : null,
+        drawn: block ? getComputedStyle(block, '::before').content : null,
+      }
+    })()`)
+
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown [data-lineno]")', { label: 'a labelled block', timeout: 4000 })
+    const on = await gutterOf()
+    assert(on.root, 'no markdown root with the gutter on')
+    assert(String(on.cls).indexOf('is-lines') >= 0, 'the root does not carry is-lines after a boot: ' + JSON.stringify(on.cls))
+    // The pseudo-element must draw the label, not a counter or nothing at all.
+    const drawn = String(on.drawn).replace(/^"|"$/g, '')
+    eq(drawn, String(on.label), 'the gutter draws something other than the block\'s source line')
+    assert(/^\d+(-\d+)?$/.test(drawn), 'the drawn label is not a line number: ' + JSON.stringify(drawn))
+    assert(parseFloat(on.padLeft) > 20, 'the document was not padded for a gutter: ' + on.padLeft)
+
+    // OFF — live, on the document already on screen.
+    await put(false, true)
+    await s.waitFor('!document.querySelector("#previewArea .markdown.is-lines")', { label: 'the gutter class to come off', timeout: 4000 })
+    const off = await gutterOf()
+    eq(String(off.drawn), 'none', 'the gutter is still drawn with the switch off')
+    assert(parseFloat(off.padLeft) < parseFloat(on.padLeft),
+      'the document kept the gutter padding: ' + off.padLeft + ' vs ' + on.padLeft)
+
+    // …and ON again, still without a reload.
+    await put(true, true)
+    await s.waitFor('!!document.querySelector("#previewArea .markdown.is-lines")', { label: 'the gutter class to come back', timeout: 4000 })
+
+    // ── the editor's column, through the real CodeMirror ──────────────────────
+    const editAt = await s.center('.editbtn')
+    assert(editAt, 'no 编辑 button')
+    await s.click(editAt.x, editAt.y)
+    await s.waitFor('!!document.querySelector(".editcm .cm-editor")', { label: 'CodeMirror to mount', timeout: 15000 })
+    const gutters = () => s.evaluate(`(() => {
+      const ed = document.querySelector('.editcm .cm-editor')
+      if (!ed) return null
+      // CodeMirror keeps hidden measuring elements in the gutter (a "99" it uses to
+      // size the column), so the numbers are the VISIBLE ones that really are
+      // numbers — otherwise the first element is the ruler, not line 1.
+      const numbers = [...ed.querySelectorAll('.cm-lineNumbers .cm-gutterElement')]
+        .filter((e) => /^\\d+$/.test((e.textContent || '').trim()) && e.getBoundingClientRect().height > 0)
+        .map((e) => (e.textContent || '').trim())
+      return { lineNumbers: !!ed.querySelector('.cm-lineNumbers'), numbers: numbers }
+    })()`)
+    const ed = await gutters()
+    assert(ed, 'the editor vanished')
+    assert(ed.lineNumbers, 'the editor has no line-number column with the switch on')
+    eq(ed.numbers[0], '1', 'the line-number column does not start at 1')
+    assert(ed.numbers.indexOf('2') > 0, 'the column has no second line number: ' + JSON.stringify(ed.numbers))
+
+    // Flipping the switch while the editor is OPEN must reach the live view…
+    await put(true, false)
+    await s.waitFor('(() => { const ed = document.querySelector(".editcm .cm-editor"); return ed && !ed.querySelector(".cm-lineNumbers") })()',
+      { label: 'the live editor to drop its line-number column', timeout: 4000 })
+    // …and back on with typed text in the document, which is what proves the column
+    // was RECONFIGURED rather than the editor remounted (a remount loses the draft).
+    const editorAt = await s.center('.editcm .cm-content')
+    await s.click(editorAt.x, editorAt.y)
+    await s.send('Input.insertText', { text: 'KEEP ' })
+    await put(true, true)
+    await s.waitFor('!!document.querySelector(".editcm .cm-lineNumbers")', { label: 'the column to come back', timeout: 4000 })
+    const kept = await s.evaluate('document.querySelector(".editcm .cm-content").innerText.indexOf("KEEP") >= 0')
+    assert(kept, 'toggling the line numbers threw the typed text away — the editor was remounted instead of reconfigured')
+
+    // Leave the page as the rest of the suite expects it: out of edit mode (a dirty
+    // draft would make any later reload ask) and back on the shipped defaults.
+    const backAt = await s.center('.editbtn')
+    if (backAt) await s.click(backAt.x, backAt.y)
+    await s.waitFor('!!document.querySelector("#previewArea .markdown") && !document.querySelector(".cm-editor")',
+      { label: 'the preview to come back', timeout: 4000 })
+    await put(false, true)
+  })
+
+
 
   await test('a Chinese file name survives the tree, the request and the preview', async () => {
     // Four hops, each of which can mangle it independently: the tree row's

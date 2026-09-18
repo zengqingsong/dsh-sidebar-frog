@@ -220,6 +220,7 @@ function editorLanguageFor(CM, path) {
 //   .isDirty()       changed since the last markClean()
 //   .markClean()     rebase the "saved" marker to the current document
 //   .setTheme(dark)  swap the theme without touching the text or the history
+//   .setLineNumbers(on)  show/hide the line-number column, same guarantee
 //   .focus() .undo() .redo() .destroy()
 //
 // opts.onChange fires on every document change — the draft keeper needs the
@@ -231,6 +232,24 @@ function editorLanguageFor(CM, path) {
 // a comparison against the live one, which is the recipe CodeMirror itself
 // documents: a plain string comparison on every keystroke would be O(document)
 // per character typed.
+// Put one view on lines [start, end] (1-based, inclusive) and bring them into
+// view. Out-of-range lines are CLAMPED rather than refused: the file may have
+// changed under the reader since the preview was rendered, and "somewhere
+// sensible" beats throwing inside a scroll handler or selecting nothing.
+// Returns whether the view accepted it.
+function revealLinesIn(view, start, end) {
+  if (!view || !view.state || !view.state.doc || typeof view.dispatch !== 'function') return false
+  try {
+    var docLines = view.state.doc.lines
+    var clamp = function (n) { return Math.max(1, Math.min(parseInt(n, 10) || 1, docLines)) }
+    var from = view.state.doc.line(clamp(start))
+    var to = view.state.doc.line(clamp(end || start))
+    view.dispatch({ selection: { anchor: from.from, head: to.to }, scrollIntoView: true })
+    if (typeof view.focus === 'function') view.focus()
+    return true
+  } catch (e) { return false }
+}
+
 function createEditor(container, options) {
   var opts = options || {}
   return loadEditor().then(function (CM) {
@@ -251,6 +270,16 @@ function createEditor(container, options) {
     })
 
     var themeSlot = new CM.Compartment()
+    // The line-number column is a compartment for the same reason the theme is:
+    // it is a PREFERENCE (设置 › 编辑器显示行号), and reconfiguring it must not
+    // throw away the document, the cursor, the scroll position or an unsaved
+    // draft. Remounting the view to hide a gutter would do all four.
+    var lineNumberSlot = new CM.Compartment()
+    // Absent means on: every caller that predates the setting keeps the gutter it
+    // always had. Only an explicit false takes it away.
+    var lineNumberExtensions = function (on) {
+      return on === false ? [] : [CM.lineNumbers(), CM.highlightActiveLineGutter()]
+    }
 
     var keymap = []
     if (editorLanguageName(opts.path) === 'markdown') {
@@ -285,8 +314,7 @@ function createEditor(container, options) {
     var state = CM.EditorState.create({
       doc: String(opts.value == null ? '' : opts.value),
       extensions: [
-        CM.lineNumbers(),
-        CM.highlightActiveLineGutter(),
+        lineNumberSlot.of(lineNumberExtensions(opts.lineNumbers)),
         CM.highlightSpecialChars(),
         CM.highlightActiveLine(),
         CM.history(),
@@ -341,7 +369,22 @@ function createEditor(container, options) {
           ],
         })
       },
+      // Show or hide the line-number column in place (the caller drives this from
+      // 设置 › 编辑器显示行号). Returns whether the view took it.
+      setLineNumbers: function (on) {
+        try {
+          view.dispatch({ effects: lineNumberSlot.reconfigure(lineNumberExtensions(on)) })
+          return true
+        } catch (e) { return false }
+      },
       focus: function () { try { view.focus() } catch (e) {} },
+      // Select lines [start, end] (1-based, inclusive) and bring them into view.
+      // This is what turns "the paragraph I selected in the preview" into the
+      // same lines selected in the editor: one document, two views of it, and the
+      // reader should not have to find the place twice. The math sits in
+      // revealLinesIn, beside this module's other pure helpers, so it can be
+      // asserted against a fake view (see scripts/check.js).
+      revealLines: function (start, end) { return revealLinesIn(view, start, end) },
       undo: function () { CM.undo(view) },
       redo: function () { CM.redo(view) },
       openSearch: function () { try { CM.openSearchPanel(view) } catch (e) {} },

@@ -113,6 +113,25 @@ window.__ModuleLoader__.load({
             body: body,
           })
         }
+        if (method === 'artifacts.create') {
+          // 新建: one empty file or one folder inside a directory of the
+          // workspace. The body carries a PARENT + a NAME rather than a path —
+          // the host validates the name, joins it and fences the result to the
+          // session workspace, and answers a reason the tree shows next to the
+          // input when it refuses (an existing entry, a name Windows will not
+          // take, a directory outside the workspace).
+          const body = JSON.stringify({
+            parent: args && typeof args.parent === 'string' ? args.parent : '',
+            name: args && typeof args.name === 'string' ? args.name : '',
+            kind: args && args.kind === 'dir' ? 'dir' : 'file',
+            sessionId: args && typeof args.sessionId === 'string' ? args.sessionId : '',
+          })
+          return fetchJson('/dsh-sidebar-frog/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+          })
+        }
         if (method === 'artifacts.revert') {
           // The one mutating call that carries a body: {path, opId}. A refusal
           // ("file moved on", "no snapshot") comes back as JSON with ok:false and
@@ -178,7 +197,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '84a506d3'
+          const BUILD = '4751a11e'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -325,6 +344,22 @@ window.__ModuleLoader__.load({
       // dark alike. Applied to the panel, the shell's own document tab and the popout
       // page from this one value; see markdownSkinClass.
       markdownSkin: 'default',
+      // Show each block's SOURCE line in a gutter down the left edge of a rendered
+      // document — the answer to "which line is this?" without leaving the reader.
+      // The numbers come from the anchors the renderer already stamps on every block
+      // (data-lineno, see mdAnchor in src/shared/markdown.js), so they are the file's
+      // real line numbers and not a count of drawn rows.
+      //
+      // Off by default: it is chrome added around a document, and a reader who wants
+      // the text alone should get the text alone. The EDITOR's gutter is a separate
+      // switch (editorLineNumbers) so the two can be had independently — which is the
+      // point of asking for two settings instead of one.
+      previewLineNumbers: false,
+      // CodeMirror's own line-number column, in the panel's editor and the popout
+      // page's alike (both mount the same controller — src/shared/editor.js).
+      // On by default: it is the editor's own convention, and switching it off buys
+      // the width back on a narrow panel.
+      editorLineNumbers: true,
     };
 
     var SETTINGS_RANGES = {
@@ -1970,9 +2005,10 @@ window.__ModuleLoader__.load({
     // engine on the cases it already handles (width media queries, image formats).
     // Anything else inside is escaped: a <picture> holds sources and an image, so
     // stray text or markup is not silently swallowed.
-    function renderPicture(block, opts) {
+    function renderPicture(block, opts, startLine, endLine) {
       var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
-      var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var rawOpen = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+      var opener = startLine ? mdTag(opts, rawOpen, startLine, endLine) : rawOpen;
       var afterOpen = open ? block.slice(open.index + open[0].length) : block;
       var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
       var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
@@ -2018,18 +2054,21 @@ window.__ModuleLoader__.load({
     var INLINE_BLOCK_TAGS = { summary: 1, p: 1, li: 1, dt: 1, dd: 1, figcaption: 1, th: 1, td: 1 };
     // <tr>: render each <th>/<td> cell separately (Markdown inside every cell),
     // keeping the row structure verbatim.
-    function renderTr(block, opts) {
+    function renderTr(block, opts, startLine) {
       var reClose = /<\/tr\b[^>]*>/i;
       var cIdx = block.lastIndexOf('</tr');
       var inner = cIdx >= 0 ? block.slice(0, cIdx) : block;
       var closeTag = (block.match(reClose) || ['</tr>'])[0];
       var out = [];
+      // The row's own <tr> is emitted by renderBlockHtml, not here; the cells carry
+      // the row's line so that a selection inside a cell still resolves to it.
+      var cellLine = startLine || 0;
       var reCell = /<(th|td)((?:\s[^>]*)?)\s*>[\s\S]*?<\/\1\s*>/gi;
       var m;
       var last = 0;
       while ((m = reCell.exec(inner))) {
         if (m.index > last) out.push(htmlEscape(inner.slice(last, m.index)));
-        var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
+        var cellAttr = mdTag(opts, sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>'), cellLine);
         var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
         cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
         out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
@@ -2047,9 +2086,14 @@ window.__ModuleLoader__.load({
     //   - everything else (details, div, figure, ul, ol, dl, table, thead, tbody,
     //     tfoot): the inner source is a mini Markdown document, re-rendered via
     //     mdToHtml — lists, math, nested blocks, fences all work inside
-    function renderBlockHtml(block, tag, opts) {
+    function renderBlockHtml(block, tag, opts, startLine, nextLine) {
       var m = new RegExp('<' + tag + '((?:\\s[^>]*)?)\\s*>', 'i').exec(block);
       var openTag = sanitizeHtmlTag(m ? ('<' + tag + (m[1] || '') + '>') : ('<' + tag + '>'));
+      // The block's span is known to the caller (gatherBlockHtml counted the lines),
+      // so the opener carries it; the INNER render only needs to know where the
+      // source it was handed begins.
+      var span = mdAnchor(opts, startLine || 0, nextLine || 0);
+      if (span) openTag = openTag.slice(0, -1) + span + '>';
       var reClose = new RegExp('</' + tag + '\\b[^>]*>', 'i');
       var closeMatch = block.match(reClose);
       var closeTag = closeMatch ? closeMatch[0] : '</' + tag + '>';
@@ -2059,13 +2103,16 @@ window.__ModuleLoader__.load({
         var cIdx = closeMatch ? block.lastIndexOf(closeTag) : -1;
         inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
       }
-      if (tag === 'tr') return renderTr(block, opts);
-      if (tag === 'picture') return renderPicture(block, opts);
+      if (tag === 'tr') return renderTr(block, opts, startLine);
+      if (tag === 'picture') return renderPicture(block, opts, startLine, nextLine);
       if (INLINE_BLOCK_TAGS[tag]) {
         var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
         return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
       }
-      return openTag + mdToHtml(inner, opts) + closeTag;
+      // What follows the opening tag on its own line is inner line 1, so the offset
+      // is the opener's line MINUS one: inner line k is source line startLine+k-1.
+      var innerOpts = Object.assign({}, opts, { lineOffset: (opts.lineOffset || 0) + (startLine || 1) - 1 });
+      return openTag + mdToHtml(inner, innerOpts) + closeTag;
     }
 
     function mdEscape(s, opts) {
@@ -2180,9 +2227,9 @@ window.__ModuleLoader__.load({
         return m[1] + mdMedia(m[2], opts) + m[3];
       }).join(',');
     }
-    function mdCell(src, tag, align, opts) {
+    function mdCell(src, tag, align, opts, startLine) {
       var st = align ? ' style="text-align:' + align + '"' : '';
-      return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
+      return '<' + tag + st + mdAnchor(opts, startLine || 0) + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
     }
 
     // ── Inline pass ─────────────────────────────────────────────────────────
@@ -2284,12 +2331,39 @@ window.__ModuleLoader__.load({
       var html = ['<' + tag + (tag === 'ol' && first.number !== 1 ? ' start="' + first.number + '"' : '') + '>'];
       var open = false;
       var i = start;
-      var item = function (body) {
+      // Where the open item started, so its <li> can carry a span once the item's
+      // last line (a wrapped line, a nested list, a second block) is known. The
+      // span is closed when the NEXT item opens, which is the only point at which
+      // "the end of this item" is known at all.
+      var itemLine = 0;
+      var itemIndex = -1;
+      var closeItem = function (endLine) {
+        if (!open) return;
+        var end = endLine || itemLine;
+        if (end > itemLine && itemIndex >= 0 && typeof html[itemIndex] === 'string') {
+          // The opener was pushed with data-line only (the end was unknown then), so
+          // the full span replaces it: strip ALL THREE anchor attributes — the range
+          // pair and the label — and splice in the pair. Stripping only the range
+          // would leave the element with a stale label beside the new one, and the
+          // browser reads the FIRST of two data-lineno attributes: the reader's gutter
+          // would draw "6" for an item that spans 6-7.
+          var span = mdAnchor(opts, itemLine, end);
+          html[itemIndex] = html[itemIndex].replace(/ data-(?:line|line-end|lineno)="[^"]*"/g, '').replace('>', span + '>');
+        }
+        html.push('</li>');
+        open = false;
+      };
+      var item = function (body, lineNo) {
+        itemLine = lineNo;
         var task = /^\[([ xX])\][ \t]?([\s\S]*)$/.exec(body);
+        // The mdEscape here used to be called WITHOUT opts, so a task item holding
+        // an image kept a document-relative src that never got rebased onto the
+        // media route (the plain item below always passed them).
+        itemIndex = html.length;
         if (task) {
-          html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
+          html.push('<li class="task-list-item"' + mdAnchor(opts, lineNo) + '><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2], opts), opts));
         } else {
-          html.push('<li>' + mdInline(mdEscape(body, opts), opts));
+          html.push('<li' + mdAnchor(opts, lineNo) + '>' + mdInline(mdEscape(body, opts), opts));
         }
         open = true;
       };
@@ -2303,8 +2377,8 @@ window.__ModuleLoader__.load({
         var mark = mdListMarker(lines[i]);
         if (mark && mark.indent === base) {
           if ((mark.ordered ? 'ol' : 'ul') !== tag) break;
-          if (open) html.push('</li>');
-          item(mark.body);
+          if (open) closeItem(i);
+          item(mark.body, i + 1);
           i += 1;
           continue;
         }
@@ -2328,8 +2402,12 @@ window.__ModuleLoader__.load({
         if (open && lines[i].search(/\S/) > base) { continuation(lines[i]); i += 1; continue; }
         break;
       }
-      if (open) html.push('</li>');
+      if (open) closeItem(i);
       html.push('</' + tag + '>');
+      // The list element carries the whole list's span; each li carries its own, so
+      // selecting one item resolves to that item and not to the list.
+      var listSpan = mdAnchor(opts, start + 1, i);
+      if (listSpan) html[0] = html[0].slice(0, -1) + listSpan + '>';
       return { html: html.join(''), next: i };
     }
 
@@ -2348,6 +2426,16 @@ window.__ModuleLoader__.load({
         // The chosen document skin (see src/shared/skins.js): the class the Markdown
         // root carries, so a skin is pure CSS and costs the renderer nothing.
         skin: opts.skin || '',
+        // Source-line anchors are OPT-IN. The reader surfaces ask for them (the
+        // panel, the shell's document tab, the popout page) because they are what
+        // turns "the paragraph I selected" into "lines 12-14 of this file"; every
+        // other caller keeps the plain shapes it has always produced, so nothing
+        // about the rendered document moves for a caller that did not ask.
+        lineAnchors: opts.lineAnchors === true,
+        // Added to every anchored line number. Nested renders (a blockquote inside a
+        // details, an item inside a list) are handed a slice of the source, so their
+        // own line 1 is not the document's line 1.
+        lineOffset: opts.lineOffset || 0,
       };
       var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
       var out = [];
@@ -2356,6 +2444,7 @@ window.__ModuleLoader__.load({
         var line = lines[i];
         var fenceOpen = /^\s*(\x60{3,}|~{3,})([\w+-]*)/.exec(line);
         if (fenceOpen) {
+          var fenceStart = i + 1;
           var fenceCh = fenceOpen[1].charAt(0);
           var langHint = fenceOpen[2];
           // Only the fence character that opened the block closes it: a tilde
@@ -2364,20 +2453,27 @@ window.__ModuleLoader__.load({
           var buf = [];
           i += 1;
           while (i < lines.length && !fenceClose.test(lines[i])) { buf.push(lines[i]); i += 1; }
+          var fenceEnd = (i < lines.length ? i : i - 1) + 1;
           i += 1;
           var codeText = buf.join('\n');
+          // The whole fence is one anchored block. Its lines are NOT anchored
+          // individually: the highlighted HTML is produced by highlightCode, whose
+          // multi-line tokens would be cut in half by a per-line wrapper, and a
+          // document that copies badly is worse than one that quotes a few lines too
+          // many. Selecting inside a fence resolves to the fence.
+          var fenceAnchor = mdAnchor(mdOpts, fenceStart, fenceEnd);
           if (langHint === 'mermaid') {
             // Keep the diagram source verbatim inside a .mermaid container; the
             // renderer replaces it with Mermaid's SVG. tex2jax_ignore keeps the
             // MathJax pass from reading '$'-looking text inside diagram labels.
-            out.push('<div class="mermaid tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+            out.push('<div class="mermaid tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
           } else if (langHint === 'jsxgraph') {
             // Keep the JSXGraph script verbatim inside a .jsxgraph container; the
             // renderer later runs it (with the generated board id in scope) to
             // build an interactive board. Same MathJax ignore rationale.
-            out.push('<div class="jsxgraph tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+            out.push('<div class="jsxgraph tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
           } else {
-            out.push('<pre><code>' + highlightCode(codeText, langHint) + '</code></pre>');
+            out.push('<pre' + fenceAnchor + '><code>' + highlightCode(codeText, langHint) + '</code></pre>');
           }
           continue;
         }
@@ -2388,6 +2484,7 @@ window.__ModuleLoader__.load({
         // MathJax can typeset as a single $$...$$ block. Newlines inside the
         // formula are collapsed to spaces — TeX treats them as whitespace.
         if (/^\s*\$\$/.test(line)) {
+          var mathStart = i + 1;
           var rest = line.replace(/^\s*\$\$/, '');
           var closeIdx = rest.indexOf('$$');
           var parts = [];
@@ -2406,11 +2503,12 @@ window.__ModuleLoader__.load({
             }
           }
           var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-          out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
+          out.push('<div class="math-display"' + mdAnchor(mdOpts, mathStart, i) + '>' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
           continue;
         }
         // Standalone SVG block: gather until the closing tag, then emit sanitized.
         if (/^\s*<svg/i.test(line)) {
+          var svgStart = i + 1;
           var svgBuf = [line];
           var closed = /<\/svg>/i.test(line);
           while (!closed && i + 1 < lines.length) {
@@ -2418,7 +2516,13 @@ window.__ModuleLoader__.load({
             svgBuf.push(lines[i]);
             closed = /<\/svg>/i.test(lines[i]);
           }
-          out.push(sanitizeSvg(svgBuf.join('\n')));
+          var svgEnd = i + 1;
+          // The sanitized SVG is emitted as-is; the anchor rides on a wrapper so the
+          // svg element itself is untouched (a bare <svg> with an extra attribute
+          // would be a second thing to sanitize).
+          out.push(mdOpts.lineAnchors
+            ? '<div class="artifacts-md-svgblock"' + mdAnchor(mdOpts, svgStart, svgEnd) + '>' + sanitizeSvg(svgBuf.join('\n')) + '</div>'
+            : sanitizeSvg(svgBuf.join('\n')));
           i += 1;
           continue;
         }
@@ -2432,48 +2536,58 @@ window.__ModuleLoader__.load({
         if (bhMatch && BLOCK_HTML_TAGS[bhMatch[1].toLowerCase()]) {
           var bhTag = bhMatch[1].toLowerCase();
           if (!(bhTag === 'summary' && /\/\s*>$/.test(line))) {
+            var bhStart = i + 1;
             var bh = gatherBlockHtml(line, i, lines, bhTag);
-            out.push(renderBlockHtml(bh.block, bhTag, mdOpts));
+            out.push(renderBlockHtml(bh.block, bhTag, mdOpts, bhStart, bh.next));
             i = bh.next;
             continue;
           }
         }
         // GFM table: header row + delimiter row (+ optional body rows).
         if (isTableRow(line) && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
+          var tblStart = i + 1;
           var headCells = tableCells(line);
           var delimCells = tableCells(lines[i + 1]);
           var aligns = [];
           for (var a = 0; a < headCells.length; a += 1) aligns.push(cellAlign(delimCells[a] || ''));
           var tbl = ['<table>'];
-          tbl.push('<thead><tr>');
-          for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts));
+          tbl.push('<thead><tr' + mdAnchor(mdOpts, tblStart) + '>');
+          for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts, tblStart));
           tbl.push('</tr></thead>');
           i += 2;
           var openedBody = false;
           while (i < lines.length && isTableRow(lines[i]) && !isDelimRow(lines[i])) {
             var cells = tableCells(lines[i]);
             if (!openedBody) { tbl.push('<tbody>'); openedBody = true; }
-            tbl.push('<tr>');
-            for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts));
+            tbl.push('<tr' + mdAnchor(mdOpts, i + 1) + '>');
+            for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts, i + 1));
             tbl.push('</tr>');
             i += 1;
           }
           if (openedBody) tbl.push('</tbody>');
           tbl.push('</table>');
+          // The table element carries the whole span; its rows carry their own line,
+          // so a selected ROW resolves to that row rather than to the whole table.
+          // The opener is rewritten here rather than spliced into the finished HTML:
+          // the end line is only known once the body rows have been read.
+          var tableSpan = mdAnchor(mdOpts, tblStart, i);
+          if (tableSpan) tbl[0] = '<table' + tableSpan + '>';
           out.push(tbl.join(''));
           continue;
         }
         var hd = /^(#{1,6})\s+(.*)$/.exec(line);
         if (hd) {
           var lv = hd[1].length;
-          out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
+          out.push('<h' + lv + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
           i += 1;
           continue;
         }
-        if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+        if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr' + mdAnchor(mdOpts, i + 1) + '>'); i += 1; continue; }
         if (/^\s*>\s?/.test(line)) {
+          var qStart = i + 1;
           var q = [];
           while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, '')); i += 1; }
+          var qEnd = i;
           // A quote holds BLOCKS, not a run of inline text. Stripping the marker and
           // running the remainder through mdInline — which is what this did — drew
           // a quoted "- a" as the literal characters "- a": every list, heading,
@@ -2489,10 +2603,13 @@ window.__ModuleLoader__.load({
           // closer, and the first closer is the last four characters — because a
           // greedy /^<p>([\s\S]*)<\/p>$/ matches from the first opener to the LAST
           // closer and would tear the tags out of a two-paragraph quote.
-          var quoted = mdToHtml(q.join('\n'), mdOpts);
+          // Each stripped line is the next source line, so the inner render is offset
+          // by one less than the quote's first line.
+          var quoted = mdToHtml(q.join('\n'), Object.assign({}, mdOpts, { lineOffset: (mdOpts.lineOffset || 0) + qStart - 1 }));
           var oneParagraph = quoted.slice(0, 3) === '<p>' && quoted.slice(-4) === '</p>' &&
             quoted.indexOf('</p>') === quoted.length - 4;
-          out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
+          var quoteInner = oneParagraph ? quoted.slice(quoted.indexOf('>') + 1, -4) : quoted;
+          out.push('<blockquote' + mdAnchor(mdOpts, qStart, qEnd) + '>' + quoteInner + '</blockquote>');
           continue;
         }
         if (mdListMarker(line)) {
@@ -2507,15 +2624,256 @@ window.__ModuleLoader__.load({
         // '=====' cannot be anything but an underline, and today it renders as a
         // paragraph containing '=====', which is never what was meant.
         if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-          out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
+          out.push('<h1' + mdAnchor(mdOpts, i + 1, i + 2) + '>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
           i += 2;
           continue;
         }
         if (line.trim() === '') { i += 1; continue; }
-        out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
+        out.push('<p' + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
         i += 1;
       }
       return out.join('\n');
+    }
+
+    // ── Source-line anchors ─────────────────────────────────────────────────────
+    // The block pass stamps every element a reader can see with the 1-based SOURCE
+    // line it came from, and with the last line it covers when that is more than
+    // one. That attribute is the whole mechanism: a selection inside the rendered
+    // document can be walked up to the nearest anchored element, and the reader gets
+    // "lines 12-14 of this file" — precise enough to quote into a request, or to
+    // send an editor straight to it — without the renderer having to keep a second,
+    // parallel map of the document.
+    //
+    // It is opt-in (mdToHtml's lineAnchors) because these attributes are decoration:
+    // a caller that asked for none must keep the exact markup it always produced.
+    function mdAnchor(opts, start, end) {
+      if (!opts || opts.lineAnchors !== true) return '';
+      var base = opts.lineOffset || 0;
+      var from = base + start;
+      var to = base + (end == null ? start : end);
+      if (!(from > 0)) return '';
+      // data-lineno is the LABEL a reader displays, decided here beside the range it
+      // describes so that "12" and "12–18" can never disagree with the data-line pair
+      // the selection bar quotes (see .artifacts-markdown.is-lines in styles.js).
+      var label = to > from ? from + '\u2013' + to : String(from);
+      return ' data-line="' + from + '"' + (to > from ? ' data-line-end="' + to + '"' : '') +
+        ' data-lineno="' + label + '"';
+    }
+
+    // Same anchor, spliced into an already-built opening tag: <p ...> becomes <p ... ...>.
+    function mdTag(opts, tagHtml, start, end) {
+      var a = mdAnchor(opts, start, end);
+      return a && tagHtml.charAt(tagHtml.length - 1) === '>' ? tagHtml.slice(0, -1) + a + '>' : tagHtml;
+    }
+
+    // The source lines one rendered node stands for: the node itself when it is an
+    // anchored element, otherwise its nearest anchored ancestor. Null when there is
+    // no anchor above it (inline-only content, or a document rendered without them).
+    function mdLinesOfNode(node) {
+      var el = node;
+      try {
+        if (el && el.nodeType === 3) el = el.parentElement;
+        if (el && typeof el.closest === 'function') el = el.closest('[data-line]');
+        else { while (el && !(el.getAttribute && el.getAttribute('data-line'))) el = el.parentNode; }
+      } catch (e) { return null; }
+      if (!el || typeof el.getAttribute !== 'function') return null;
+      var start = parseInt(el.getAttribute('data-line'), 10);
+      if (!(start > 0)) return null;
+      var endAttr = parseInt(el.getAttribute('data-line-end'), 10);
+      return { start: start, end: endAttr > start ? endAttr : start };
+    }
+
+    // The range a live selection covers. Both ends are resolved and then ordered, so
+    // a selection dragged upwards reads the same as one dragged down. Null when
+    // either end is unanchored, or when the selection is not inside root — a
+    // selection in the file tree must not be read as a line range of the document.
+    function mdSelectionLines(root, sel) {
+      if (!sel) return null;
+      var a = mdLinesOfNode(sel.anchorNode);
+      var b = mdLinesOfNode(sel.focusNode || sel.anchorNode);
+      if (!a || !b) return null;
+      if (root && typeof root.contains === 'function') {
+        var node = sel.anchorNode && sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+        if (node && !root.contains(node)) return null;
+      }
+      return a.start <= b.end ? { start: a.start, end: b.end } : { start: b.start, end: a.end };
+    }
+
+    // Lines [start, end] (1-based, inclusive) of a source text. Out-of-range values
+    // are clamped rather than refused: a document that changed under the reader must
+    // still produce a quote of what is there now.
+    function mdSourceLines(text, start, end) {
+      var all = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+      var from = Math.max(1, parseInt(start, 10) || 1);
+      var to = Math.max(from, parseInt(end, 10) || from);
+      if (from > all.length) return '';
+      return all.slice(from - 1, Math.min(to, all.length)).join('\n');
+    }
+
+    // The info string of a fenced quote, from the file's own extension: a quote the
+    // model reads should say what language it is, and guessing from the content is
+    // how a shell transcript ends up highlighted as Python.
+    function mdQuoteLang(path) {
+      var m = /\.([A-Za-z0-9]+)$/.exec(String(path || ''));
+      if (!m) return '';
+      var ext = m[1].toLowerCase();
+      var map = {
+        md: 'md', markdown: 'md', js: 'js', mjs: 'js', cjs: 'js', ts: 'ts', tsx: 'tsx', jsx: 'jsx',
+        py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', c: 'c', h: 'c',
+        cpp: 'cpp', hpp: 'cpp', cs: 'csharp', php: 'php', sh: 'bash', bash: 'bash', ps1: 'powershell',
+        json: 'json', jsonc: 'json', yml: 'yaml', yaml: 'yaml', toml: 'toml', ini: 'ini', xml: 'xml',
+        html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less', sql: 'sql', txt: '',
+      };
+      return Object.prototype.hasOwnProperty.call(map, ext) ? map[ext] : ext;
+    }
+
+    // The payload a reader gets for one selected range: a locator the agent can act
+    // on (path:12-14) followed by exactly those source lines in a fence.
+    //
+    // The line numbers stay OUT of the fence on purpose. A model handed
+    // "12 | const a = 1" will happily write the numbers back into the file, and a
+    // patch that corrupts the document is a worse failure than a quote that carries
+    // one less hint. The locator above the fence is the only place they appear, and
+    // it names the same range the fence holds.
+    function mdLineQuote(path, start, end, text) {
+      var p = String(path || '').replace(/\\/g, '/');
+      var from = parseInt(start, 10) || 1;
+      var to = Math.max(from, parseInt(end, 10) || from);
+      var body = mdSourceLines(text, from, to);
+      // A quote that contains its own closing fence would end early; the longer
+      // fence is the standard answer and needs no escaping.
+      var fence = /(^|\n)\s*\x60{3}/.test(body) ? '~~~~' : '\x60\x60\x60';
+      var lang = mdQuoteLang(p);
+      return '@' + p + ':' + from + (to > from ? '-' + to : '') + '\n' +
+        fence + lang + '\n' + body + '\n' + fence + '\n';
+    }
+
+    // ── The selection bar ───────────────────────────────────────────────────────
+    // One floating bar, positioned over the current selection of a RENDERED
+    // document: it names the source range and offers the two things a reader wants
+    // from it — quote those lines, or open them where they can be edited.
+    //
+    // Plain DOM and no framework, because the panel (React) and the popout page
+    // (plain DOM) both need it; it is appended to <body> rather than into the
+    // document, because the panel is a CSS containing block (container-type:
+    // inline-size) and a fixed child of it would be positioned against the panel
+    // instead of the viewport — the trap that once put the file tree's context menu
+    // off screen entirely.
+    //
+    // opts:
+    //   root     — the rendered container a selection must be inside
+    //   path     — the document's path (the locator's left half)
+    //   text     — the document's SOURCE (the quote is taken from here, not from
+    //              the selection, so the reply names exactly the lines it shows)
+    //   onQuote  — (payload, range) → void
+    //   onLocate — optional (start, end) → void; when absent the 定位 button is not
+    //              drawn at all (a button that cannot do anything is worse than none)
+    function attachMarkdownSelectionBar(opts) {
+      opts = opts || {};
+      var root = opts.root;
+      var doc = (root && root.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+      if (!doc || !root || typeof doc.createElement !== 'function') return function () {};
+
+      var bar = doc.createElement('div');
+      bar.className = 'artifacts-mdselbar';
+      bar.setAttribute('role', 'toolbar');
+      var label = doc.createElement('span');
+      label.className = 'artifacts-mdselbar-label';
+      bar.appendChild(label);
+      var quoteBtn = doc.createElement('button');
+      quoteBtn.type = 'button';
+      quoteBtn.className = 'artifacts-mdselbar-btn';
+      quoteBtn.textContent = '引用';
+      quoteBtn.title = '把这部分（含文件路径与行号）放进输入框';
+      bar.appendChild(quoteBtn);
+      var locateBtn = null;
+      if (typeof opts.onLocate === 'function') {
+        locateBtn = doc.createElement('button');
+        locateBtn.type = 'button';
+        locateBtn.className = 'artifacts-mdselbar-btn';
+        locateBtn.textContent = '定位';
+        locateBtn.title = '在编辑器里打开并选中这几行';
+        bar.appendChild(locateBtn);
+      }
+      bar.style.display = 'none';
+      if (doc.body && doc.body.appendChild) doc.body.appendChild(bar);
+
+      var current = null;
+      var raf = null;
+      var hide = function () {
+        current = null;
+        bar.style.display = 'none';
+      };
+      var show = function (range, rect) {
+        current = range;
+        label.textContent = range.start === range.end ? '第 ' + range.start + ' 行' : '第 ' + range.start + '–' + range.end + ' 行';
+        bar.style.display = 'flex';
+        // Measured after it is visible: a hidden element has no box to center on.
+        var w = bar.offsetWidth || 180;
+        var h = bar.offsetHeight || 28;
+        var viewportW = (doc.documentElement && doc.documentElement.clientWidth) || 1024;
+        var left = Math.max(8, Math.min((rect.left + rect.width / 2) - w / 2, viewportW - w - 8));
+        var top = rect.top - h - 6;
+        // A selection at the very top of the viewport gets the bar below it instead
+        // of under the toolbar, where it would be unreachable.
+        if (top < 8) top = Math.min(rect.bottom + 6, ((doc.documentElement && doc.documentElement.clientHeight) || 768) - h - 8);
+        bar.style.left = Math.round(left) + 'px';
+        bar.style.top = Math.round(top) + 'px';
+      };
+      var update = function () {
+        raf = null;
+        var sel = typeof doc.getSelection === 'function' ? doc.getSelection() : null;
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hide(); return; }
+        var range = mdSelectionLines(root, sel);
+        if (!range) { hide(); return; }
+        var rect = null;
+        try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch (e) { rect = null; }
+        if (!rect || (!rect.width && !rect.height)) { hide(); return; }
+        show(range, rect);
+      };
+      var schedule = function () {
+        if (raf !== null) return;
+        // Deferred by a frame: selectionchange fires while the browser is still
+        // moving the selection, and reading a rect mid-gesture is how a bar lands
+        // one selection behind the pointer.
+        raf = (typeof requestAnimationFrame === 'function')
+          ? requestAnimationFrame(update)
+          : setTimeout(update, 16);
+      };
+      var onKey = function (e) { if (e && (e.key === 'Escape' || e.key === 'Esc')) hide(); };
+      var onQuote = function () {
+        if (!current) return;
+        var payload = mdLineQuote(opts.path, current.start, current.end, opts.text);
+        var range = current;
+        hide();
+        try { opts.onQuote(payload, range); } catch (e) {}
+      };
+      var onLocateClick = function () {
+        if (!current) return;
+        var range = current;
+        hide();
+        try { opts.onLocate(range.start, range.end); } catch (e) {}
+      };
+
+      doc.addEventListener('selectionchange', schedule);
+      doc.addEventListener('mouseup', schedule);
+      doc.addEventListener('keyup', schedule);
+      doc.addEventListener('keydown', onKey);
+      // Capture, so a scroll inside the document pane counts: a fixed bar left over
+      // a scrolled-away paragraph is worse than no bar.
+      (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).addEventListener('scroll', hide, true);
+      quoteBtn.addEventListener('click', onQuote);
+      if (locateBtn) locateBtn.addEventListener('click', onLocateClick);
+
+      return function dispose() {
+        doc.removeEventListener('selectionchange', schedule);
+        doc.removeEventListener('mouseup', schedule);
+        doc.removeEventListener('keyup', schedule);
+        doc.removeEventListener('keydown', onKey);
+        (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).removeEventListener('scroll', hide, true);
+        if (bar.parentNode) bar.parentNode.removeChild(bar);
+        current = null;
+      };
     }
 
               // ── Document skins for rendered Markdown ────────────────────────────────────
@@ -2858,6 +3216,7 @@ window.__ModuleLoader__.load({
     //   .isDirty()       changed since the last markClean()
     //   .markClean()     rebase the "saved" marker to the current document
     //   .setTheme(dark)  swap the theme without touching the text or the history
+    //   .setLineNumbers(on)  show/hide the line-number column, same guarantee
     //   .focus() .undo() .redo() .destroy()
     //
     // opts.onChange fires on every document change — the draft keeper needs the
@@ -2869,6 +3228,24 @@ window.__ModuleLoader__.load({
     // a comparison against the live one, which is the recipe CodeMirror itself
     // documents: a plain string comparison on every keystroke would be O(document)
     // per character typed.
+    // Put one view on lines [start, end] (1-based, inclusive) and bring them into
+    // view. Out-of-range lines are CLAMPED rather than refused: the file may have
+    // changed under the reader since the preview was rendered, and "somewhere
+    // sensible" beats throwing inside a scroll handler or selecting nothing.
+    // Returns whether the view accepted it.
+    function revealLinesIn(view, start, end) {
+      if (!view || !view.state || !view.state.doc || typeof view.dispatch !== 'function') return false
+      try {
+        var docLines = view.state.doc.lines
+        var clamp = function (n) { return Math.max(1, Math.min(parseInt(n, 10) || 1, docLines)) }
+        var from = view.state.doc.line(clamp(start))
+        var to = view.state.doc.line(clamp(end || start))
+        view.dispatch({ selection: { anchor: from.from, head: to.to }, scrollIntoView: true })
+        if (typeof view.focus === 'function') view.focus()
+        return true
+      } catch (e) { return false }
+    }
+
     function createEditor(container, options) {
       var opts = options || {}
       return loadEditor().then(function (CM) {
@@ -2889,6 +3266,16 @@ window.__ModuleLoader__.load({
         })
 
         var themeSlot = new CM.Compartment()
+        // The line-number column is a compartment for the same reason the theme is:
+        // it is a PREFERENCE (设置 › 编辑器显示行号), and reconfiguring it must not
+        // throw away the document, the cursor, the scroll position or an unsaved
+        // draft. Remounting the view to hide a gutter would do all four.
+        var lineNumberSlot = new CM.Compartment()
+        // Absent means on: every caller that predates the setting keeps the gutter it
+        // always had. Only an explicit false takes it away.
+        var lineNumberExtensions = function (on) {
+          return on === false ? [] : [CM.lineNumbers(), CM.highlightActiveLineGutter()]
+        }
 
         var keymap = []
         if (editorLanguageName(opts.path) === 'markdown') {
@@ -2923,8 +3310,7 @@ window.__ModuleLoader__.load({
         var state = CM.EditorState.create({
           doc: String(opts.value == null ? '' : opts.value),
           extensions: [
-            CM.lineNumbers(),
-            CM.highlightActiveLineGutter(),
+            lineNumberSlot.of(lineNumberExtensions(opts.lineNumbers)),
             CM.highlightSpecialChars(),
             CM.highlightActiveLine(),
             CM.history(),
@@ -2979,7 +3365,22 @@ window.__ModuleLoader__.load({
               ],
             })
           },
+          // Show or hide the line-number column in place (the caller drives this from
+          // 设置 › 编辑器显示行号). Returns whether the view took it.
+          setLineNumbers: function (on) {
+            try {
+              view.dispatch({ effects: lineNumberSlot.reconfigure(lineNumberExtensions(on)) })
+              return true
+            } catch (e) { return false }
+          },
           focus: function () { try { view.focus() } catch (e) {} },
+          // Select lines [start, end] (1-based, inclusive) and bring them into view.
+          // This is what turns "the paragraph I selected in the preview" into the
+          // same lines selected in the editor: one document, two views of it, and the
+          // reader should not have to find the place twice. The math sits in
+          // revealLinesIn, beside this module's other pure helpers, so it can be
+          // asserted against a fake view (see scripts/check.js).
+          revealLines: function (start, end) { return revealLinesIn(view, start, end) },
           undo: function () { CM.undo(view) },
           redo: function () { CM.redo(view) },
           openSearch: function () { try { CM.openSearchPanel(view) } catch (e) {} },
@@ -3116,7 +3517,13 @@ window.__ModuleLoader__.load({
     // Write `@path` into the current session's composer draft. Returns true on
     // success, false when the input API is unavailable (caller then falls back
     // to clipboard copy).
-    const quoteToComposer = (path) => {
+    const quoteToComposer = (path) => quoteTextToComposer('@' + path)
+
+    // The general form: whatever text a caller wants in the composer. A line
+    // selection inserts a locator plus the quoted lines (see mdLineQuote), which
+    // is the same operation the file tree performs with a bare path — the draft
+    // is read first so an existing message is never overwritten.
+    const quoteTextToComposer = (text) => {
       try {
         const sessions = ctx.get('sessions')
         const conversation = ctx.get('conversation')
@@ -3131,10 +3538,34 @@ window.__ModuleLoader__.load({
         try {
           if (input.state && typeof input.state.getSnapshot === 'function') draft = input.state.getSnapshot().draft || ''
         } catch (e) {}
-        const text = '@' + path
-        input.setDraft(draft && draft.trim() !== '' ? draft + ' ' + text : text)
+        const body = String(text == null ? '' : text)
+        if (!draft || draft.trim() === '') { input.setDraft(body); return true }
+        const separator = body.indexOf('\n') >= 0 ? '\n\n' : ' '
+        input.setDraft(draft.replace(/\s+$/, '') + separator + body)
         return true
       } catch (e) {
+        return false
+      }
+    }
+
+    // Copy text with the panel's own notice, or say that it could not be done.
+    // Separate from the plain copy helper because the notice text differs per
+    // caller and a silent failure here loses what the reader selected.
+    const copyToClipboard = (text, okMessage) => {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = String(text == null ? '' : text)
+        ta.setAttribute('readonly', 'readonly')
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        noticeStore.flash(ok ? (okMessage || '已复制') : '复制失败：浏览器拒绝了剪贴板操作')
+        return !!ok
+      } catch (e) {
+        noticeStore.flash('复制失败：' + (e && e.message ? e.message : '剪贴板不可用'))
         return false
       }
     }
@@ -3769,11 +4200,49 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
 .artifacts-markdown pre code { background: transparent; padding: 0; }
 .artifacts-markdown img { max-width: 100%; }
+/* The selection bar for a rendered document (see attachMarkdownSelectionBar in
+   src/shared/markdown.js). Appended to <body>, fixed to the viewport, so it is
+   outside any panel scope and carries fallbacks for the theme tokens. */
+.artifacts-mdselbar { position: fixed; z-index: 2147483000; display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,.18)); background: var(--dsw-alias-bg-layer-2, rgba(28,28,30,.96)); color: var(--dsw-alias-label-primary, #fff); box-shadow: 0 6px 20px rgba(0,0,0,.24); font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; user-select: none; }
+.artifacts-mdselbar-label { white-space: nowrap; color: var(--dsw-alias-label-secondary, rgba(255,255,255,.7)); }
+.artifacts-mdselbar-btn { font: inherit; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent; background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,.12)); color: inherit; cursor: pointer; }
+.artifacts-mdselbar-btn:hover { background: var(--dsw-alias-state-business-primary, #4b7bec); color: #fff; }
 /* The raw-HTML shapes a README uses for its logo: <picture> (a light/dark
    <source> beside a fallback <img>) inside <p align="center">. Alignment comes
    from an obsolete presentational attribute, so it is stated here rather than
    trusted to the browser; the image keeps its aspect ratio when a width/height
    attribute pair is scaled down by max-width. */
+/* ── source-line gutter (设置 › 预览显示行号) ─────────────────────────────────
+   The reader's answer to "which line is this?". The numbers are NOT counted from
+   what is drawn: they are the anchors the renderer already stamps on every block
+   (data-lineno = the source line it starts on, with the range when it covers
+   several — see mdAnchor in src/shared/markdown.js), so the gutter and the
+   "引用/定位" bar can never disagree about which line a block is.
+
+   Only DIRECT children of the document root carry a number. They all begin at the
+   root's left edge, so one negative offset lines them up; a nested block (a list
+   item, a table cell, a blockquote's inner paragraph) starts at a different x, so
+   its number would sit at a different x too and read as a stray glyph rather than
+   a column.
+
+   The gutter is chrome this plugin adds, so it is opt-in and it is pure CSS on
+   markup that is already there: no extra elements, nothing to keep in sync. */
+.artifacts-markdown.is-lines { padding-left: 3.9em; }
+.artifacts-markdown.is-lines > [data-lineno] { position: relative; }
+.artifacts-markdown.is-lines > [data-lineno]::before {
+  content: attr(data-lineno);
+  position: absolute;
+  left: -3.5em;
+  width: 2.9em;
+  text-align: right;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--dsw-alias-label-tertiary, #94a3b8);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .artifacts-markdown picture { max-width: 100%; }
 .artifacts-markdown picture > img { max-width: 100%; height: auto; }
 .artifacts-markdown [align="center"] { text-align: center; }
@@ -3921,6 +4390,17 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-tree-row.is-selected { background: var(--dsw-alias-interactive-bg-active); --frog-row-bg: var(--dsw-alias-interactive-bg-active); }
 /* Depth guides, drawn inside each row so they never leak across levels. */
 .artifacts-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--dsw-alias-border-l1); pointer-events: none; }
+/* 新建: the inline name row. It is a tree row (same guides, icons, indentation)
+   with an input where the label would be, so the new entry is visibly about to
+   exist at that level. The row is not clickable — a click in it must land in the
+   input, not open anything. */
+.artifacts-tree-createrow { cursor: default; background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-tree-createrow:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-tree-createrow.is-invalid { box-shadow: inset 0 0 0 1px var(--dsw-alias-state-error-primary, #e5484d); }
+.artifacts-tree-create { flex: 1 1 auto; min-width: 0; height: calc(var(--frog-h-tree-row) - 6px); box-sizing: border-box; padding: 0 4px; font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-state-business-primary); border-radius: 3px; outline: none; }
+.artifacts-tree-create::placeholder { color: var(--dsw-alias-label-tertiary); }
+.artifacts-tree-create-error { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--dsw-alias-state-error-primary, #e5484d); }
+.artifacts-tree-create-hint { flex: none; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .artifacts-tree-twisty { flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }
 .artifacts-tree-twisty svg { transition: transform .1s var(--ds-ease-in-out, ease); }
 .artifacts-tree-twisty.is-open svg { transform: rotate(90deg); }
@@ -4599,6 +5079,14 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       React.createElement('path', { d: 'M10.2 10.2 L13.6 13.6', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
     )
 
+    // 新建: the tree header's plus. It opens the two create verbs rather than
+    // guessing a kind, which is why it is a plus and not a "new file" glyph.
+    const PlusIcon = (size) => React.createElement('svg', {
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+    },
+      React.createElement('path', { d: 'M8 3.2 V12.8 M3.2 8 H12.8', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' }),
+    )
+
     const CloseIcon = (size) => React.createElement('svg', {
       width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
     }, React.createElement('path', {
@@ -4956,13 +5444,21 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       const mdSession = props.sessionId || currentSessionId()
       // The chosen skin is a SETTING, and the view re-renders when it changes:
       // the class on the root is what selects its rules, so a switch repaints
-      // immediately instead of needing a reload.
-      const skin = useSettings().markdownSkin
+      // immediately instead of needing a reload. The line-number gutter is the
+      // same shape of thing — a class the stylesheet keys off — and it reads its
+      // value out of data-lineno, which the render below already stamps on every
+      // block (see mdAnchor and .artifacts-markdown.is-lines in styles.js).
+      const st = useSettings()
+      const skin = st.markdownSkin
+      const showLines = !!st.previewLineNumbers
       React.useEffect(() => {
         const node = ref.current
         if (!node) return
         // opts.path lets relative image/svg links resolve next to the doc.
-        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession })
+        // lineAnchors stamps every block with the source line it came from, which
+        // is what the selection bar below reads (see mdAnchor in
+        // src/shared/markdown.js). Only the reader surfaces ask for them.
+        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession, lineAnchors: true })
         let alive = true
         renderMermaidIn(node)
         renderJSXGraphIn(node)
@@ -4971,9 +5467,37 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
           if (ref.current !== node) return
           mj.typesetPromise([node]).catch(() => {})
         })
-        return () => { alive = false }
-      }, [content, mdPath, mdSession, skin])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) })
+        // Select text in the rendered document and this bar names the source
+        // lines it came from, quotes them, or opens them in the editor beside it.
+        const disposeBar = attachMarkdownSelectionBar({
+          root: node,
+          path: mdPath,
+          // The quote is taken from the SOURCE, not from the selection: what the
+          // request shows and what its locator claims must be the same lines.
+          text: content,
+          onQuote: (payload, range) => {
+            const where = range.start === range.end ? range.start + ' 行' : range.start + '-' + range.end + ' 行'
+            if (quoteTextToComposer(payload)) noticeStore.flash('已插入输入框（第 ' + where + '）')
+            else copyToClipboard(payload, '已复制引用（第 ' + where + '，未能写入输入框）')
+          },
+          // Only when something can actually act on it: this file's editor
+          // publishes itself in src/client/editor.js while it is mounted, and the
+          // shell's read-only document tab never does — a 定位 button there would
+          // do nothing at all.
+          onLocate: editorLocator.path === mdPath && typeof editorLocator.locate === 'function'
+            ? (start, end) => editorLocator.locate(start, end)
+            : null,
+        })
+        return () => {
+          alive = false
+          disposeBar()
+        }
+        // editorLocator is a render-time registry, not a prop: if the editor for
+        // this file mounts after the preview (or leaves), the dep below cannot
+        // see it, so the bar is rebuilt on the next content/skin change and the
+        // button set follows the editor within one interaction.
+      }, [content, mdPath, mdSession, skin, showLines, props.editable])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + (showLines ? ' is-lines' : '') })
     }
 
     const PdfView = (props) => {
@@ -5514,6 +6038,12 @@ const FileTree = (props) => {
   // call that disables 删除 so a double click cannot fire it twice.
   const [confirmDel, setConfirmDel] = React.useState(null)
   const [delBusy, setDelBusy] = React.useState(false)
+  // 新建: the inline row that asks for a name. `parent` is the directory the
+  // entry will be created in (the workspace root when it is the root), so the
+  // row can be drawn at the level it belongs to — under the folder it will land
+  // in, not floating at the top of the tree. `error` is the host's own sentence
+  // when it refuses (an existing entry, a name Windows will not take).
+  const [creating, setCreating] = React.useState(null)   // { parent, kind, name, error, busy }
 
   const rootTimer = React.useRef(null)
   const copyTimer = React.useRef(null)
@@ -5523,6 +6053,8 @@ const FileTree = (props) => {
   const typeBuf = React.useRef({ text: '', at: 0 })
   const listRef = React.useRef(null)
   const filterRef = React.useRef(null)
+  // The 新建 input, so the tree can put the caret in it and scroll it into view.
+  const createRef = React.useRef(null)
   // The menu box itself: focused on open, and measured so it can be nudged back
   // inside the window (see the fit effect next to the close-on-click one).
   const menuRef = React.useRef(null)
@@ -5823,6 +6355,69 @@ const FileTree = (props) => {
     return text.slice(0, at)
   }
 
+  // The directory a 新建 should land in, for the row the person aimed at: a
+  // folder takes the entry INSIDE itself, a file takes its own directory (a
+  // sibling), and no target at all means the workspace root. One rule for the
+  // context menu, the + button and the empty-area right click.
+  const createTargetFor = (entry) => {
+    if (entry && entry.isDir) return entry.path
+    if (entry && entry.path) return parentDirOf(entry.path)
+    return rootPath
+  }
+
+  // Open the inline name row. A folder that is about to receive the entry must
+  // be EXPANDED first: the row is drawn inside that level, and inside a
+  // collapsed branch it would be created and never seen.
+  const beginCreate = (entry, kind) => {
+    const parent = createTargetFor(entry)
+    setMenu(null)
+    setConfirmDel(null)
+    setCreating({ parent: parent || '', kind: kind === 'dir' ? 'dir' : 'file', name: '', error: '', busy: false })
+    if (parent && parent !== rootPath) toggle(parent, true)
+    const list = listRef.current
+    if (list && list.focus) list.focus()
+  }
+
+  // Create it. The name goes to the host as a NAME beside a PARENT directory —
+  // never as a path — and the host's answer is what the row shows. Only "there
+  // is no name at all" is decided here: that is an affordance of this input, not
+  // a filesystem rule, and duplicating the host's platform rules in the client
+  // is how two rule sets start disagreeing.
+  const doCreate = () => {
+    const c = creating
+    if (!c || c.busy) return
+    const name = String(c.name || '').trim()
+    if (!name) { setCreating(Object.assign({}, c, { error: '请输入名称' })); return }
+    setCreating(Object.assign({}, c, { busy: true, error: '' }))
+    host.call('artifacts.create', { parent: c.parent, name: name, kind: c.kind, sessionId: seatSessionId() }).then((res) => {
+      if (!res || !res.ok) {
+        setCreating(Object.assign({}, c, { busy: false, error: (res && res.error) || '新建失败' }))
+        return
+      }
+      setCreating(null)
+      // The level that now holds the entry is stale: re-read the parent, or the
+      // root when the entry was created at the top level (tree.root.entries is
+      // what lists that level — the same distinction 删除 has to make).
+      const parent = c.parent
+      if (parent && parent !== rootPath && pathRelativeTo(parent, rootPath) !== '') refreshDir(parent)
+      else loadRoot(false)
+      setFlashLabel(res.name || name, c.kind === 'dir' ? '已新建文件夹' : '已新建文件')
+      const fresh = res.path || ''
+      if (fresh) {
+        setCursor(fresh)
+        // After the level has been re-read, put the new row on screen. A folder
+        // is opened; a file opens as a tab (and the caller starts it in 编辑 —
+        // a file that was just created is empty, so a preview of it is a blank
+        // page, which is not what "新建文件" is for).
+        setTimeout(() => { scrollRowIntoView(fresh) }, 120)
+        if (c.kind === 'dir') setTimeout(() => toggle(fresh, true), 60)
+        else if (props.onOpen) props.onOpen(fresh, { pinned: false, created: true })
+      }
+    }).catch(() => {
+      setCreating(Object.assign({}, c, { busy: false, error: '新建失败' }))
+    })
+  }
+
   // Transient feedback that survives the deleted row vanishing: a small banner
   // at the top of the tree body naming the entry and what happened to it, for a
   // couple of seconds.
@@ -5991,6 +6586,23 @@ const FileTree = (props) => {
     }
     if (tree.root) walk(tree.root.entries, 0, '')
   }
+  // The 新建 input row takes its place where the entry will appear: directly
+  // under the folder that will receive it, or at the top of the tree for the
+  // workspace root. Inserted into the row list (not rendered separately) so the
+  // guides, the indentation and the scroll position all follow from the tree
+  // itself. The keyboard cursor never lands on it — rowIndex skips entry-less
+  // rows, and the input stops its own propagation. Inserted BEFORE rowIndex is
+  // built, so the indices the keyboard uses stay the indices of this list.
+  if (creating && !filtered) {
+    const parent = creating.parent
+    let at = 0
+    let depth = 0
+    if (parent && parent !== rootPath) {
+      const found = rows.findIndex((r) => r.entry && r.entry.path === parent)
+      if (found >= 0) { at = found + 1; depth = rows[found].depth + 1 }
+    }
+    rows.splice(at, 0, { create: true, depth: depth })
+  }
   const rowIndex = {}
   rows.forEach((r, i) => { if (r.entry) rowIndex[r.entry.path] = i })
 
@@ -6016,6 +6628,11 @@ const FileTree = (props) => {
   }
 
   const onKeyDown = (ev) => {
+    // The 新建 input owns the keyboard while it is open: an arrow key there must
+    // move the caret, not the tree cursor, and Enter is the input's own submit.
+    // (The input stops propagation too; this is the belt to that braces, because
+    // the body's handler is the one that would otherwise act on the event.)
+    if (creating) return
     // The delete confirm is a modal-ish overlay drawn over the tree: Escape
     // cancels it and Enter runs it, everything else is swallowed so it cannot
     // move the cursor or open a file while the question is up.
@@ -6088,6 +6705,13 @@ const FileTree = (props) => {
   const menuItems = (m) => {
     const entry = m.entry
     const items = []
+    // The + button's own menu: the two create verbs and nothing else. It is the
+    // same list the row menu carries, so there is one wording for one action.
+    if (m.only === 'create') {
+      items.push({ label: '新建文件', run: () => beginCreate(entry, 'file') })
+      items.push({ label: '新建文件夹', run: () => beginCreate(entry, 'dir') })
+      return items
+    }
     if (entry.isDir) {
       const open = !!tree.expanded[entry.path]
       items.push({ label: open ? '折叠文件夹' : '展开文件夹', run: () => toggle(entry.path, !open) })
@@ -6095,6 +6719,13 @@ const FileTree = (props) => {
       items.push({ label: '打开预览', run: () => openEntry(entry, false) })
       items.push({ label: '固定预览', run: () => openEntry(entry, true) })
     }
+    items.push({ sep: true })
+    // 新建 sits at the top of the action group, the way every IDE's explorer
+    // orders it. On a folder it creates INSIDE that folder; on a file it creates
+    // a sibling — which is what right-clicking a file and choosing New File does
+    // everywhere else, and where the input row appears makes it self-evident.
+    items.push({ label: entry.isDir ? '新建文件' : '新建同级文件', run: () => beginCreate(entry, 'file') })
+    items.push({ label: entry.isDir ? '新建文件夹' : '新建同级文件夹', run: () => beginCreate(entry, 'dir') })
     items.push({ sep: true })
     items.push({ label: '复制路径', run: () => copyText(entry.path, '已复制路径') })
     items.push({ label: '复制相对路径', run: () => copyText(relPath(entry.path), '已复制相对路径') })
@@ -6151,17 +6782,67 @@ const FileTree = (props) => {
     ev.preventDefault()
     ev.stopPropagation()
     setCursor(entry.path)
+    const at = placeMenu(ev.clientX, ev.clientY, ev.currentTarget || ev.target)
+    setMenu({ x: at.x, y: at.y, entry, index: 0 })
+  }
+
+  // The + button's menu: the same two verbs, aimed at whatever the tree is
+  // pointed at (the keyboard cursor's row, else the workspace root) and placed
+  // under the button that opened it. Its own target instead of "the row under
+  // the pointer", because there is no pointer row — and silently picking one
+  // would be a guess about where the file goes.
+  const openCreateMenu = (ev) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const at = placeMenu(
+      ev && ev.clientX ? ev.clientX : menuAnchorX(ev),
+      ev && ev.clientY ? ev.clientY : menuAnchorY(ev),
+      ev && (ev.currentTarget || ev.target),
+    )
+    const target = cursorEntry() || { path: rootPath, name: basename(rootPath), isDir: true }
+    setMenu({ x: at.x, y: at.y, entry: target, index: 0, only: 'create' })
+  }
+
+  const menuAnchorX = (ev) => {
+    const box = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget.getBoundingClientRect() : null
+    return box ? box.left : 8
+  }
+  const menuAnchorY = (ev) => {
+    const box = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget.getBoundingClientRect() : null
+    return box ? box.bottom + 4 : 8
+  }
+
+  // The row the keyboard cursor is on, as an entry. The + button has no row of
+  // its own, so this is how it stays predictable: whatever the tree is pointing
+  // at receives the new entry.
+  const cursorEntry = () => {
+    if (!cursor) return null
+    const find = (entries) => {
+      for (const e of (entries || [])) {
+        if (e.path === cursor) return e
+        const node = treeRef.current.children[e.path]
+        if (e.isDir && node && node.entries) {
+          const hit = find(node.entries)
+          if (hit) return hit
+        }
+      }
+      return null
+    }
+    return find(treeRef.current.root && treeRef.current.root.entries)
+  }
+
+  // Clamp a menu position into the window (and into the panel's own space on the
+  // no-portal fallback path).
+  const placeMenu = (clientX, clientY, fromEl) => {
     const MENU_W = 210   // min-width 184px + padding, the box we keep on screen
     const MENU_H = 340   // the tallest menu (a directory: 12 items + 3 separators)
-    // The pointer is the anchor: that is the whole contract of a context menu.
-    // Clamped to the window so the menu can never be drawn half off screen.
-    const vx = Math.max(8, Math.min(ev.clientX, window.innerWidth - MENU_W))
-    const vy = Math.max(8, Math.min(ev.clientY, window.innerHeight - MENU_H))
-    // Fallback path only: re-express that point in the panel's own space.
-    const base = MENU_PORTAL ? null : fixedContainingBlock(ev.currentTarget || ev.target)
-    const x = base ? Math.max(8, Math.min(vx - base.left, Math.max(8, base.width - MENU_W))) : vx
-    const y = base ? Math.max(8, Math.min(vy - base.top, Math.max(8, base.height - MENU_H))) : vy
-    setMenu({ x, y, entry, index: 0 })
+    const vx = Math.max(8, Math.min(clientX, window.innerWidth - MENU_W))
+    const vy = Math.max(8, Math.min(clientY, window.innerHeight - MENU_H))
+    const base = MENU_PORTAL ? null : fixedContainingBlock(fromEl)
+    return {
+      x: base ? Math.max(8, Math.min(vx - base.left, Math.max(8, base.width - MENU_W))) : vx,
+      y: base ? Math.max(8, Math.min(vy - base.top, Math.max(8, base.height - MENU_H))) : vy,
+    }
   }
 
   React.useEffect(() => {
@@ -6223,6 +6904,59 @@ const FileTree = (props) => {
 
   const renderRow = (row) => {
     const guideUnit = 12
+    // The 新建 row: an input at the depth of the directory it will fill, drawn
+    // right where the new entry will appear, with the same guides and icons as a
+    // real row so it reads as "this is about to exist here". Checked BEFORE the
+    // entry-less branch below, which would otherwise draw it as "加载中…".
+    if (row.create) {
+      const c = creating || { kind: 'file', name: '', error: '', busy: false }
+      const depth = row.depth
+      const guides = []
+      for (let i = 0; i < depth; i += 1) {
+        guides.push(React.createElement('span', { key: i, className: 'artifacts-tree-guide', style: { left: 6 + i * 12 } }))
+      }
+      return React.createElement('div', {
+        key: 'create-row',
+        className: 'artifacts-tree-row artifacts-tree-createrow' + (c.error ? ' is-invalid' : ''),
+        // Depth on the element so the row can be checked where it is drawn, which
+        // is the whole point of inserting it into the row list.
+        'data-depth': depth,
+        'data-creating': c.kind,
+        style: { paddingLeft: 4 + depth * 12 },
+      },
+        guides,
+        React.createElement('span', { className: 'artifacts-tree-twisty is-file' }),
+        React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + (c.kind === 'dir' ? 'folder' : 'text') },
+          c.kind === 'dir' ? FolderClosedIcon(16) : TreeFileIcon(16)),
+        React.createElement('input', {
+          ref: createRef,
+          className: 'artifacts-tree-create',
+          type: 'text',
+          value: c.name,
+          disabled: !!c.busy,
+          spellCheck: false,
+          autoFocus: true,
+          'aria-label': c.kind === 'dir' ? '新文件夹名称' : '新文件名称',
+          'aria-invalid': c.error ? 'true' : undefined,
+          placeholder: c.kind === 'dir' ? '新文件夹名称' : '新文件名称（如 notes.md）',
+          onChange: (e) => setCreating(Object.assign({}, c, { name: e.currentTarget.value, error: '' })),
+          onKeyDown: (e) => {
+            // The input owns these two keys: Enter creates, Escape backs out.
+            // stopPropagation keeps the tree's own key handler (which moves the
+            // cursor) from reading them as navigation.
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setCreating(null); return }
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); doCreate(); return }
+            e.stopPropagation()
+          },
+          // Clicking anywhere else means "never mind" — the standard explorer
+          // behaviour, and the reason a stray click cannot leave a half-typed
+          // name parked in the tree. Submitting sets busy, which skips this.
+          onBlur: () => { if (!c.busy) setCreating(null) },
+        }),
+        c.error ? React.createElement('span', { className: 'artifacts-tree-create-error' }, c.error) : null,
+        c.busy ? React.createElement('span', { className: 'artifacts-tree-create-hint' }, '新建中…') : null,
+      )
+    }
     // Non-entry rows: a level that is loading or that failed to load. The key
     // carries the PARENT path, not just the depth — several sibling folders can
     // be loading (or failing) at the same depth at once, and reusing one key for
@@ -6389,6 +7123,14 @@ const FileTree = (props) => {
       React.createElement('span', { className: 'artifacts-tree-tools' },
         React.createElement('button', {
           type: 'button',
+          className: 'artifacts-tree-tool' + (creating ? ' is-on' : ''),
+          title: '新建文件 / 文件夹（在选中的目录里；没选中就是工作区根目录）',
+          'aria-label': '新建',
+          'aria-haspopup': 'menu',
+          onClick: openCreateMenu,
+        }, PlusIcon(14)),
+        React.createElement('button', {
+          type: 'button',
           className: 'artifacts-tree-tool' + (filterOpen ? ' is-on' : ''),
           title: '过滤文件（Ctrl/Cmd+P 不适用——点这里打开）',
           'aria-label': '过滤文件',
@@ -6447,6 +7189,10 @@ const FileTree = (props) => {
       tabIndex: 0,
       'aria-label': '工作区文件树',
       onKeyDown: onKeyDown,
+      // Right-clicking the blank area below the last row means "here" — the
+      // workspace root — and offers the same two verbs. A row sets its own menu
+      // and stops the event, so this only ever fires on empty space.
+      onContextMenu: (ev) => openCreateMenu(ev),
     },
       flashLabel ? React.createElement('div', { key: 'flash-label', className: 'artifacts-tree-flash-label' }, flashLabel.text) : null,
       showEmptyHint
@@ -6504,6 +7250,15 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
     // text to write and shows no toolbar at all, rather than a disabled one.
 
     const EDITABLE_TYPES = { markdown: 1, text: 1, table: 1 }
+
+    // Which file currently has an editor, and how to put it on a line. One slot is
+    // enough because one file is previewed at a time, and it exists because the
+    // verb cannot ride props: the preview a pane renders is the CALLER's element
+    // (wrapped in .artifacts-preview-body), so cloning it would decorate the
+    // wrapper rather than the Markdown view inside it. The preview asks whether an
+    // editor exists for its own path — that answer is what decides whether a 定位
+    // button is drawn at all, instead of drawing one that can do nothing.
+    const editorLocator = { path: '', locate: null }
 
     // A host that predates the `editable` field answers `truncated` only, and
     // that inference is the safe one to fall back to.
@@ -6591,7 +7346,22 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
     const EditorPane = (props) => {
       const path = props.path || ''
       const editable = props.editable === true
-      const [mode, setMode] = React.useState('view')
+      // The session a save belongs to. It rides a prop because this pane is
+      // mounted in TWO places: the panel (where the seat's own session is the
+      // right one) and the shell's document tab, whose body is handed a
+      // session-scoped address and nothing else — there `currentSessionId()` is a
+      // guess, and a save fenced to the wrong workspace is refused with a
+      // confusing reason.
+      const sessionId = props.sessionId || ''
+      // The editor's line-number column is a live preference (see the effect
+      // below): reading it here keeps the hook call in the component body, and
+      // the subscription is what re-renders when the switch moves.
+      const settings = useSettings()
+      // 新建文件 opens its editor straight away: a file that was just created is
+      // empty, so a preview of it is a blank page. Only the INITIAL mode — the
+      // 预览/编辑 toggle still belongs to the person, and an uneditable file falls
+      // back to 预览 through the effect below.
+      const [mode, setMode] = React.useState(props.initialMode === 'edit' ? 'edit' : 'view')
       const [boot, setBoot] = React.useState('idle')
       const [dirty, setDirty] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
@@ -6609,6 +7379,10 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
       // CURRENT state (busy flag, latest loaded revision) instead of at whatever
       // those were when the editor was built.
       const saveRef = React.useRef(null)
+      // Lines the preview asked us to open. The editor does not exist yet when
+      // the request arrives (entering edit mode is what creates it), so the
+      // request is parked here and applied once the controller is ready.
+      const pendingReveal = React.useRef(null)
 
       // Leaving the file (or losing editability — a re-read that came back
       // un-editable, whether because it is too big to save or because the read
@@ -6617,6 +7391,18 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
       React.useEffect(() => {
         if (!editable && mode === 'edit') setMode('view')
       }, [editable, mode])
+
+      // 设置 › 编辑器显示行号, applied to a RUNNING editor through CodeMirror's
+      // compartment: the document, the cursor, the undo history and any unsaved
+      // draft all survive a flip, where a remount would lose the last two. `boot`
+      // is in the deps because the controller does not exist until the CodeMirror
+      // chunk has loaded — without it, a flip during that window would be lost.
+      React.useEffect(() => {
+        const ctrl = ctrlRef.current
+        if (ctrl && typeof ctrl.setLineNumbers === 'function') {
+          ctrl.setLineNumbers(settings.editorLineNumbers !== false)
+        }
+      }, [settings.editorLineNumbers, boot, mode])
 
       React.useEffect(() => {
         if (mode === 'view') return undefined
@@ -6633,6 +7419,10 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
           path: path,
           value: initial,
           dark: isDarkScheme(),
+          // 设置 › 编辑器显示行号, read at mount and re-applied below when it
+          // changes. The panel and the popout mount this same controller, so the
+          // preference reaches both faces from one place.
+          lineNumbers: settings.editorLineNumbers !== false,
           onChange: () => { dirtyRef.current = true; writer.touch() },
           onDirty: (isDirty) => {
             dirtyRef.current = isDirty
@@ -6654,6 +7444,14 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
           setBoot('ready')
           setDirty(ctrl.isDirty())
           ctrl.focus()
+          // A 定位 that arrived while the editor was booting: the reader asked
+          // for these lines, so arriving without them selected would look like
+          // the button did nothing.
+          if (pendingReveal.current) {
+            const want = pendingReveal.current
+            pendingReveal.current = null
+            ctrl.revealLines(want.start, want.end)
+          }
         })
         return () => {
           alive = false
@@ -6683,6 +7481,26 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
         ? { message: '磁盘上的文件已被改动，你正在编辑的是较早的版本', version: props.baseVersion, size: props.baseSize }
         : null)
 
+      // 定位: enter edit mode and select those source lines. Called from the
+      // rendered preview's selection bar, which is a CHILD of this pane — the
+      // editor is the only thing that knows how to show a line, so it hands the
+      // verb down rather than the preview reaching for it.
+      React.useEffect(() => () => {
+        if (editorLocator.locate === locateLines) { editorLocator.path = ''; editorLocator.locate = null }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [path])
+
+      const locateLines = (start, end) => {
+        if (!editable) return
+        pendingReveal.current = { start: start, end: end }
+        if (mode === 'edit' && ctrlRef.current) {
+          pendingReveal.current = null
+          ctrlRef.current.revealLines(start, end)
+          return
+        }
+        setMode('edit')
+      }
+
       const saveNow = (force) => {
         const ctrl = ctrlRef.current
         if (!ctrl || busy) return
@@ -6693,7 +7511,7 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
         host.call('artifacts.save', {
           path: path,
           content: text,
-          sessionId: currentSessionId(),
+          sessionId: sessionId || currentSessionId(),
           baseVersion: loaded && loaded.version ? loaded.version : undefined,
           baseSize: loaded && typeof loaded.size === 'number' ? loaded.size : undefined,
           force: !!force,
@@ -6763,6 +7581,15 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
       // disabled buttons — a control that cannot do anything is noise.
       if (!editable) return props.children || null
 
+      // The preview is offered the 定位 verb through the registry: it is built by
+      // the caller (src/client/components.js wraps it in .artifacts-preview-body),
+      // so cloning the child here would decorate that wrapper and the Markdown
+      // view inside it would never see it. Publishing during render is the same
+      // pattern this component already uses for saveRef.
+      editorLocator.path = path
+      editorLocator.locate = locateLines
+      const preview = props.children || null
+
       const bar = React.createElement('div', { className: 'artifacts-edbar' },
         React.createElement('div', { className: 'artifacts-edbar-group' },
           React.createElement('button', {
@@ -6828,7 +7655,7 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
             boot === 'loading' ? React.createElement('div', { className: 'artifacts-edhint' }, '正在载入编辑器（CodeMirror 604 KB，仅首次）…') : null,
             boot === 'failed' ? React.createElement('div', { className: 'artifacts-error' }, '编辑器组件未能载入（/dsh-sidebar-frog/codemirror/codemirror.min.js）。请刷新页面重试，或改用系统编辑器打开。') : null,
           )
-          : (props.children || null),
+          : preview,
       )
     }
 
@@ -6947,6 +7774,11 @@ const ArtifactsContent = (props) => {
   // FULL width. That is the point: a sidebar is too narrow to show a preview
   // beside the tree, so the file gets the whole strip instead of half of it.
   const [openFiles, setOpenFiles] = React.useState([])   // [{ path }] in open order
+  // The file 新建文件 just created, while its tab is the active one: that tab
+  // starts in 编辑 instead of 预览 (see treeOpen and EditorPane's initialMode).
+  // Cleared the moment another file becomes active, so it is a one-shot hint and
+  // never a mode that sticks to a path.
+  const [pendingEdit, setPendingEdit] = React.useState('')
   // `fixedView` pins this instance to ONE view. The native surface registers a
   // separate system tab per view (see FROG_TABS in src/client/native.js), so each
   // of those bodies draws its view and nothing else — no self-drawn view switcher
@@ -7216,12 +8048,25 @@ const ArtifactsContent = (props) => {
   // a document tab in this same column — the way the product's own file links
   // work. The floating panel keeps its internal file tabs: it has no shell strip
   // to land in when the column itself is what is missing.
-  const treeOpen = (path) => {
+  const treeOpen = (path, opts) => {
+    // A file the person just created opens in 编辑 when it lands in this panel's
+    // own tab: an empty file has nothing to preview. `pendingEdit` is consumed by
+    // whoever renders that tab (see EditorPane's initialMode below), and it is
+    // dropped as soon as another file becomes active — re-opening it later is an
+    // ordinary preview.
+    if (opts && opts.created && !fixedView) setPendingEdit(path)
     if (fixedView) { openInShell(path); return }
     openFileTab(path)
   }
 
   const activeFile = activeTab.indexOf('file:') === 0 ? activeTab.slice(5) : ''
+
+  // The one-shot 编辑 hint belongs to ONE tab: as soon as another file is the
+  // active one it is spent, so re-opening the created file later is an ordinary
+  // preview rather than a mode that keeps coming back.
+  React.useEffect(() => {
+    if (pendingEdit && pendingEdit !== activeFile) setPendingEdit('')
+  }, [activeFile, pendingEdit])
 
   // The artifact list is re-polled every 2s; reading it through a ref keeps that
   // poll from re-reading the previewed file on every tick (only the file itself,
@@ -7473,6 +8318,10 @@ const ArtifactsContent = (props) => {
             key: activeFile,
             path: activeFile,
             editable: isEditablePreview(preview),
+            // 编辑 straight away for a file that was just created (see treeOpen).
+            initialMode: pendingEdit && pendingEdit === activeFile ? 'edit' : 'view',
+            // The seat's session: a save is filed against it (see EditorPane).
+            sessionId: sid,
             content: preview.content,
             // The revision this preview read. The save sends it back, which is
             // what turns "somebody changed the file while you were typing" into
@@ -7882,6 +8731,27 @@ const SettingsSection = () => {
           }),
         ),
       ),
+      // Line numbers, as a PAIR of switches rather than one. They answer the same
+      // question ("which line am I looking at?") about two different views, and
+      // people want them differently: a reader who keeps the preview open wants
+      // the gutter to cite a line in a request, while someone editing in a narrow
+      // panel may want the column gone to buy back width. One switch would force
+      // both views to agree; two cost nothing and let the pair be set apart.
+      //
+      // The preview's numbers are the file's REAL lines (the renderer stamps each
+      // block with the source line it came from), not a count of drawn rows.
+      React.createElement(SettingsToggle, {
+        label: '预览显示行号',
+        desc: '在渲染后的 Markdown 左侧显示每一块的源码行号，方便按行定位与引用（多行的块显示起止行，如 12–18）。数字取自渲染时就写进块上的源码行锚点，因此与选中文本后「引用/定位」报告的行号永远一致；只标注顶层块（标题、段落、列表、代码块…），列表项、表格单元格这类嵌套块不标注，否则数字会缩进错位。面板、系统侧边栏的文档页与弹出页一起生效。',
+        value: settings.previewLineNumbers,
+        onToggle: (v) => set('previewLineNumbers', v),
+      }),
+      React.createElement(SettingsToggle, {
+        label: '编辑器显示行号',
+        desc: '编辑器（CodeMirror）左侧的行号列。关闭可省出一点宽度，尤其是窄面板；切换是即时的，不会重挂编辑器，因此光标位置、撤销历史与未保存的草稿都保留。',
+        value: settings.editorLineNumbers,
+        onToggle: (v) => set('editorLineNumbers', v),
+      }),
       React.createElement('div', { className: 'artifacts-setrow' },
         React.createElement('div', { className: 'artifacts-settext' },
           React.createElement('div', { className: 'artifacts-settitle' }, '弹出页预览区宽度'),
@@ -9090,9 +9960,36 @@ const SettingsSection = () => {
       } catch (e) { return '' }
     }
 
+    // A text payload the editor may safely write back.
+    //
+    // The seat hands a PAGE, not a file: `offset` is the 1-based first line and
+    // `eof` says whether the last line is included. Editing a page and saving it
+    // would replace the whole file with that page — the one failure worse than
+    // not offering an editor at all. So the gate is the whole file, and the
+    // version/size the seat reported ride along as the save's conflict basis.
+    const textEditability = (content) => {
+      if (!content || content.kind !== 'text') return null
+      if (Number(content.offset) !== 1 || content.eof !== true) return null
+      const bytes = typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null
+      // The host refuses a save past its own text ceiling; saying so here keeps
+      // the toolbar from appearing on a file that could only fail on Ctrl+S.
+      if (bytes !== null && bytes > 4 * 1024 * 1024) return null
+      return {
+        version: typeof content.version === 'string' && content.version ? content.version : null,
+        size: bytes,
+      }
+    }
+
     // The body itself: whatever the owner accumulated, drawn by the SAME
     // MarkdownView the panel uses — math, diagrams and interactive geometry
     // included, since it is one renderer, not a second one that can drift.
+    //
+    // It is wrapped in the panel's EditorPane, so the shell's document tab has
+    // the same 预览/编辑 toggle, the same drafts and the same save (with the same
+    // conflict refusal) as the panel's own file tabs — the sidebar is where files
+    // are actually opened, and a reader that can only look at a text file is half
+    // a reader. A page-shaped payload gets no toolbar at all (see
+    // textEditability).
     //
     // `scrollportRef` is deliberately NOT reported. It exists so a renderer that
     // owns a scroller can hand its own element over; this body lays its content
@@ -9105,29 +10002,53 @@ const SettingsSection = () => {
       if (content == null) {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
+      const path = pathFromFileAddress(p.resourceAddress)
+      const session = sessionFromFileAddress(p.resourceAddress)
+      const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(MarkdownView, {
-      content,
-      path: pathFromFileAddress(p.resourceAddress),
-      // The address IS session-scoped, so the session that owns the tab is in
-      // the only thing this body was handed — and a document-relative image in a
-      // file opened that way needs it (see mdMedia).
-      sessionId: sessionFromFileAddress(p.resourceAddress),
-    }),
+        React.createElement(EditorPane, {
+          path: path,
+          editable: !!edit,
+          sessionId: session,
+          content: content,
+          baseVersion: edit ? edit.version : null,
+          baseSize: edit ? edit.size : null,
+        },
+          React.createElement(MarkdownView, {
+            content,
+            path: path,
+            // The address IS session-scoped, so the session that owns the tab is
+            // in the only thing this body was handed — and a document-relative
+            // image in a file opened that way needs it (see mdMedia).
+            sessionId: session,
+          }),
+        ),
       )
     }
 
     // The table body: the owner's accumulated text, drawn by the SAME TableView
     // the panel uses — one parser (src/shared/table.js) and one view, so the
-    // shell's sidebar and this plugin's panel cannot disagree about a file.
+    // shell's sidebar and this plugin's panel cannot disagree about a file. It
+    // carries the editor for the same reason the Markdown body does.
     const TableDocumentBody = (props) => {
       const p = props || {}
       const content = p.content && p.content.kind === 'text' ? String(p.content.text == null ? '' : p.content.text) : null
       if (content == null) {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
+      const path = pathFromFileAddress(p.resourceAddress)
+      const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(TableView, { content, path: pathFromFileAddress(p.resourceAddress) }),
+        React.createElement(EditorPane, {
+          path: path,
+          editable: !!edit,
+          sessionId: sessionFromFileAddress(p.resourceAddress),
+          content: content,
+          baseVersion: edit ? edit.version : null,
+          baseSize: edit ? edit.size : null,
+        },
+          React.createElement(TableView, { content, path: path }),
+        ),
       )
     }
 

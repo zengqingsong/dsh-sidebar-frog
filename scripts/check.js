@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url'
 import { buildBundles } from './build.js'
 import { runPopoutTree, runSidebarTree, hiddenControlViolations } from './tree-tests.js'
 import { createRenderer, settle } from './minireact.js'
+import { createDom } from './domstub.js'
 import {
   MARK, PALETTE, PROBES, RASTERS, contrast, faviconDataUri, generatedAssets,
   geometryIssues, paletteIssues,
@@ -56,6 +57,23 @@ const classDump = (node, out) => {
   const kids = (node.props && node.props.children) || []
   for (const kid of (Array.isArray(kids) ? kids : [kids])) classDump(kid, out)
   return out
+}
+// The first element of a rendered tree whose component has this display name.
+// The document bodies DELEGATE — a body mounts the panel's EditorPane, which
+// renders the MarkdownView/TableView it was handed as children — and this runtime
+// only ever renders one component, so the element worth mounting has to be found
+// by walking what the body returned. Function components declared as
+// `const Name = (props) => …` carry their name, which is why this works at all.
+const findElement = (node, name) => {
+  if (!node || typeof node !== 'object') return null
+  if (node.type && typeof node.type === 'function' && node.type.name === name) return node
+  const kids = (node.props && node.props.children)
+  const list = Array.isArray(kids) ? kids : (kids == null ? [] : [kids])
+  for (const kid of list) {
+    const hit = findElement(kid, name)
+    if (hit) return hit
+  }
+  return null
 }
 
 // ── 1. embedding hazards ───────────────────────────────────────────────────
@@ -852,6 +870,253 @@ console.log('markdown raw html')
     ok('markdown raw html', `${cases.length} shapes: ${cases.map(([n]) => n).join(', ')}`)
   } catch (e) {
     bad('markdown raw html', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── Markdown source-line anchors ────────────────────────────────────────────
+// Reading a long document, the question is never "what does this paragraph say"
+// — it is "which lines of the file is this, so I can quote them or go change
+// them". The renderer answers it by stamping every block with the 1-based source
+// line it came from (mdAnchor), and three things have to hold for that to be
+// worth anything:
+//
+//   · the numbers are RIGHT, including inside a blockquote or a <details>, whose
+//     inner render is a slice of the source and therefore needs an offset —
+//     a paragraph reported one or two lines off is worse than no anchor at all,
+//     because it sends the reader (and the editor) to the wrong place;
+//   · the anchors are OPT-IN: mdToHtml without lineAnchors must keep producing
+//     exactly the markup it always did (the guards above assert those shapes);
+//   · a selection resolves to the nearest anchored element, and a selection
+//     OUTSIDE the document resolves to nothing.
+console.log('markdown source-line anchors')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') +
+      '\nreturn { mdToHtml, mdLineQuote, mdSourceLines, mdSelectionLines, mdLinesOfNode, attachMarkdownSelectionBar }',
+    )()
+    const doc = [
+      '# 标题',                    // 1
+      '',                          // 2
+      '第一段文字。',                // 3
+      '',                          // 4
+      '- 项目一',                   // 5
+      '- 项目二',                   // 6
+      '  续行',                     // 7
+      '',                          // 8
+      '```js',                     // 9
+      'const a = 1',               // 10
+      '```',                       // 11
+      '',                          // 12
+      '> 引用第一行',                // 13
+      '> 引用第二行',                // 14
+      '',                          // 15
+      '| a | b |',                 // 16
+      '|---|---|',                  // 17
+      '| 1 | 2 |',                 // 18
+      '',                          // 19
+      '<details>',                 // 20
+      '<summary>答案</summary>',    // 21
+      '',                          // 22
+      '里面的段落。',                // 23
+      '</details>',                // 24
+    ].join('\n')
+    const html = md.mdToHtml(doc, { lineAnchors: true, path: 'docs/x.md' })
+    // Every anchor carries a LABEL beside its range (data-lineno), which is what
+    // the reader's gutter displays — so the assertions name both, and one of them
+    // is that a tag never carries the label twice (the list-item path splices a
+    // fuller anchor over an opener that already had one, and a stale label left
+    // behind by that splice would be read first by the browser).
+    const cases = [
+      ['a heading', (h) => h.indexOf('<h1 data-line="1" data-lineno="1">') >= 0],
+      ['a paragraph', (h) => h.indexOf('<p data-line="3" data-lineno="3">') >= 0],
+      ['a list and its items', (h) => h.indexOf('<ul data-line="5" data-line-end="7" data-lineno="5\u20137">') >= 0 &&
+        h.indexOf('<li data-line="5" data-lineno="5">项目一</li>') >= 0 &&
+        h.indexOf('<li data-line="6" data-line-end="7" data-lineno="6\u20137">') >= 0],
+      ['a fenced block', (h) => h.indexOf('<pre data-line="9" data-line-end="11" data-lineno="9\u201311">') >= 0],
+      // The inner render is handed a slice of the source, so these two numbers
+      // are what proves the offset: inner line 1 is source line 13, not line 1.
+      ['a quote and its inner paragraphs', (h) => h.indexOf('<blockquote data-line="13" data-line-end="14" data-lineno="13\u201314">') >= 0 &&
+        h.indexOf('<p data-line="13" data-lineno="13">引用第一行</p>') >= 0 &&
+        h.indexOf('<p data-line="14" data-lineno="14">引用第二行</p>') >= 0],
+      ['a table and its rows', (h) => h.indexOf('<table data-line="16" data-line-end="18" data-lineno="16\u201318">') >= 0 &&
+        h.indexOf('<tr data-line="18" data-lineno="18">') >= 0 && h.indexOf('<td data-line="18" data-lineno="18">1</td>') >= 0],
+      ['a details block and its inner paragraph', (h) => h.indexOf('<details data-line="20" data-line-end="24" data-lineno="20\u201324">') >= 0 &&
+        h.indexOf('<summary data-line="21" data-lineno="21">') >= 0 && h.indexOf('<p data-line="23" data-lineno="23">里面的段落。') >= 0],
+      // One label per tag, ever: two would mean the browser reads the stale one.
+      ['no tag carries its label twice', (h) => !/data-lineno="[^"]*"[^>]*data-lineno="/.test(h)],
+      // The label is the range the resolver reports, in the shape the gutter draws.
+      ['the label matches the range', (h) => {
+        const tags = h.split('<').filter((t) => t.indexOf('data-line=') >= 0)
+        return tags.every((t) => {
+          const start = /data-line="(\d+)"/.exec(t)
+          const end = /data-line-end="(\d+)"/.exec(t)
+          const label = /data-lineno="([^"]*)"/.exec(t)
+          if (!start || !label) return false
+          return label[1] === (end ? start[1] + '\u2013' + end[1] : start[1])
+        })
+      }],
+      // Opt-in: a caller that did not ask must not see one attribute more.
+      ['the default render is unanchored', () => md.mdToHtml(doc) === md.mdToHtml(doc).split('data-line').join('') &&
+        md.mdToHtml(doc).indexOf('data-lineno') < 0 &&
+        md.mdToHtml('# t') === '<h1>t</h1>'],
+    ]
+    const wrong = cases.filter(([, want]) => !want(html)).map(([name]) => name)
+    if (wrong.length) throw new Error(wrong.join(', ') + ' — rendered: ' + JSON.stringify(html))
+    ok('markdown line anchors', cases.map(([n]) => n).join(', '))
+  } catch (e) {
+    bad('markdown line anchors', e && e.message ? e.message : String(e))
+  }
+}
+
+// What a reader gets for a selection, and what a selection may not be read as.
+console.log('markdown selection quotes')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') +
+      '\nreturn { mdToHtml, mdLineQuote, mdSourceLines, mdSelectionLines }',
+    )()
+    const src = '# t\n\n- 项目一\n- 项目二\n  续行\n\nend\n'
+    const cases = [
+      // The locator names exactly the lines the fence holds — that equality is
+      // the whole contract of a quote.
+      ['a range quote', () => md.mdLineQuote('docs/x.md', 3, 5, src) === '@docs/x.md:3-5\n```md\n- 项目一\n- 项目二\n  续行\n```\n'],
+      ['a single line', () => md.mdLineQuote('a/b.py', 1, 1, src) === '@a/b.py:1\n```python\n# t\n```\n'],
+      // A quote containing its own closing fence must not end early.
+      ['a quote holding a fence', () => {
+        const out = md.mdLineQuote('x.md', 1, 3, '```\ninner\n```')
+        return out.indexOf('~~~~md') >= 0 && out.split('~~~~').length === 3
+      }],
+      ['out of range clamps', () => md.mdSourceLines('a\nb\nc', 2, 99) === 'b\nc'],
+      ['a range past the end is empty', () => md.mdSourceLines('a\nb', 5, 9) === ''],
+      ['line 0 clamps to the first line', () => md.mdSourceLines('a\nb', 0, 0) === 'a'],
+    ]
+    const wrong = cases.filter(([, want]) => !want()).map(([name]) => name)
+    if (wrong.length) throw new Error(wrong.join(', '))
+    ok('markdown selection quotes', cases.map(([n]) => n).join(', '))
+  } catch (e) {
+    bad('markdown selection quotes', e && e.message ? e.message : String(e))
+  }
+}
+
+// The resolver, against the stub DOM: element ancestry, direction, and the
+// refusal that keeps a selection in the file tree from being read as a range.
+console.log('markdown selection resolver')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') +
+      '\nreturn { mdSelectionLines, mdLinesOfNode, attachMarkdownSelectionBar }',
+    )()
+    // createDom() IS the document (see scripts/domstub.js).
+    const doc = createDom()
+    const root = doc.createElement('div')
+    const para = doc.createElement('p')
+    para.setAttribute('data-line', '12')
+    para.setAttribute('data-line-end', '14')
+    const inner = doc.createElement('em')
+    para.appendChild(inner)
+    root.appendChild(para)
+    doc.body.appendChild(root)
+    const other = doc.createElement('span')
+    other.setAttribute('data-line', '99')
+    doc.body.appendChild(other)
+
+    const from = (a, b) => md.mdSelectionLines(root, { anchorNode: a, focusNode: b })
+    const cases = [
+      // The nearest anchored ancestor answers, not the document root.
+      ['an inner node resolves to its block', () => JSON.stringify(md.mdLinesOfNode(inner)) === JSON.stringify({ start: 12, end: 14 })],
+      ['a range inside one block', () => {
+        const r = from(inner, inner)
+        return r && r.start === 12 && r.end === 14
+      }],
+      // Dragging upwards reads the same as dragging downwards.
+      ['a reversed selection is ordered', () => {
+        const later = doc.createElement('p')
+        later.setAttribute('data-line', '40')
+        root.appendChild(later)
+        const r = from(later, inner)
+        return r && r.start === 12 && r.end === 40
+      }],
+      ['outside the document is refused', () => from(other, other) === null],
+      ['an unanchored node is refused', () => {
+        const bare = doc.createElement('div')
+        root.appendChild(bare)
+        return md.mdLinesOfNode(bare) === null
+      }],
+    ]
+    const wrong = cases.filter(([, want]) => !want()).map(([name]) => name)
+    // The bar itself: one node, hidden until there is a selection, no 定位
+    // button when nothing can act on it, and gone after dispose.
+    const bar = md.attachMarkdownSelectionBar({ root: root, path: 'x.md', text: 'a\nb\nc' })
+    const node = doc.body.querySelector('.artifacts-mdselbar')
+    if (!node) wrong.push('the bar was not appended')
+    else {
+      if (node.style.display !== 'none') wrong.push('the bar is visible without a selection')
+      if (node.querySelectorAll('.artifacts-mdselbar-btn').length !== 1) wrong.push('a 定位 button was drawn with no editor to act on it')
+      if (node.querySelector('.artifacts-mdselbar-label').textContent !== '') wrong.push('the bar labels a range before there is one')
+    }
+    bar()
+    if (doc.body.querySelector('.artifacts-mdselbar')) wrong.push('dispose left the bar in the DOM')
+    const withLocate = md.attachMarkdownSelectionBar({ root: root, path: 'x.md', text: 'a\nb', onLocate: () => {} })
+    const withNode = doc.body.querySelector('.artifacts-mdselbar')
+    if (!withNode || withNode.querySelectorAll('.artifacts-mdselbar-btn').length !== 2) wrong.push('定位 was not offered when an editor exists')
+    withLocate()
+    if (wrong.length) throw new Error(wrong.join(', '))
+    ok('markdown selection resolver', cases.map(([n]) => n).join(', ') + ', bar lifecycle')
+  } catch (e) {
+    bad('markdown selection resolver', e && e.message ? e.message : String(e))
+  }
+}
+
+// Locating lines in the editor: the other half of a quote. The preview says
+// "lines 12-14"; 定位 has to land the editor on exactly those lines. Asserted
+// against a fake view because that IS the contract — what gets dispatched — and
+// because the real one needs a browser.
+console.log('editor line reveal')
+{
+  try {
+    const ed = new Function(read('src/shared/editor.js') + '\nreturn { revealLinesIn }')()
+    const fakeView = (lines) => {
+      const v = {
+        calls: [],
+        focused: 0,
+        state: { doc: { lines: lines, line: (n) => ({ number: n, from: (n - 1) * 10, to: n * 10 - 1 }) } },
+        dispatch(tr) { v.calls.push(tr) },
+        focus() { v.focused += 1 },
+      }
+      return v
+    }
+    const cases = [
+      ['a range is selected', () => {
+        const v = fakeView(100)
+        return ed.revealLinesIn(v, 12, 14) === true && v.calls.length === 1 &&
+          v.calls[0].selection.anchor === 110 && v.calls[0].selection.head === 139 &&
+          v.calls[0].scrollIntoView === true && v.focused === 1
+      }],
+      ['a single line', () => {
+        const v = fakeView(100)
+        ed.revealLinesIn(v, 5, 5)
+        return v.calls[0].selection.anchor === 40 && v.calls[0].selection.head === 49
+      }],
+      ['a line past the end clamps', () => {
+        const v = fakeView(10)
+        ed.revealLinesIn(v, 99, 99)
+        return v.calls[0].selection.anchor === 90
+      }],
+      ['line zero clamps to the first line', () => {
+        const v = fakeView(10)
+        ed.revealLinesIn(v, 0, 0)
+        return v.calls[0].selection.anchor === 0
+      }],
+      ['a missing view is refused, not thrown at', () => ed.revealLinesIn(null, 1, 2) === false],
+    ]
+    const wrong = cases.filter(([, want]) => !want()).map(([name]) => name)
+    if (wrong.length) throw new Error(wrong.join(', '))
+    ok('editor line reveal', cases.map(([n]) => n).join(', '))
+  } catch (e) {
+    bad('editor line reveal', e && e.message ? e.message : String(e))
   }
 }
 
@@ -1940,6 +2205,10 @@ const DATA_ROUTES = [
   '/dsh-sidebar-frog/media',
   '/dsh-sidebar-frog/remove',
   '/dsh-sidebar-frog/delete',
+  // 新建 creates a path in the workspace: the second writing route, and the one
+  // whose guard matters most (a create that lands outside the workspace is a
+  // write nobody asked for). The 401 sweep below drives it like the rest.
+  '/dsh-sidebar-frog/create',
   '/dsh-sidebar-frog/revert',
   // 保存 writes the workspace, so it belongs on this list twice over: it opens
   // with the same cookie guard as every other data route, and the 401 sweep
@@ -2506,6 +2775,145 @@ try {
   } catch (e) {
     bad('/delete', e && e.message ? e.message : String(e))
   }
+
+  // ── /create, end to end against a REAL workspace ─────────────────────────
+  //
+  // Same reason as /delete: this route's whole job is a side effect on disk, so
+  // the guard drives it against a real temporary workspace and then looks at what
+  // is actually there. Two properties carry the feature and are asserted hardest:
+  // a create NEVER overwrites (the filesystem refuses, not a stat-then-write the
+  // user could lose a race on), and it NEVER lands outside the session workspace,
+  // however the request spells the parent or the name.
+  try {
+    const realWs = await mkdtemp(join(tmpdir(), 'dsh-frog-new-'))
+    await mkdir(join(realWs, 'sub'), { recursive: true })
+    await writeFile(join(realWs, 'keep.txt'), 'original')
+    const outsideDir = await mkdtemp(join(tmpdir(), 'dsh-frog-out-'))
+    const nodeFs = await import('node:fs/promises')
+    const realFs = {
+      resolve: async (p) => {
+        const abs = resolve(p)
+        return { targetKey: abs, displayPath: abs }
+      },
+      processPath: (t) => String(t.targetKey || t),
+      contains: (parent, child) => {
+        const rel = relative(String(parent.targetKey || parent), String(child.targetKey || child))
+        return rel !== '..' && !rel.startsWith('..\\') && !/^[A-Za-z]:/.test(rel)
+      },
+      stat: async (t) => {
+        const s = await nodeFs.stat(String(t.targetKey || t))
+        return {
+          type: s.isDirectory() ? 'directory' : s.isFile() ? 'file' : 'other',
+          size: s.size,
+          version: 'v' + s.mtimeMs,
+        }
+      },
+      listDir: async () => [],
+    }
+    const created = bootHost(undefined, { fs: realFs, workspaceRoot: realWs })
+    const callNew = (obj) => callPost(created.routes['/dsh-sidebar-frog/create'], '/dsh-sidebar-frog/create', obj)
+    const exists = async (p) => { try { await nodeFs.access(p); return true } catch (e) { return false } }
+    const windowsShaped = /^[A-Za-z]:[\\/]/.test(realWs) || realWs.indexOf('\\') >= 0
+
+    // A file, at the workspace root, with a relative parent ('' means the root).
+    const f1 = JSON.parse((await callNew({ parent: realWs, name: 'notes.md', kind: 'file' })).body)
+    if (f1.ok !== true || f1.kind !== 'file') throw new Error('file create refused: ' + JSON.stringify(f1))
+    if (!(await exists(join(realWs, 'notes.md')))) throw new Error('the file was not created')
+    if ((await nodeFs.readFile(join(realWs, 'notes.md'), 'utf8')) !== '') throw new Error('a new file is not empty')
+    if (String(f1.path) !== join(realWs, 'notes.md')) throw new Error('the created path came back as ' + f1.path)
+
+    // A folder, inside another folder, and its name is not a path.
+    const d1 = JSON.parse((await callNew({ parent: realWs + '/sub', name: 'assets', kind: 'dir' })).body)
+    if (d1.ok !== true || d1.kind !== 'directory') throw new Error('folder create refused: ' + JSON.stringify(d1))
+    if (!(await nodeFs.stat(join(realWs, 'sub', 'assets'))).isDirectory()) throw new Error('the folder was not created')
+
+    // NO-CLOBBER, the property that matters most: an existing file keeps its
+    // bytes, and an existing NAME is refused whatever kind is asked for.
+    const f2 = JSON.parse((await callNew({ parent: realWs, name: 'keep.txt', kind: 'file' })).body)
+    if (f2.ok === true) throw new Error('an existing file was overwritten: ' + JSON.stringify(f2))
+    if ((await nodeFs.readFile(join(realWs, 'keep.txt'), 'utf8')) !== 'original') {
+      throw new Error('the existing file lost its contents')
+    }
+    const f3 = JSON.parse((await callNew({ parent: realWs, name: 'keep.txt', kind: 'dir' })).body)
+    if (f3.ok === true) throw new Error('a folder was created over an existing file')
+    const f4 = JSON.parse((await callNew({ parent: realWs, name: 'notes.md', kind: 'file' })).body)
+    if (f4.ok === true) throw new Error('a second create of the same file succeeded')
+
+    // Every refusal below is checked against the REASON and against the workspace
+    // itself. "did not say ok" is not enough: a create can fail for the WRONG
+    // reason and still look refused — a separator that slips past the name rules
+    // is then caught by the missing directory, a missing directory by ENOENT — so
+    // a single-layer removal is masked by the next layer and the guard would pass
+    // while the rule it names is gone. (Measured: five such mutations survived the
+    // first version of this guard.) Recording what is on disk before and after is
+    // the assertion that cannot be fooled that way.
+    const snapshot = async (dir) => {
+      const out = []
+      const walk = async (d) => {
+        let entries = []
+        try { entries = await nodeFs.readdir(d, { withFileTypes: true }) } catch (e) { return }
+        for (const e of entries.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+          out.push((d === dir ? '' : d.slice(dir.length + 1) + '/') + e.name + (e.isDirectory() ? '/' : ''))
+          if (e.isDirectory()) await walk(join(d, e.name))
+        }
+      }
+      await walk(dir)
+      return out
+    }
+    const refuse = async (label, body, want) => {
+      const before = await snapshot(realWs)
+      const res = JSON.parse((await callNew(body)).body)
+      const after = await snapshot(realWs)
+      if (res.ok === true) throw new Error(label + ' was accepted: ' + JSON.stringify(res))
+      if (after.join('|') !== before.join('|')) {
+        throw new Error(label + ' changed the workspace: ' + before.join('|') + ' → ' + after.join('|'))
+      }
+      const why = String(res.error || '')
+      if (want && why.indexOf(want) < 0) throw new Error(label + ' was refused for the wrong reason: ' + JSON.stringify(why))
+      return why
+    }
+
+    // Names that are not one component, or are not names at all.
+    await refuse('an empty name', { parent: realWs, name: '', kind: 'file' }, '输入名称')
+    await refuse('a blank name', { parent: realWs, name: '   ', kind: 'file' }, '输入名称')
+    await refuse('the name .', { parent: realWs, name: '.', kind: 'file' }, '不能是')
+    await refuse('the name ..', { parent: realWs, name: '..', kind: 'file' }, '不能是')
+    await refuse('a name with /', { parent: realWs, name: 'a/b', kind: 'file' }, '分隔符')
+    await refuse('a name with \\', { parent: realWs, name: 'a\\b', kind: 'file' }, '分隔符')
+    if (windowsShaped) {
+      await refuse('the reserved name con', { parent: realWs, name: 'con', kind: 'file' }, '保留')
+      await refuse('a name with a colon', { parent: realWs, name: 'a:b', kind: 'file' }, 'Windows')
+      await refuse('a name ending in a dot', { parent: realWs, name: 'trailing.', kind: 'file' }, 'Windows')
+      await refuse('a Windows-illegal folder name', { parent: realWs, name: 'x?y', kind: 'dir' }, 'Windows')
+    }
+
+    // Never outside the workspace: neither by the parent directory…
+    const outsideBefore = await snapshot(outsideDir)
+    const out1 = JSON.parse((await callNew({ parent: outsideDir, name: 'stray.txt', kind: 'file' })).body)
+    if (out1.ok === true) throw new Error('created outside the workspace: ' + JSON.stringify(out1))
+    if (String(out1.error || '').indexOf('工作区之外') < 0) throw new Error('an outside parent was refused for the wrong reason: ' + JSON.stringify(out1.error))
+    if (await exists(join(outsideDir, 'stray.txt'))) throw new Error('a file appeared outside the workspace')
+    // …nor by a parent that has to walk out of it…
+    const out2 = JSON.parse((await callNew({ parent: realWs + '/../' + outsideDir.split(/[/\\]/).pop(), name: 'stray2.txt', kind: 'file' })).body)
+    if (out2.ok === true) throw new Error('a .. parent escaped the workspace: ' + JSON.stringify(out2))
+    if (String(out2.error || '').indexOf('工作区之外') < 0) throw new Error('a .. parent was refused for the wrong reason: ' + JSON.stringify(out2.error))
+    if (await exists(join(outsideDir, 'stray2.txt'))) throw new Error('a .. parent created a file outside the workspace')
+    if ((await snapshot(outsideDir)).join('|') !== outsideBefore.join('|')) throw new Error('the outside directory changed')
+    // …nor into a directory that does not exist (the parent is required, not made).
+    // The REASON distinguishes the two ways this can fail: the explicit
+    // parent-is-a-directory check says 目标目录不存在或不是文件夹, while a missing
+    // explicit check would fall through to writeFile's ENOENT (目标目录已不存在).
+    await refuse('a missing parent directory', { parent: realWs + '/nope', name: 'x.txt', kind: 'file' }, '目标目录不存在')
+
+    // A mutation on a URL query is refused: the route is POST.
+    const getRes = await call(created.routes['/dsh-sidebar-frog/create'], '/dsh-sidebar-frog/create?name=x')
+    if (getRes.status !== 405) throw new Error('a GET on /create answered ' + getRes.status)
+    ok('/create', 'creates an empty file and a folder; never overwrites an existing name; refuses separators, . / .., an outside parent and a missing one; 405s a GET')
+    await rm(realWs, { recursive: true, force: true })
+    await rm(outsideDir, { recursive: true, force: true })
+  } catch (e) {
+    bad('/create', e && e.message ? e.message : String(e))
+  }
 } catch (e) {
   bad('host routes (authenticated)', e && e.message ? e.message : String(e))
 }
@@ -2781,6 +3189,93 @@ try {
   ok('editor asset', 'the vendored CodeMirror (real bundle, MIT licence, versions recorded) is served as JavaScript and mounted by both faces, which both take the host\'s `editable` verdict — the preview ceiling and the save ceiling are no longer the same number')
 } catch (e) {
   bad('editor asset', e && e.message ? e.message : String(e))
+}
+
+// ── The editor pane's INITIAL mode, and the session a save is filed against ──
+// 新建文件 opens its editor straight away: a file that was just created is empty,
+// so a preview of it is a blank page. That decision lives in one line of
+// src/client/editor.js (the initial useState) and one prop from the panel, and it
+// is exactly the kind of line that silently stops working — the editor would
+// still mount, still save, and just start in 预览. Driven here by mounting the
+// real component with the miniature hook runtime, so the assertions are about
+// rendered output rather than about the shape of the source.
+{
+  try {
+    const r = createRenderer(() => null, {})
+    const saved = []
+    const editorHost = {
+      call: (method, args) => {
+        if (method === 'artifacts.save') { saved.push(args); return Promise.resolve({ ok: true, version: 'v2', size: 1 }) }
+        return Promise.resolve({ ok: false, error: 'unknown ' + method })
+      },
+    }
+    // The mount target and the script loader the editor reaches for. Nothing has
+    // to LOAD for these assertions: the toolbar is rendered before CodeMirror is.
+    const scriptNodes = []
+    const documentStub = {
+      createElement: (tag) => {
+        const node = {
+          tagName: tag, className: '', style: {}, attrs: {}, children: [],
+          setAttribute(k, v) { this.attrs[k] = v },
+          appendChild(child) { this.children.push(child); return child },
+          removeChild() {}, addEventListener() {}, removeEventListener() {},
+        }
+        if (String(tag).toLowerCase() === 'script') scriptNodes.push(node)
+        return node
+      },
+      head: { appendChild() {}, removeChild() {} },
+      getElementById: () => null,
+      querySelector: () => null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }
+    // useSettings is a client-scope hook the pane now reads (设置 › 编辑器显示行号).
+    // The harness supplies a fixed snapshot: what the pane DOES with it is asserted
+    // by the wiring guard below and, behaviourally, by the browser suite — here it
+    // only has to exist, because a hook the module cannot see is a mount failure.
+    const settingsSnapshot = { markdownSkin: 'default', previewLineNumbers: false, editorLineNumbers: true }
+    const mod = new Function(
+      'React', 'host', 'currentSessionId', 'document', 'window', 'setTimeout', 'clearTimeout', 'console', 'useSettings',
+      read('src/shared/editor.js') + '\n' + read('src/client/editor.js') + '\nreturn { EditorPane, isEditablePreview };',
+    )(
+      r.React, editorHost, () => 'root-session', documentStub,
+      { addEventListener: () => {}, removeEventListener: () => {} },
+      setTimeout, clearTimeout, console,
+      () => settingsSnapshot,
+    )
+    const mountEditor = async (props) => {
+      r.hooks.length = 0
+      r.errors.length = 0
+      r.setComponent(mod.EditorPane)
+      r.setProps(props)
+      await new Promise((x) => setTimeout(x, 5))
+      r.flush()
+      return r
+    }
+    const modeButton = () => r.findAll('artifacts-edbtn-mode')[0]
+
+    // 新建 → 编辑: the caller says `initialMode: 'edit'` and the pane starts there.
+    await mountEditor({ path: 'D:/ws/new.md', editable: true, initialMode: 'edit', sessionId: 'seat-7', content: '' })
+    const created = modeButton()
+    if (!created) throw new Error('no mode button rendered for an editable file')
+    if (r.textOf(created) !== '预览') {
+      throw new Error('a file created as 编辑 started in ' + JSON.stringify(r.textOf(created)) + ' — the create-then-edit flow is gone')
+    }
+    // An ordinary open still starts read-only: the toggle belongs to the person.
+    await mountEditor({ path: 'D:/ws/notes.md', editable: true, initialMode: 'view', sessionId: 'seat-7', content: '# t' })
+    if (r.textOf(modeButton()) !== '编辑') {
+      throw new Error('an ordinary open did not start in 预览: ' + JSON.stringify(r.textOf(modeButton())))
+    }
+    // …and an uneditable file cannot be talked into 编辑, whatever is asked.
+    await mountEditor({ path: 'D:/ws/big.md', editable: false, initialMode: 'edit', content: 'x' })
+    if (r.findAll('artifacts-edbar').length) {
+      throw new Error('a file with no editor offered an editor toolbar')
+    }
+    if (r.errors.length) throw new Error('the editor threw while mounting: ' + r.errors.join(' | '))
+    ok('editor pane', 'a file created for editing starts in 编辑 with the seat\'s session, an ordinary open starts in 预览, and an uneditable file gets no toolbar')
+  } catch (e) {
+    bad('editor pane', e && e.message ? e.message : String(e))
+  }
 }
 
 try {
@@ -3383,7 +3878,9 @@ if (shared) {
 
   // The body the shell will actually mount, rendered: it hands the accumulated
   // text to the SAME MarkdownView the panel uses (one renderer, not two that can
-  // drift), and a non-text payload degrades to a hint instead of throwing.
+  // drift), wraps it in the panel's EditorPane — so a text file opened from the
+  // shell's own sidebar is editable in place, exactly like a file tab in this
+  // panel — and a non-text payload degrades to a hint instead of throwing.
   try {
     const mounted = await mountPanel({ shellMarkdown: true })
     const bodyReg = mounted.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document')
@@ -3391,15 +3888,37 @@ if (shared) {
     mounted.r.setComponent(bodyReg.component)
     mounted.r.setProps({
       resourceAddress: 'dsh-resource://file/absolute/D:/ws/notes.md',
-      content: { kind: 'text', text: '# 标题', pages: [], eof: true },
+      content: { kind: 'text', text: '# 标题', offset: 1, eof: true, bytes: 7 },
       wrap: false,
     })
     await mounted.flush()
     const wrappers = mounted.r.findAll('artifacts-doc')
     if (wrappers.length !== 1) throw new Error('the document body rendered no markdown wrapper (' + wrappers.length + ' found)')
-    const inner = (wrappers[0].props.children || [])[0]
-    if (!inner || typeof inner.type !== 'function') {
-      throw new Error('the document body did not delegate to the shared MarkdownView')
+    const editor = findElement(wrappers[0], 'EditorPane')
+    if (!editor) throw new Error('the document body did not wrap its content in the panel\'s EditorPane')
+    const inner = findElement(editor, 'MarkdownView')
+    if (!inner) throw new Error('the body did not delegate to the shared MarkdownView')
+    // Editable, with the seat's own revision as the conflict basis: without a
+    // version a save would be a blind overwrite, and the whole point of the
+    // wrapper is that the SIDE has an editor, not just a look.
+    if (editor.props.editable !== true) throw new Error('a complete text payload was not offered an editor')
+    if (editor.props.baseVersion !== undefined && editor.props.baseVersion !== null) {
+      throw new Error('an absent version must stay absent, not become ' + JSON.stringify(editor.props.baseVersion))
+    }
+    // A PAGE-shaped payload (the seat reads with a line window) must NOT be
+    // editable: saving a page would replace the whole file with that page.
+    {
+      mounted.r.hooks.length = 0
+      mounted.r.setComponent(bodyReg.component)
+      mounted.r.setProps({
+        resourceAddress: 'dsh-resource://file/session/s1/big.md',
+        content: { kind: 'text', text: 'line 11…', offset: 11, eof: false, lines: 50, version: 'v9', bytes: 90000 },
+      })
+      await mounted.flush()
+      const pageEditor = findElement(mounted.r.element, 'EditorPane')
+      if (!pageEditor) throw new Error('a page payload produced no body at all')
+      if (pageEditor.props.editable === true) throw new Error('a page-shaped payload was offered an editor (saving it would truncate the file)')
+      if (!findElement(pageEditor, 'MarkdownView')) throw new Error('a page payload was not rendered')
     }
     mounted.r.setProps({ content: { kind: 'bytes', data: new Uint8Array([1, 2, 3]) } })
     await mounted.flush()
@@ -3408,21 +3927,28 @@ if (shared) {
     }
     // The SESSION travels with the render, taken from the address the seat handed
     // over: that is what makes a document-relative image resolve in the right
-    // workspace (see the media route's own guard), and the address is the only
-    // session-scoped thing this body receives.
+    // workspace (see the media route's own guard) AND what a save is filed
+    // against, and the address is the only session-scoped thing this body gets.
     {
       mounted.r.hooks.length = 0
       mounted.r.setComponent(bodyReg.component)
       mounted.r.setProps({
-        resourceAddress: 'dsh-resource://file/session/s1/notes.md',
-        content: { kind: 'text', text: '![a](pic.png)', pages: [], eof: true },
+        resourceAddress: 'dsh-resource://file/session/seat-7/notes.md',
+        content: { kind: 'text', text: '![a](pic.png)', offset: 1, eof: true },
         wrap: false,
       })
       await mounted.flush()
       const delegated = mounted.r.element
-      const inner = delegated && (delegated.props.children || [])[0]
-      if (!inner || inner.props.sessionId !== 's1') {
+      const editor = findElement(delegated, 'EditorPane')
+      const inner = findElement(delegated, 'MarkdownView')
+      if (!editor || editor.props.sessionId !== 'seat-7') {
+        throw new Error('the session was not carried from the address into the editor: ' + JSON.stringify(editor && editor.props))
+      }
+      if (!inner || inner.props.sessionId !== 'seat-7') {
         throw new Error('the session was not carried from the address into the render: ' + JSON.stringify(inner && inner.props))
+      }
+      if (editor.props.path !== 'notes.md') {
+        throw new Error('the path was not carried from the address into the editor: ' + JSON.stringify(editor.props.path))
       }
     }
     // The document SKIN reaches the render: the class on the root selects its
@@ -3438,11 +3964,11 @@ if (shared) {
       const reg = skinned.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document')
       const el = reg.component({
         resourceAddress: 'dsh-resource://file/session/s1/notes.md',
-        content: { kind: 'text', text: '# t', pages: [], eof: true },
+        content: { kind: 'text', text: '# t', offset: 1, eof: true },
         wrap: false,
       })
-      const inner = (el.props.children || [])[0]
-      if (!inner || typeof inner.type !== 'function') throw new Error('the skinned body did not delegate to a MarkdownView')
+      const inner = findElement(el, 'MarkdownView')
+      if (!inner) throw new Error('the skinned body did not delegate to a MarkdownView')
       skinned.r.setComponent(inner.type)
       skinned.r.setProps(inner.props)
       await skinned.flush()
@@ -3454,6 +3980,41 @@ if (shared) {
       const tags = skinned.styleTags || []
       if (!tags.some((t) => t.id === 'dsh-sidebar-frog-skin' && String(t.textContent).indexOf('.md-skin-github h1') >= 0)) {
         throw new Error('the skin stylesheet was not put on the page: ' + JSON.stringify(tags.map((t) => t.id)))
+      }
+
+      // 设置 › 预览显示行号, on the same render: the class the stylesheet keys off
+      // follows the SETTING, and the numbers the CSS draws come from the label the
+      // renderer wrote on each block (data-lineno). Asserted in both directions,
+      // because "always on" would pass a one-sided assertion.
+      {
+        const linesOn = await mountPanel({
+          shellMarkdown: true,
+          storage: { [BRIDGE.settings]: serializeSettings(normalizeSettings({ previewLineNumbers: true })) },
+        })
+        const onReg = linesOn.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document')
+        const onEl = onReg.component({
+          resourceAddress: 'dsh-resource://file/session/s1/notes.md',
+          content: { kind: 'text', text: '# 标题\n\n正文。\n', offset: 1, eof: true },
+          wrap: false,
+        })
+        const onInner = findElement(onEl, 'MarkdownView')
+        linesOn.r.setComponent(onInner.type)
+        linesOn.r.setProps(onInner.props)
+        await linesOn.flush()
+        // The labels the stylesheet draws (attr(data-lineno)) are covered by the
+        // anchor guard above; what matters HERE is that the class follows the
+        // setting. Asserted in both directions below, because an unconditional
+        // class would satisfy a one-sided assertion.
+        const onRoot = linesOn.r.findAll('artifacts-markdown')[0]
+        if (!onRoot) throw new Error('the line-number render produced no markdown root')
+        if (String(onRoot.props.className).indexOf('is-lines') < 0) {
+          throw new Error('the gutter class is missing with the setting on: ' + JSON.stringify(onRoot.props.className))
+        }
+        // …and off is the default, so the render above (which asked for no lines)
+        // must not carry it.
+        if (String(rendered.props.className).indexOf('is-lines') >= 0) {
+          throw new Error('the gutter class is on with the setting OFF: ' + JSON.stringify(rendered.props.className))
+        }
       }
     }
     ok('lent markdown body (rendered)', 'delegates to the panel\'s own MarkdownView, carries the address\'s session, wears the chosen document skin (class + one stylesheet), and byte payloads degrade to a hint')
@@ -4552,8 +5113,8 @@ try {
     content: { kind: 'text', text: 'name,qty\nbanana,10\napple,2\ncherry,\n', pages: [], eof: true },
   })
   await mounted.flush()
-  const inner = (mounted.r.findAll('artifacts-doc')[0].props.children || [])[0]
-  if (!inner || typeof inner.type !== 'function') throw new Error('the lent body did not delegate to the shared table view')
+  const inner = findElement(mounted.r.element, 'TableView')
+  if (!inner) throw new Error('the lent body did not delegate to the shared table view')
   mounted.r.setComponent(inner.type)
   mounted.r.setProps(inner.props)
   await mounted.flush()
@@ -4622,16 +5183,24 @@ try {
   // renderer here cannot expand a child component, so identity is what is read.)
   mounted.r.setComponent(tableBody.component)
   mounted.r.setProps({
-    resourceAddress: 'dsh-resource://file/absolute/D:/ws/data.csv',
-    content: { kind: 'text', text: 'a,b\n1,2\n', pages: [], eof: true },
+    resourceAddress: 'dsh-resource://file/session/seat-9/data.csv',
+    content: { kind: 'text', text: 'a,b\n1,2\n', offset: 1, eof: true },
   })
   await mounted.flush()
   const wrapper = mounted.r.findAll('artifacts-doc')
   if (wrapper.length !== 1) throw new Error('the lent table body drew no document wrapper')
-  const innerView = (wrapper[0].props.children || [])[0]
-  if (!innerView || typeof innerView.type !== 'function' || innerView.type.name !== 'TableView') {
-    throw new Error('the lent table body did not delegate to the shared TableView (got ' + (innerView && innerView.type && innerView.type.name) + ')')
+  // The table body carries the editor too — a csv is one of the types this panel
+  // can write — so the TableView is one level in, behind EditorPane.
+  const innerView = findElement(wrapper[0], 'TableView')
+  if (!innerView) {
+    throw new Error('the lent table body did not delegate to the shared TableView (got ' + JSON.stringify(classDump(wrapper[0], [])) + ')')
   }
+  const tableEditor = findElement(wrapper[0], 'EditorPane')
+  if (!tableEditor) throw new Error('the lent table body has no editor wrapper')
+  if (tableEditor.props.sessionId !== 'seat-9') {
+    throw new Error('the table editor did not take the address\'s session: ' + JSON.stringify(tableEditor.props.sessionId))
+  }
+  if (tableEditor.props.editable !== true) throw new Error('a complete csv payload was not offered an editor')
   mounted.r.setProps({ content: { kind: 'bytes', data: new Uint8Array([1, 2, 3]) } })
   await mounted.flush()
   if (!mounted.r.texts('artifacts-hint').length) throw new Error('a byte payload did not degrade to a hint')
@@ -4681,6 +5250,112 @@ try {
     ok('stylesheet embedding', 'no backtick and no dollar-brace in the panel stylesheet, so the template literal it is substituted into survives')
   } catch (e) {
     bad('stylesheet embedding', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── 5z. Two settings, four call sites: the line-number switches ───────────────
+// 设置 › 预览显示行号 / 编辑器显示行号 each have to reach BOTH faces of the plugin
+// (the panel and the popout page), and each face keeps its own stylesheet and its
+// own editor mount. Missing one is invisible in every other check here: the
+// setting still saves, the panel still honours it, and only the other face keeps
+// drawing the old way. So the wiring is asserted by name, and the BEHAVIOUR is
+// driven in a real engine by scripts/browser-tests.js.
+{
+  try {
+    const sharedEditor = read('src/shared/editor.js')
+    const panelEditor = read('src/client/editor.js')
+    const panelPreview = read('src/client/preview.js')
+    const page = read('src/host/page.js')
+    const panelCss = read('src/client/styles.js')
+    const missing = []
+
+    // The editor's column is a COMPARTMENT, never a fixed extension: a preference
+    // that can only be applied by remounting would throw away the cursor, the undo
+    // history and any unsaved draft.
+    if (sharedEditor.indexOf('lineNumberSlot = new CM.Compartment()') < 0) missing.push('shared editor has no line-number compartment')
+    if (!/lineNumberSlot\.of\(lineNumberExtensions\(opts\.lineNumbers\)\)/.test(sharedEditor)) {
+      missing.push('the compartment is not what builds the line-number extensions')
+    }
+    if (!/^\s*setLineNumbers: function \(on\)/m.test(sharedEditor)) missing.push('the controller does not expose setLineNumbers')
+    // …and the OFF branch has to exist, or the switch is a one-way door. (The
+    // behaviour is driven in the browser suite; this is the shape it drives.)
+    if (!/on === false \? \[\] : \[CM\.lineNumbers\(\)/.test(sharedEditor)) {
+      missing.push('the line-number extensions have no off branch')
+    }
+    // …and it must not ALSO add the gutter unconditionally, which would make the
+    // switch a no-op in the off direction.
+    if (/^\s*CM\.lineNumbers\(\),/m.test(sharedEditor)) missing.push('the gutter is still added unconditionally')
+
+    for (const [where, source, needle] of [
+      ['the panel editor', panelEditor, 'lineNumbers: settings.editorLineNumbers !== false'],
+      ['the panel editor (live)', panelEditor, 'ctrl.setLineNumbers(settings.editorLineNumbers !== false)'],
+      ['the popout editor', page, 'lineNumbers: SETTINGS.editorLineNumbers !== false'],
+      ['the popout editor (live)', page, 'editorCtl.setLineNumbers(SETTINGS.editorLineNumbers !== false)'],
+      ['the panel preview', panelPreview, "showLines ? ' is-lines' : ''"],
+      ['the popout preview', page, "SETTINGS.previewLineNumbers === true ? ' is-lines' : ''"],
+    ]) {
+      if (source.indexOf(needle) < 0) missing.push(where + ' does not read the setting (' + needle + ')')
+    }
+    // The setting must be read through the hook/store, not from a literal.
+    if (panelPreview.indexOf('previewLineNumbers') < 0) missing.push('the panel preview never reads previewLineNumbers')
+
+    // A gutter rule per stylesheet, both gated on is-lines and both drawing the
+    // label the renderer wrote — the panel's root is .artifacts-markdown and the
+    // popout's is .markdown, so neither stylesheet can cover for the other.
+    for (const [where, css, sel] of [
+      ['the panel stylesheet', panelCss, '.artifacts-markdown.is-lines > [data-lineno]::before'],
+      ['the popout stylesheet', page, '.markdown.is-lines > [data-lineno]::before'],
+    ]) {
+      if (css.indexOf(sel) < 0) missing.push(where + ' has no gutter rule for ' + sel)
+    }
+    for (const [where, css] of [['the panel stylesheet', panelCss], ['the popout stylesheet', page]]) {
+      if (!/is-lines[^}]*::before\s*\{[^}]*content:\s*attr\(data-lineno\)/.test(css.replace(/\n/g, ' '))) {
+        missing.push(where + ' draws something other than the renderer\'s label')
+      }
+    }
+    if (missing.length) throw new Error(missing.join('; '))
+    ok('line-number wiring', 'both switches reach both faces — the editor through a reconfigurable compartment, the preview through a class the two stylesheets key off — in the panel and the popout alike')
+  } catch (e) {
+    bad('line-number wiring', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── 5y. No disabled branch left in the sources ────────────────────────────────
+// `if (false)` is what a mutation run writes when it wants to prove a guard is
+// real. It is also what survives a mutation run that is KILLED mid-way: the
+// harness restores the file at the end, so an interrupt leaves the weakened source
+// on disk — and the bundle gets rebuilt from it. That happened here (a create
+// route's parent-directory check was shipped disabled for a while, and the only
+// reason it was noticed is that a later guard refused for the "wrong reason").
+//
+// A permanently disabled branch is dead code at best. Cheaper to ban it and let
+// the mutation harness un-ban it for the seconds it needs it.
+{
+  try {
+    const files = []
+    const walk = (dir) => {
+      for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+        const rel = dir + '/' + entry.name
+        if (entry.isDirectory()) { if (entry.name !== 'vendor') walk(rel) }
+        else if (/\.(js|mjs)$/.test(entry.name)) files.push(rel)
+      }
+    }
+    walk('src')
+    const offenders = []
+    for (const rel of files) {
+      const text = read(rel)
+      text.split('\n').forEach((line, i) => {
+        if (/^\s*if \(false\b/.test(line) || /\bif \(false &&/.test(line)) {
+          offenders.push(rel + ':' + (i + 1))
+        }
+      })
+    }
+    if (offenders.length) {
+      throw new Error('a branch is disabled in the shipped sources (a killed mutation run?) — ' + offenders.join(', '))
+    }
+    ok('no disabled branches', files.length + ' source files, none carrying an `if (false)`')
+  } catch (e) {
+    bad('no disabled branches', e && e.message ? e.message : String(e))
   }
 }
 

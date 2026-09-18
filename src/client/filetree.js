@@ -78,6 +78,12 @@ const FileTree = (props) => {
   // call that disables 删除 so a double click cannot fire it twice.
   const [confirmDel, setConfirmDel] = React.useState(null)
   const [delBusy, setDelBusy] = React.useState(false)
+  // 新建: the inline row that asks for a name. `parent` is the directory the
+  // entry will be created in (the workspace root when it is the root), so the
+  // row can be drawn at the level it belongs to — under the folder it will land
+  // in, not floating at the top of the tree. `error` is the host's own sentence
+  // when it refuses (an existing entry, a name Windows will not take).
+  const [creating, setCreating] = React.useState(null)   // { parent, kind, name, error, busy }
 
   const rootTimer = React.useRef(null)
   const copyTimer = React.useRef(null)
@@ -87,6 +93,8 @@ const FileTree = (props) => {
   const typeBuf = React.useRef({ text: '', at: 0 })
   const listRef = React.useRef(null)
   const filterRef = React.useRef(null)
+  // The 新建 input, so the tree can put the caret in it and scroll it into view.
+  const createRef = React.useRef(null)
   // The menu box itself: focused on open, and measured so it can be nudged back
   // inside the window (see the fit effect next to the close-on-click one).
   const menuRef = React.useRef(null)
@@ -387,6 +395,69 @@ const FileTree = (props) => {
     return text.slice(0, at)
   }
 
+  // The directory a 新建 should land in, for the row the person aimed at: a
+  // folder takes the entry INSIDE itself, a file takes its own directory (a
+  // sibling), and no target at all means the workspace root. One rule for the
+  // context menu, the + button and the empty-area right click.
+  const createTargetFor = (entry) => {
+    if (entry && entry.isDir) return entry.path
+    if (entry && entry.path) return parentDirOf(entry.path)
+    return rootPath
+  }
+
+  // Open the inline name row. A folder that is about to receive the entry must
+  // be EXPANDED first: the row is drawn inside that level, and inside a
+  // collapsed branch it would be created and never seen.
+  const beginCreate = (entry, kind) => {
+    const parent = createTargetFor(entry)
+    setMenu(null)
+    setConfirmDel(null)
+    setCreating({ parent: parent || '', kind: kind === 'dir' ? 'dir' : 'file', name: '', error: '', busy: false })
+    if (parent && parent !== rootPath) toggle(parent, true)
+    const list = listRef.current
+    if (list && list.focus) list.focus()
+  }
+
+  // Create it. The name goes to the host as a NAME beside a PARENT directory —
+  // never as a path — and the host's answer is what the row shows. Only "there
+  // is no name at all" is decided here: that is an affordance of this input, not
+  // a filesystem rule, and duplicating the host's platform rules in the client
+  // is how two rule sets start disagreeing.
+  const doCreate = () => {
+    const c = creating
+    if (!c || c.busy) return
+    const name = String(c.name || '').trim()
+    if (!name) { setCreating(Object.assign({}, c, { error: '请输入名称' })); return }
+    setCreating(Object.assign({}, c, { busy: true, error: '' }))
+    host.call('artifacts.create', { parent: c.parent, name: name, kind: c.kind, sessionId: seatSessionId() }).then((res) => {
+      if (!res || !res.ok) {
+        setCreating(Object.assign({}, c, { busy: false, error: (res && res.error) || '新建失败' }))
+        return
+      }
+      setCreating(null)
+      // The level that now holds the entry is stale: re-read the parent, or the
+      // root when the entry was created at the top level (tree.root.entries is
+      // what lists that level — the same distinction 删除 has to make).
+      const parent = c.parent
+      if (parent && parent !== rootPath && pathRelativeTo(parent, rootPath) !== '') refreshDir(parent)
+      else loadRoot(false)
+      setFlashLabel(res.name || name, c.kind === 'dir' ? '已新建文件夹' : '已新建文件')
+      const fresh = res.path || ''
+      if (fresh) {
+        setCursor(fresh)
+        // After the level has been re-read, put the new row on screen. A folder
+        // is opened; a file opens as a tab (and the caller starts it in 编辑 —
+        // a file that was just created is empty, so a preview of it is a blank
+        // page, which is not what "新建文件" is for).
+        setTimeout(() => { scrollRowIntoView(fresh) }, 120)
+        if (c.kind === 'dir') setTimeout(() => toggle(fresh, true), 60)
+        else if (props.onOpen) props.onOpen(fresh, { pinned: false, created: true })
+      }
+    }).catch(() => {
+      setCreating(Object.assign({}, c, { busy: false, error: '新建失败' }))
+    })
+  }
+
   // Transient feedback that survives the deleted row vanishing: a small banner
   // at the top of the tree body naming the entry and what happened to it, for a
   // couple of seconds.
@@ -555,6 +626,23 @@ const FileTree = (props) => {
     }
     if (tree.root) walk(tree.root.entries, 0, '')
   }
+  // The 新建 input row takes its place where the entry will appear: directly
+  // under the folder that will receive it, or at the top of the tree for the
+  // workspace root. Inserted into the row list (not rendered separately) so the
+  // guides, the indentation and the scroll position all follow from the tree
+  // itself. The keyboard cursor never lands on it — rowIndex skips entry-less
+  // rows, and the input stops its own propagation. Inserted BEFORE rowIndex is
+  // built, so the indices the keyboard uses stay the indices of this list.
+  if (creating && !filtered) {
+    const parent = creating.parent
+    let at = 0
+    let depth = 0
+    if (parent && parent !== rootPath) {
+      const found = rows.findIndex((r) => r.entry && r.entry.path === parent)
+      if (found >= 0) { at = found + 1; depth = rows[found].depth + 1 }
+    }
+    rows.splice(at, 0, { create: true, depth: depth })
+  }
   const rowIndex = {}
   rows.forEach((r, i) => { if (r.entry) rowIndex[r.entry.path] = i })
 
@@ -580,6 +668,11 @@ const FileTree = (props) => {
   }
 
   const onKeyDown = (ev) => {
+    // The 新建 input owns the keyboard while it is open: an arrow key there must
+    // move the caret, not the tree cursor, and Enter is the input's own submit.
+    // (The input stops propagation too; this is the belt to that braces, because
+    // the body's handler is the one that would otherwise act on the event.)
+    if (creating) return
     // The delete confirm is a modal-ish overlay drawn over the tree: Escape
     // cancels it and Enter runs it, everything else is swallowed so it cannot
     // move the cursor or open a file while the question is up.
@@ -652,6 +745,13 @@ const FileTree = (props) => {
   const menuItems = (m) => {
     const entry = m.entry
     const items = []
+    // The + button's own menu: the two create verbs and nothing else. It is the
+    // same list the row menu carries, so there is one wording for one action.
+    if (m.only === 'create') {
+      items.push({ label: '新建文件', run: () => beginCreate(entry, 'file') })
+      items.push({ label: '新建文件夹', run: () => beginCreate(entry, 'dir') })
+      return items
+    }
     if (entry.isDir) {
       const open = !!tree.expanded[entry.path]
       items.push({ label: open ? '折叠文件夹' : '展开文件夹', run: () => toggle(entry.path, !open) })
@@ -659,6 +759,13 @@ const FileTree = (props) => {
       items.push({ label: '打开预览', run: () => openEntry(entry, false) })
       items.push({ label: '固定预览', run: () => openEntry(entry, true) })
     }
+    items.push({ sep: true })
+    // 新建 sits at the top of the action group, the way every IDE's explorer
+    // orders it. On a folder it creates INSIDE that folder; on a file it creates
+    // a sibling — which is what right-clicking a file and choosing New File does
+    // everywhere else, and where the input row appears makes it self-evident.
+    items.push({ label: entry.isDir ? '新建文件' : '新建同级文件', run: () => beginCreate(entry, 'file') })
+    items.push({ label: entry.isDir ? '新建文件夹' : '新建同级文件夹', run: () => beginCreate(entry, 'dir') })
     items.push({ sep: true })
     items.push({ label: '复制路径', run: () => copyText(entry.path, '已复制路径') })
     items.push({ label: '复制相对路径', run: () => copyText(relPath(entry.path), '已复制相对路径') })
@@ -715,17 +822,67 @@ const FileTree = (props) => {
     ev.preventDefault()
     ev.stopPropagation()
     setCursor(entry.path)
+    const at = placeMenu(ev.clientX, ev.clientY, ev.currentTarget || ev.target)
+    setMenu({ x: at.x, y: at.y, entry, index: 0 })
+  }
+
+  // The + button's menu: the same two verbs, aimed at whatever the tree is
+  // pointed at (the keyboard cursor's row, else the workspace root) and placed
+  // under the button that opened it. Its own target instead of "the row under
+  // the pointer", because there is no pointer row — and silently picking one
+  // would be a guess about where the file goes.
+  const openCreateMenu = (ev) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const at = placeMenu(
+      ev && ev.clientX ? ev.clientX : menuAnchorX(ev),
+      ev && ev.clientY ? ev.clientY : menuAnchorY(ev),
+      ev && (ev.currentTarget || ev.target),
+    )
+    const target = cursorEntry() || { path: rootPath, name: basename(rootPath), isDir: true }
+    setMenu({ x: at.x, y: at.y, entry: target, index: 0, only: 'create' })
+  }
+
+  const menuAnchorX = (ev) => {
+    const box = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget.getBoundingClientRect() : null
+    return box ? box.left : 8
+  }
+  const menuAnchorY = (ev) => {
+    const box = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget.getBoundingClientRect() : null
+    return box ? box.bottom + 4 : 8
+  }
+
+  // The row the keyboard cursor is on, as an entry. The + button has no row of
+  // its own, so this is how it stays predictable: whatever the tree is pointing
+  // at receives the new entry.
+  const cursorEntry = () => {
+    if (!cursor) return null
+    const find = (entries) => {
+      for (const e of (entries || [])) {
+        if (e.path === cursor) return e
+        const node = treeRef.current.children[e.path]
+        if (e.isDir && node && node.entries) {
+          const hit = find(node.entries)
+          if (hit) return hit
+        }
+      }
+      return null
+    }
+    return find(treeRef.current.root && treeRef.current.root.entries)
+  }
+
+  // Clamp a menu position into the window (and into the panel's own space on the
+  // no-portal fallback path).
+  const placeMenu = (clientX, clientY, fromEl) => {
     const MENU_W = 210   // min-width 184px + padding, the box we keep on screen
     const MENU_H = 340   // the tallest menu (a directory: 12 items + 3 separators)
-    // The pointer is the anchor: that is the whole contract of a context menu.
-    // Clamped to the window so the menu can never be drawn half off screen.
-    const vx = Math.max(8, Math.min(ev.clientX, window.innerWidth - MENU_W))
-    const vy = Math.max(8, Math.min(ev.clientY, window.innerHeight - MENU_H))
-    // Fallback path only: re-express that point in the panel's own space.
-    const base = MENU_PORTAL ? null : fixedContainingBlock(ev.currentTarget || ev.target)
-    const x = base ? Math.max(8, Math.min(vx - base.left, Math.max(8, base.width - MENU_W))) : vx
-    const y = base ? Math.max(8, Math.min(vy - base.top, Math.max(8, base.height - MENU_H))) : vy
-    setMenu({ x, y, entry, index: 0 })
+    const vx = Math.max(8, Math.min(clientX, window.innerWidth - MENU_W))
+    const vy = Math.max(8, Math.min(clientY, window.innerHeight - MENU_H))
+    const base = MENU_PORTAL ? null : fixedContainingBlock(fromEl)
+    return {
+      x: base ? Math.max(8, Math.min(vx - base.left, Math.max(8, base.width - MENU_W))) : vx,
+      y: base ? Math.max(8, Math.min(vy - base.top, Math.max(8, base.height - MENU_H))) : vy,
+    }
   }
 
   React.useEffect(() => {
@@ -787,6 +944,59 @@ const FileTree = (props) => {
 
   const renderRow = (row) => {
     const guideUnit = 12
+    // The 新建 row: an input at the depth of the directory it will fill, drawn
+    // right where the new entry will appear, with the same guides and icons as a
+    // real row so it reads as "this is about to exist here". Checked BEFORE the
+    // entry-less branch below, which would otherwise draw it as "加载中…".
+    if (row.create) {
+      const c = creating || { kind: 'file', name: '', error: '', busy: false }
+      const depth = row.depth
+      const guides = []
+      for (let i = 0; i < depth; i += 1) {
+        guides.push(React.createElement('span', { key: i, className: 'artifacts-tree-guide', style: { left: 6 + i * 12 } }))
+      }
+      return React.createElement('div', {
+        key: 'create-row',
+        className: 'artifacts-tree-row artifacts-tree-createrow' + (c.error ? ' is-invalid' : ''),
+        // Depth on the element so the row can be checked where it is drawn, which
+        // is the whole point of inserting it into the row list.
+        'data-depth': depth,
+        'data-creating': c.kind,
+        style: { paddingLeft: 4 + depth * 12 },
+      },
+        guides,
+        React.createElement('span', { className: 'artifacts-tree-twisty is-file' }),
+        React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + (c.kind === 'dir' ? 'folder' : 'text') },
+          c.kind === 'dir' ? FolderClosedIcon(16) : TreeFileIcon(16)),
+        React.createElement('input', {
+          ref: createRef,
+          className: 'artifacts-tree-create',
+          type: 'text',
+          value: c.name,
+          disabled: !!c.busy,
+          spellCheck: false,
+          autoFocus: true,
+          'aria-label': c.kind === 'dir' ? '新文件夹名称' : '新文件名称',
+          'aria-invalid': c.error ? 'true' : undefined,
+          placeholder: c.kind === 'dir' ? '新文件夹名称' : '新文件名称（如 notes.md）',
+          onChange: (e) => setCreating(Object.assign({}, c, { name: e.currentTarget.value, error: '' })),
+          onKeyDown: (e) => {
+            // The input owns these two keys: Enter creates, Escape backs out.
+            // stopPropagation keeps the tree's own key handler (which moves the
+            // cursor) from reading them as navigation.
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setCreating(null); return }
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); doCreate(); return }
+            e.stopPropagation()
+          },
+          // Clicking anywhere else means "never mind" — the standard explorer
+          // behaviour, and the reason a stray click cannot leave a half-typed
+          // name parked in the tree. Submitting sets busy, which skips this.
+          onBlur: () => { if (!c.busy) setCreating(null) },
+        }),
+        c.error ? React.createElement('span', { className: 'artifacts-tree-create-error' }, c.error) : null,
+        c.busy ? React.createElement('span', { className: 'artifacts-tree-create-hint' }, '新建中…') : null,
+      )
+    }
     // Non-entry rows: a level that is loading or that failed to load. The key
     // carries the PARENT path, not just the depth — several sibling folders can
     // be loading (or failing) at the same depth at once, and reusing one key for
@@ -953,6 +1163,14 @@ const FileTree = (props) => {
       React.createElement('span', { className: 'artifacts-tree-tools' },
         React.createElement('button', {
           type: 'button',
+          className: 'artifacts-tree-tool' + (creating ? ' is-on' : ''),
+          title: '新建文件 / 文件夹（在选中的目录里；没选中就是工作区根目录）',
+          'aria-label': '新建',
+          'aria-haspopup': 'menu',
+          onClick: openCreateMenu,
+        }, PlusIcon(14)),
+        React.createElement('button', {
+          type: 'button',
           className: 'artifacts-tree-tool' + (filterOpen ? ' is-on' : ''),
           title: '过滤文件（Ctrl/Cmd+P 不适用——点这里打开）',
           'aria-label': '过滤文件',
@@ -1011,6 +1229,10 @@ const FileTree = (props) => {
       tabIndex: 0,
       'aria-label': '工作区文件树',
       onKeyDown: onKeyDown,
+      // Right-clicking the blank area below the last row means "here" — the
+      // workspace root — and offers the same two verbs. A row sets its own menu
+      // and stops the event, so this only ever fires on empty space.
+      onContextMenu: (ev) => openCreateMenu(ev),
     },
       flashLabel ? React.createElement('div', { key: 'flash-label', className: 'artifacts-tree-flash-label' }, flashLabel.text) : null,
       showEmptyHint

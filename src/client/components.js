@@ -112,6 +112,11 @@ const ArtifactsContent = (props) => {
   // FULL width. That is the point: a sidebar is too narrow to show a preview
   // beside the tree, so the file gets the whole strip instead of half of it.
   const [openFiles, setOpenFiles] = React.useState([])   // [{ path }] in open order
+  // The file 新建文件 just created, while its tab is the active one: that tab
+  // starts in 编辑 instead of 预览 (see treeOpen and EditorPane's initialMode).
+  // Cleared the moment another file becomes active, so it is a one-shot hint and
+  // never a mode that sticks to a path.
+  const [pendingEdit, setPendingEdit] = React.useState('')
   // `fixedView` pins this instance to ONE view. The native surface registers a
   // separate system tab per view (see FROG_TABS in src/client/native.js), so each
   // of those bodies draws its view and nothing else — no self-drawn view switcher
@@ -381,12 +386,25 @@ const ArtifactsContent = (props) => {
   // a document tab in this same column — the way the product's own file links
   // work. The floating panel keeps its internal file tabs: it has no shell strip
   // to land in when the column itself is what is missing.
-  const treeOpen = (path) => {
+  const treeOpen = (path, opts) => {
+    // A file the person just created opens in 编辑 when it lands in this panel's
+    // own tab: an empty file has nothing to preview. `pendingEdit` is consumed by
+    // whoever renders that tab (see EditorPane's initialMode below), and it is
+    // dropped as soon as another file becomes active — re-opening it later is an
+    // ordinary preview.
+    if (opts && opts.created && !fixedView) setPendingEdit(path)
     if (fixedView) { openInShell(path); return }
     openFileTab(path)
   }
 
   const activeFile = activeTab.indexOf('file:') === 0 ? activeTab.slice(5) : ''
+
+  // The one-shot 编辑 hint belongs to ONE tab: as soon as another file is the
+  // active one it is spent, so re-opening the created file later is an ordinary
+  // preview rather than a mode that keeps coming back.
+  React.useEffect(() => {
+    if (pendingEdit && pendingEdit !== activeFile) setPendingEdit('')
+  }, [activeFile, pendingEdit])
 
   // The artifact list is re-polled every 2s; reading it through a ref keeps that
   // poll from re-reading the previewed file on every tick (only the file itself,
@@ -638,6 +656,10 @@ const ArtifactsContent = (props) => {
             key: activeFile,
             path: activeFile,
             editable: isEditablePreview(preview),
+            // 编辑 straight away for a file that was just created (see treeOpen).
+            initialMode: pendingEdit && pendingEdit === activeFile ? 'edit' : 'view',
+            // The seat's session: a save is filed against it (see EditorPane).
+            sessionId: sid,
             content: preview.content,
             // The revision this preview read. The save sends it back, which is
             // what turns "somebody changed the file while you were typing" into
@@ -1047,6 +1069,27 @@ const SettingsSection = () => {
           }),
         ),
       ),
+      // Line numbers, as a PAIR of switches rather than one. They answer the same
+      // question ("which line am I looking at?") about two different views, and
+      // people want them differently: a reader who keeps the preview open wants
+      // the gutter to cite a line in a request, while someone editing in a narrow
+      // panel may want the column gone to buy back width. One switch would force
+      // both views to agree; two cost nothing and let the pair be set apart.
+      //
+      // The preview's numbers are the file's REAL lines (the renderer stamps each
+      // block with the source line it came from), not a count of drawn rows.
+      React.createElement(SettingsToggle, {
+        label: '预览显示行号',
+        desc: '在渲染后的 Markdown 左侧显示每一块的源码行号，方便按行定位与引用（多行的块显示起止行，如 12–18）。数字取自渲染时就写进块上的源码行锚点，因此与选中文本后「引用/定位」报告的行号永远一致；只标注顶层块（标题、段落、列表、代码块…），列表项、表格单元格这类嵌套块不标注，否则数字会缩进错位。面板、系统侧边栏的文档页与弹出页一起生效。',
+        value: settings.previewLineNumbers,
+        onToggle: (v) => set('previewLineNumbers', v),
+      }),
+      React.createElement(SettingsToggle, {
+        label: '编辑器显示行号',
+        desc: '编辑器（CodeMirror）左侧的行号列。关闭可省出一点宽度，尤其是窄面板；切换是即时的，不会重挂编辑器，因此光标位置、撤销历史与未保存的草稿都保留。',
+        value: settings.editorLineNumbers,
+        onToggle: (v) => set('editorLineNumbers', v),
+      }),
       React.createElement('div', { className: 'artifacts-setrow' },
         React.createElement('div', { className: 'artifacts-settext' },
           React.createElement('div', { className: 'artifacts-settitle' }, '弹出页预览区宽度'),

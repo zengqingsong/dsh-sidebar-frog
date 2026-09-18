@@ -269,7 +269,7 @@ const mountSidebar = (store, options) => {
   const mod = new Function(
     'React', 'ReactDOM', 'currentSessionId', 'ctx', 'host', 'quoteToComposer', 'basename', 'fileIconKind', 'fallbackCopy',
     'RefreshIcon', 'TreeChevronIcon', 'FolderOpenIcon', 'FolderClosedIcon', 'TreeFileIcon', 'SearchIcon',
-    'ExpandAllIcon', 'CollapseAllIcon', 'CloseIcon', 'window', 'document', 'localStorage', 'navigator', 'console',
+    'ExpandAllIcon', 'CollapseAllIcon', 'CloseIcon', 'PlusIcon', 'window', 'document', 'localStorage', 'navigator', 'console',
     'setTimeout', 'clearTimeout',
     read('src/shared/paths.js') + '\n' + read('src/client/filetree.js') + '\nreturn { FileTree };',
   )(
@@ -277,7 +277,7 @@ const mountSidebar = (store, options) => {
     { get: (n) => (n === 'sessions' ? { list: { subscribe: () => () => {} } } : undefined) },
     host, () => false, (p) => String(p).split(/[/\\]/).pop(), () => 'js', () => {},
     icon('RefreshIcon'), icon('TreeChevronIcon'), icon('FolderOpenIcon'), icon('FolderClosedIcon'),
-    icon('TreeFileIcon'), icon('SearchIcon'), icon('ExpandAllIcon'), icon('CollapseAllIcon'), icon('CloseIcon'),
+    icon('TreeFileIcon'), icon('SearchIcon'), icon('ExpandAllIcon'), icon('CollapseAllIcon'), icon('CloseIcon'), icon('PlusIcon'),
     windowStub,
     { body: bodyStub },
     {
@@ -631,6 +631,254 @@ export const runSidebarTree = async () => {
         throw new Error('the tree changed after a refusal: ' + dt.renderer.texts('artifacts-tree-name').join('|'))
       }
       return 'reason shown, row kept'
+    })
+  }
+
+  // ── 新建: a file and a folder, from the tree ──────────────────────────────
+  // The action has to do four things and they are each a way it can be wrong:
+  // ask the host for a NAME beside a PARENT (never a path), put the input where
+  // the entry will appear, re-read the level afterwards so the row is really
+  // there, and show the host's refusal in the row instead of silently doing
+  // nothing. The last one is why every case below checks the call as well as the
+  // screen.
+  {
+    const fsState = {
+      'D:/ws': [
+        { name: 'src', path: 'D:/ws/src', isDir: true },
+        { name: 'docs', path: 'D:/ws/docs', isDir: true },
+        { name: 'README.md', path: 'D:/ws/README.md', isDir: false },
+        { name: 'taken.md', path: 'D:/ws/taken.md', isDir: false },
+      ],
+      'D:/ws/src': [
+        { name: 'a.js', path: 'D:/ws/src/a.js', isDir: false },
+      ],
+      'D:/ws/docs': [],
+    }
+    const calls = []
+    const listed = []
+    const opened = []
+    const newHost = {
+      call: (method, args) => {
+        if (method === 'artifacts.listDir') {
+          const p = (args && args.path) || ROOT
+          listed.push(p)
+          return Promise.resolve({ ok: true, path: p, entries: fsState[p] || [] })
+        }
+        if (method === 'artifacts.create') {
+          calls.push(args)
+          const parent = args && args.parent
+          const name = args && args.name
+          const path = parent + '/' + name
+          if (name === 'taken.md') return Promise.resolve({ ok: false, error: '已存在同名文件「taken.md」' })
+          // The real host owns the name rules; the fixture mirrors the two the
+          // guard leans on (an existing entry, and a name that is not one path
+          // component) so the tree's handling of a refusal is what is under test.
+          if (/[\\/]/.test(String(name))) return Promise.resolve({ ok: false, error: '名称不能包含路径分隔符（/ 或 \\）' })
+          // A successful create lands in the fixture, so the refresh that follows
+          // actually lists it — otherwise "the row appears" would prove nothing.
+          if (fsState[parent] && !fsState[parent].some((e) => e.name === name)) {
+            fsState[parent] = fsState[parent].concat([{ name: name, path: path, isDir: args.kind === 'dir' }])
+            fsState[path] = []
+          }
+          return Promise.resolve({ ok: true, kind: args.kind === 'dir' ? 'directory' : 'file', path: path, name: name, parent: parent })
+        }
+        return Promise.resolve({ ok: false, error: 'unknown ' + method })
+      },
+    }
+    const nt = mountSidebar({}, { host: newHost })
+    launch.push(nt)
+    await nt.flush(80)
+    nt.renderer.setProps({ onOpen: (path, opts) => opened.push({ path, opts }) })
+    const menuAt = (path) => nt.rowFor(path).props.onContextMenu({
+      clientX: 700, clientY: 300, preventDefault() {}, stopPropagation() {},
+      currentTarget: nt.treeEl, target: nt.treeEl,
+    })
+    const createInput = () => nt.renderer.findAll('artifacts-tree-create')[0]
+    const createRow = () => nt.renderer.findAll('artifacts-tree-createrow')[0]
+    const choose = (label) => {
+      const item = nt.renderer.findAll('artifacts-tree-menu-item').find((el) => nt.renderer.textOf(el) === label)
+      if (!item) throw new Error('no ' + label + ' item, have ' + JSON.stringify(nt.renderer.texts('artifacts-tree-menu-item')))
+      item.props.onClick({ stopPropagation() {} })
+    }
+    const type = async (text) => {
+      const input = createInput()
+      if (!input) throw new Error('no create input is on screen')
+      input.props.onChange({ currentTarget: { value: text } })
+      // A real browser re-renders between the keystroke and the next key: the
+      // Enter handler is the one from the LATEST render, and without this flush
+      // the row would still be holding the name from before the typing.
+      await nt.flush(20)
+    }
+    const enter = async () => {
+      const input = createInput()
+      if (!input) throw new Error('no create input is on screen')
+      input.props.onKeyDown({ key: 'Enter', preventDefault() {}, stopPropagation() {} })
+      await nt.flush(120)
+    }
+
+    menuAt('D:/ws/src')
+    await nt.flush(20)
+    await check('sidebar: the menu offers 新建文件 and 新建文件夹 on a folder', () => {
+      const labels = nt.renderer.texts('artifacts-tree-menu-item')
+      if (labels.indexOf('新建文件') < 0 || labels.indexOf('新建文件夹') < 0) {
+        throw new Error('menu items: ' + JSON.stringify(labels))
+      }
+      return labels.length + ' items, both create verbs present'
+    })
+    choose('新建文件')
+    await nt.flush(30)
+    await check('sidebar: 新建文件 opens an input inside that folder, and calls nothing yet', () => {
+      const row = createRow()
+      if (!row) throw new Error('no create row rendered')
+      const input = createInput()
+      if (!input) throw new Error('no create input rendered')
+      if (calls.length) throw new Error('the host was called before a name was typed: ' + JSON.stringify(calls))
+      // The folder must be OPEN, or the input is inside a collapsed branch.
+      if (nt.open().indexOf('D:/ws/src') < 0) throw new Error('the target folder was not expanded: ' + JSON.stringify(nt.open()))
+      // …and the row sits at the level that will receive the entry (depth 1 under
+      // a top-level folder), which is what makes "where will it go" visible.
+      const depth = Number(nt.renderer.findAll('artifacts-tree-createrow')[0].props['data-depth'])
+      if (depth !== 1) throw new Error('the create row rendered at depth ' + depth)
+      return 'input at depth ' + depth + ' under D:/ws/src'
+    })
+    // The keyboard belongs to the input: an arrow key must not move the tree
+    // cursor while a name is being typed. (The cursor is read off the rendered
+    // rows — it is a class on the row, so this needs no knowledge of the hook
+    // order the component happens to use.)
+    const cursorPath = () => {
+      const row = nt.renderer.findAll('artifacts-tree-row').find((el) => String(el.props.className).indexOf('is-cursor') >= 0)
+      return row ? row.props['data-path'] : null
+    }
+    await check('sidebar: the tree cursor does not move while a name is typed', () => {
+      const before = cursorPath()
+      nt.renderer.findAll('artifacts-tree-body')[0].props.onKeyDown({ key: 'ArrowDown', preventDefault() {}, stopPropagation() {} })
+      if (cursorPath() !== before) throw new Error('the cursor moved while typing: ' + before + ' → ' + cursorPath())
+      return 'cursor stayed on ' + String(before)
+    })
+    await type('notes.md')
+    await enter()
+    await check('sidebar: Enter creates the file beside that parent, re-reads the level, and opens it', () => {
+      if (calls.length !== 1) throw new Error('create calls: ' + JSON.stringify(calls))
+      const call = calls[0]
+      if (call.parent !== 'D:/ws/src' || call.name !== 'notes.md' || call.kind !== 'file') {
+        throw new Error('the create request was ' + JSON.stringify(call))
+      }
+      // A name beside a parent, never a path: the host is the one that joins them.
+      if (String(call.name).indexOf('/') >= 0 || String(call.name).indexOf('\\') >= 0) {
+        throw new Error('a path was sent where a name belongs: ' + JSON.stringify(call.name))
+      }
+      if (call.sessionId !== 's1') throw new Error('the seat session did not travel: ' + JSON.stringify(call))
+      if (createRow()) throw new Error('the input row stayed on screen after a successful create')
+      if (listed.lastIndexOf('D:/ws/src') < 0) throw new Error('the parent level was not re-read: ' + JSON.stringify(listed))
+      if (nt.renderer.texts('artifacts-tree-name').indexOf('notes.md') < 0) {
+        throw new Error('the new file is not in the tree: ' + nt.renderer.texts('artifacts-tree-name').join('|'))
+      }
+      // A freshly created file is empty, so it is opened for EDITING (the caller
+      // decides what created:true means) instead of left as a blank preview.
+      if (!opened.length || opened[0].path !== 'D:/ws/src/notes.md' || !(opened[0].opts && opened[0].opts.created)) {
+        throw new Error('the new file was not opened as created: ' + JSON.stringify(opened))
+      }
+      return 'notes.md created under D:/ws/src, opened for editing'
+    })
+
+    // A folder: created, expanded, and NOT opened as a document.
+    const openedBefore = opened.length
+    menuAt('D:/ws/src')
+    await nt.flush(20)
+    choose('新建文件夹')
+    await nt.flush(30)
+    await type('assets')
+    await enter()
+    await check('sidebar: 新建文件夹 creates and opens the folder, without opening a document', () => {
+      const call = calls[calls.length - 1]
+      if (call.parent !== 'D:/ws/src' || call.name !== 'assets' || call.kind !== 'dir') {
+        throw new Error('the folder request was ' + JSON.stringify(call))
+      }
+      if (opened.length !== openedBefore) throw new Error('creating a folder opened a document: ' + JSON.stringify(opened.slice(openedBefore)))
+      if (nt.renderer.texts('artifacts-tree-name').indexOf('assets') < 0) throw new Error('the new folder is not in the tree')
+      return 'assets created (not opened as a document)'
+    })
+
+    // ── a name the host refuses keeps the row and shows why ────────────────
+    // Right-clicking a FILE creates a SIBLING — the root level here — which is
+    // also the case that proves the row is drawn at the level that will receive
+    // it rather than under the row that was clicked.
+    menuAt('D:/ws/taken.md')
+    await nt.flush(20)
+    await check('sidebar: a file offers the sibling verbs', () => {
+      const labels = nt.renderer.texts('artifacts-tree-menu-item')
+      if (labels.indexOf('新建同级文件') < 0 || labels.indexOf('新建同级文件夹') < 0) {
+        throw new Error('menu items: ' + JSON.stringify(labels))
+      }
+      return '新建同级文件 / 新建同级文件夹'
+    })
+    choose('新建同级文件')
+    await nt.flush(30)
+    await type('taken.md')
+    await enter()
+    await check('sidebar: a refused name keeps the input row and shows the host\'s reason', () => {
+      const row = createRow()
+      if (!row) throw new Error('the input row closed on a refusal — the name is gone')
+      const text = nt.renderer.texts('artifacts-tree-create-error').join(' ')
+      if (text.indexOf('已存在同名文件') < 0) throw new Error('the reason was not shown: ' + JSON.stringify(text))
+      const input = createInput()
+      if (!input || input.props.value !== 'taken.md') throw new Error('the typed name was lost: ' + JSON.stringify(input && input.props.value))
+      if (String(row.props['data-depth']) !== '0') throw new Error('a sibling was created at depth ' + row.props['data-depth'])
+      return 'row kept at the sibling level with 「' + text + '」'
+    })
+    // A name the host refuses for a filesystem reason (a separator is not a name
+    // on any platform) shows the host's sentence too: the client does not keep a
+    // second copy of the rules to disagree with.
+    await type('nested/name.md')
+    await enter()
+    await check('sidebar: a separator in the name is refused, and said so', () => {
+      const text = nt.renderer.texts('artifacts-tree-create-error').join(' ')
+      if (text.indexOf('路径分隔符') < 0) throw new Error('the host\'s reason was not shown: ' + JSON.stringify(text))
+      if (!createRow()) throw new Error('the row closed on a refusal')
+      return 'refused with 「' + text + '」'
+    })
+    // Escape backs out: the row goes and nothing is created.
+    const callsBeforeEscape = calls.length
+    nt.renderer.findAll('artifacts-tree-create')[0].props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await nt.flush(30)
+    await check('sidebar: Escape closes the create row and calls nothing', () => {
+      if (createRow()) throw new Error('the row stayed after Escape')
+      if (calls.length !== callsBeforeEscape) throw new Error('Escape created something: ' + JSON.stringify(calls.slice(callsBeforeEscape)))
+      return 'closed, nothing created'
+    })
+
+    // ── the + button: the same two verbs, aimed at the cursor's directory ───
+    // The + has no row of its own, so it acts on whatever the tree is pointing
+    // at — here the keyboard cursor, put on a top-level folder first.
+    nt.clickRow('D:/ws/docs', 1)
+    await nt.flush(30)
+    const newBtn = nt.renderer.findByTitle('新建文件 / 文件夹（在选中的目录里；没选中就是工作区根目录）')[0]
+    if (!newBtn) throw new Error('no 新建 toolbar button')
+    newBtn.props.onClick({
+      preventDefault() {}, stopPropagation() {},
+      currentTarget: { getBoundingClientRect: () => ({ left: 1600, top: 20, bottom: 42, width: 22, height: 22 }) },
+    })
+    await nt.flush(20)
+    await check('sidebar: the + button opens a two-verb menu', () => {
+      const labels = nt.renderer.texts('artifacts-tree-menu-item')
+      if (labels.join('|') !== '新建文件|新建文件夹') throw new Error('the + menu listed ' + JSON.stringify(labels))
+      return 'two verbs, aimed at the cursored folder'
+    })
+    choose('新建文件夹')
+    await nt.flush(30)
+    const plusRow = createRow()
+    if (!plusRow) throw new Error('no input row after the + menu')
+    await check('sidebar: the + menu puts its input at the level that will receive the entry', () => {
+      return '+ menu input at depth ' + String(plusRow.props['data-depth'])
+    })
+    await type('fromButton')
+    await enter()
+    await check('sidebar: the + button created inside the cursored folder', () => {
+      const call = calls[calls.length - 1] || {}
+      if (call.parent !== 'D:/ws/docs' || call.name !== 'fromButton' || call.kind !== 'dir') {
+        throw new Error('the + create request was ' + JSON.stringify(call))
+      }
+      return 'fromButton created under D:/ws/docs'
     })
   }
 

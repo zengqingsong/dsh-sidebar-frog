@@ -22,6 +22,15 @@
 
     const EDITABLE_TYPES = { markdown: 1, text: 1, table: 1 }
 
+    // Which file currently has an editor, and how to put it on a line. One slot is
+    // enough because one file is previewed at a time, and it exists because the
+    // verb cannot ride props: the preview a pane renders is the CALLER's element
+    // (wrapped in .artifacts-preview-body), so cloning it would decorate the
+    // wrapper rather than the Markdown view inside it. The preview asks whether an
+    // editor exists for its own path — that answer is what decides whether a 定位
+    // button is drawn at all, instead of drawing one that can do nothing.
+    const editorLocator = { path: '', locate: null }
+
     // A host that predates the `editable` field answers `truncated` only, and
     // that inference is the safe one to fall back to.
     const canEditRead = (p) => (p.editable === undefined ? !p.truncated : !!p.editable)
@@ -108,7 +117,22 @@
     const EditorPane = (props) => {
       const path = props.path || ''
       const editable = props.editable === true
-      const [mode, setMode] = React.useState('view')
+      // The session a save belongs to. It rides a prop because this pane is
+      // mounted in TWO places: the panel (where the seat's own session is the
+      // right one) and the shell's document tab, whose body is handed a
+      // session-scoped address and nothing else — there `currentSessionId()` is a
+      // guess, and a save fenced to the wrong workspace is refused with a
+      // confusing reason.
+      const sessionId = props.sessionId || ''
+      // The editor's line-number column is a live preference (see the effect
+      // below): reading it here keeps the hook call in the component body, and
+      // the subscription is what re-renders when the switch moves.
+      const settings = useSettings()
+      // 新建文件 opens its editor straight away: a file that was just created is
+      // empty, so a preview of it is a blank page. Only the INITIAL mode — the
+      // 预览/编辑 toggle still belongs to the person, and an uneditable file falls
+      // back to 预览 through the effect below.
+      const [mode, setMode] = React.useState(props.initialMode === 'edit' ? 'edit' : 'view')
       const [boot, setBoot] = React.useState('idle')
       const [dirty, setDirty] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
@@ -126,6 +150,10 @@
       // CURRENT state (busy flag, latest loaded revision) instead of at whatever
       // those were when the editor was built.
       const saveRef = React.useRef(null)
+      // Lines the preview asked us to open. The editor does not exist yet when
+      // the request arrives (entering edit mode is what creates it), so the
+      // request is parked here and applied once the controller is ready.
+      const pendingReveal = React.useRef(null)
 
       // Leaving the file (or losing editability — a re-read that came back
       // un-editable, whether because it is too big to save or because the read
@@ -134,6 +162,18 @@
       React.useEffect(() => {
         if (!editable && mode === 'edit') setMode('view')
       }, [editable, mode])
+
+      // 设置 › 编辑器显示行号, applied to a RUNNING editor through CodeMirror's
+      // compartment: the document, the cursor, the undo history and any unsaved
+      // draft all survive a flip, where a remount would lose the last two. `boot`
+      // is in the deps because the controller does not exist until the CodeMirror
+      // chunk has loaded — without it, a flip during that window would be lost.
+      React.useEffect(() => {
+        const ctrl = ctrlRef.current
+        if (ctrl && typeof ctrl.setLineNumbers === 'function') {
+          ctrl.setLineNumbers(settings.editorLineNumbers !== false)
+        }
+      }, [settings.editorLineNumbers, boot, mode])
 
       React.useEffect(() => {
         if (mode === 'view') return undefined
@@ -150,6 +190,10 @@
           path: path,
           value: initial,
           dark: isDarkScheme(),
+          // 设置 › 编辑器显示行号, read at mount and re-applied below when it
+          // changes. The panel and the popout mount this same controller, so the
+          // preference reaches both faces from one place.
+          lineNumbers: settings.editorLineNumbers !== false,
           onChange: () => { dirtyRef.current = true; writer.touch() },
           onDirty: (isDirty) => {
             dirtyRef.current = isDirty
@@ -171,6 +215,14 @@
           setBoot('ready')
           setDirty(ctrl.isDirty())
           ctrl.focus()
+          // A 定位 that arrived while the editor was booting: the reader asked
+          // for these lines, so arriving without them selected would look like
+          // the button did nothing.
+          if (pendingReveal.current) {
+            const want = pendingReveal.current
+            pendingReveal.current = null
+            ctrl.revealLines(want.start, want.end)
+          }
         })
         return () => {
           alive = false
@@ -200,6 +252,26 @@
         ? { message: '磁盘上的文件已被改动，你正在编辑的是较早的版本', version: props.baseVersion, size: props.baseSize }
         : null)
 
+      // 定位: enter edit mode and select those source lines. Called from the
+      // rendered preview's selection bar, which is a CHILD of this pane — the
+      // editor is the only thing that knows how to show a line, so it hands the
+      // verb down rather than the preview reaching for it.
+      React.useEffect(() => () => {
+        if (editorLocator.locate === locateLines) { editorLocator.path = ''; editorLocator.locate = null }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [path])
+
+      const locateLines = (start, end) => {
+        if (!editable) return
+        pendingReveal.current = { start: start, end: end }
+        if (mode === 'edit' && ctrlRef.current) {
+          pendingReveal.current = null
+          ctrlRef.current.revealLines(start, end)
+          return
+        }
+        setMode('edit')
+      }
+
       const saveNow = (force) => {
         const ctrl = ctrlRef.current
         if (!ctrl || busy) return
@@ -210,7 +282,7 @@
         host.call('artifacts.save', {
           path: path,
           content: text,
-          sessionId: currentSessionId(),
+          sessionId: sessionId || currentSessionId(),
           baseVersion: loaded && loaded.version ? loaded.version : undefined,
           baseSize: loaded && typeof loaded.size === 'number' ? loaded.size : undefined,
           force: !!force,
@@ -280,6 +352,15 @@
       // disabled buttons — a control that cannot do anything is noise.
       if (!editable) return props.children || null
 
+      // The preview is offered the 定位 verb through the registry: it is built by
+      // the caller (src/client/components.js wraps it in .artifacts-preview-body),
+      // so cloning the child here would decorate that wrapper and the Markdown
+      // view inside it would never see it. Publishing during render is the same
+      // pattern this component already uses for saveRef.
+      editorLocator.path = path
+      editorLocator.locate = locateLines
+      const preview = props.children || null
+
       const bar = React.createElement('div', { className: 'artifacts-edbar' },
         React.createElement('div', { className: 'artifacts-edbar-group' },
           React.createElement('button', {
@@ -345,6 +426,6 @@
             boot === 'loading' ? React.createElement('div', { className: 'artifacts-edhint' }, '正在载入编辑器（CodeMirror 604 KB，仅首次）…') : null,
             boot === 'failed' ? React.createElement('div', { className: 'artifacts-error' }, '编辑器组件未能载入（/dsh-sidebar-frog/codemirror/codemirror.min.js）。请刷新页面重试，或改用系统编辑器打开。') : null,
           )
-          : (props.children || null),
+          : preview,
       )
     }

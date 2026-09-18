@@ -7,3 +7,4 @@ node_modules/
 # listens on port 3080 and restarts the service in this directory, so it is a
 # footgun in somebody else's checkout — keep it out of the published tree.
 /start-dsh.bat
+/.codebuddy

@@ -156,6 +156,42 @@
           res.end(JSON.stringify(out))
         },
       }), 'artifacts: remove route')
+      // 新建: create one empty file or one folder inside a directory of the
+      // workspace. POST with a JSON body {parent, name, kind, sessionId} — a
+      // mutation, so it travels in a body for the same reason 删除 and 保存 do,
+      // and it sits behind the identical cookie guard.
+      //
+      // The body carries a PARENT + a NAME, not a path: the host validates the
+      // name, joins it and fences the result to the session workspace (see
+      // createEntry in core.js). The response is always JSON, so a refusal —
+      // a name Windows will not take, an entry that already exists, a directory
+      // outside the workspace — is a sentence the tree shows next to the input.
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/dsh-sidebar-frog/create',
+        handler: async (req, res) => {
+          if (rejectRequest(req, res)) return
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+            return
+          }
+          let body
+          try { body = await readJsonBody(req) } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: e && e.message ? String(e.message) : 'bad request' }))
+            return
+          }
+          const out = await createEntry({
+            parent: body && body.parent,
+            name: body && body.name,
+            kind: body && body.kind,
+            sessionId: body && body.sessionId,
+          })
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify(out))
+        },
+      }), 'artifacts: create route')
       // Delete a file or folder from DISK (the file tree's 删除). POST with a JSON
       // body {path, sessionId} — a mutation, so the parameters travel in a body
       // rather than in a URL that ends up in logs, and the route sits behind the

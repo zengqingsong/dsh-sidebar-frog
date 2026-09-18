@@ -229,9 +229,36 @@
       } catch (e) { return '' }
     }
 
+    // A text payload the editor may safely write back.
+    //
+    // The seat hands a PAGE, not a file: `offset` is the 1-based first line and
+    // `eof` says whether the last line is included. Editing a page and saving it
+    // would replace the whole file with that page — the one failure worse than
+    // not offering an editor at all. So the gate is the whole file, and the
+    // version/size the seat reported ride along as the save's conflict basis.
+    const textEditability = (content) => {
+      if (!content || content.kind !== 'text') return null
+      if (Number(content.offset) !== 1 || content.eof !== true) return null
+      const bytes = typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null
+      // The host refuses a save past its own text ceiling; saying so here keeps
+      // the toolbar from appearing on a file that could only fail on Ctrl+S.
+      if (bytes !== null && bytes > 4 * 1024 * 1024) return null
+      return {
+        version: typeof content.version === 'string' && content.version ? content.version : null,
+        size: bytes,
+      }
+    }
+
     // The body itself: whatever the owner accumulated, drawn by the SAME
     // MarkdownView the panel uses — math, diagrams and interactive geometry
     // included, since it is one renderer, not a second one that can drift.
+    //
+    // It is wrapped in the panel's EditorPane, so the shell's document tab has
+    // the same 预览/编辑 toggle, the same drafts and the same save (with the same
+    // conflict refusal) as the panel's own file tabs — the sidebar is where files
+    // are actually opened, and a reader that can only look at a text file is half
+    // a reader. A page-shaped payload gets no toolbar at all (see
+    // textEditability).
     //
     // `scrollportRef` is deliberately NOT reported. It exists so a renderer that
     // owns a scroller can hand its own element over; this body lays its content
@@ -244,29 +271,53 @@
       if (content == null) {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
+      const path = pathFromFileAddress(p.resourceAddress)
+      const session = sessionFromFileAddress(p.resourceAddress)
+      const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(MarkdownView, {
-      content,
-      path: pathFromFileAddress(p.resourceAddress),
-      // The address IS session-scoped, so the session that owns the tab is in
-      // the only thing this body was handed — and a document-relative image in a
-      // file opened that way needs it (see mdMedia).
-      sessionId: sessionFromFileAddress(p.resourceAddress),
-    }),
+        React.createElement(EditorPane, {
+          path: path,
+          editable: !!edit,
+          sessionId: session,
+          content: content,
+          baseVersion: edit ? edit.version : null,
+          baseSize: edit ? edit.size : null,
+        },
+          React.createElement(MarkdownView, {
+            content,
+            path: path,
+            // The address IS session-scoped, so the session that owns the tab is
+            // in the only thing this body was handed — and a document-relative
+            // image in a file opened that way needs it (see mdMedia).
+            sessionId: session,
+          }),
+        ),
       )
     }
 
     // The table body: the owner's accumulated text, drawn by the SAME TableView
     // the panel uses — one parser (src/shared/table.js) and one view, so the
-    // shell's sidebar and this plugin's panel cannot disagree about a file.
+    // shell's sidebar and this plugin's panel cannot disagree about a file. It
+    // carries the editor for the same reason the Markdown body does.
     const TableDocumentBody = (props) => {
       const p = props || {}
       const content = p.content && p.content.kind === 'text' ? String(p.content.text == null ? '' : p.content.text) : null
       if (content == null) {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
+      const path = pathFromFileAddress(p.resourceAddress)
+      const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
-        React.createElement(TableView, { content, path: pathFromFileAddress(p.resourceAddress) }),
+        React.createElement(EditorPane, {
+          path: path,
+          editable: !!edit,
+          sessionId: sessionFromFileAddress(p.resourceAddress),
+          content: content,
+          baseVersion: edit ? edit.version : null,
+          baseSize: edit ? edit.size : null,
+        },
+          React.createElement(TableView, { content, path: path }),
+        ),
       )
     }
 

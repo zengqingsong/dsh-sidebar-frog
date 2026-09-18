@@ -347,13 +347,21 @@
       const mdSession = props.sessionId || currentSessionId()
       // The chosen skin is a SETTING, and the view re-renders when it changes:
       // the class on the root is what selects its rules, so a switch repaints
-      // immediately instead of needing a reload.
-      const skin = useSettings().markdownSkin
+      // immediately instead of needing a reload. The line-number gutter is the
+      // same shape of thing — a class the stylesheet keys off — and it reads its
+      // value out of data-lineno, which the render below already stamps on every
+      // block (see mdAnchor and .artifacts-markdown.is-lines in styles.js).
+      const st = useSettings()
+      const skin = st.markdownSkin
+      const showLines = !!st.previewLineNumbers
       React.useEffect(() => {
         const node = ref.current
         if (!node) return
         // opts.path lets relative image/svg links resolve next to the doc.
-        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession })
+        // lineAnchors stamps every block with the source line it came from, which
+        // is what the selection bar below reads (see mdAnchor in
+        // src/shared/markdown.js). Only the reader surfaces ask for them.
+        node.innerHTML = mdToHtml(content, { path: mdPath, sessionId: mdSession, lineAnchors: true })
         let alive = true
         renderMermaidIn(node)
         renderJSXGraphIn(node)
@@ -362,9 +370,37 @@
           if (ref.current !== node) return
           mj.typesetPromise([node]).catch(() => {})
         })
-        return () => { alive = false }
-      }, [content, mdPath, mdSession, skin])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) })
+        // Select text in the rendered document and this bar names the source
+        // lines it came from, quotes them, or opens them in the editor beside it.
+        const disposeBar = attachMarkdownSelectionBar({
+          root: node,
+          path: mdPath,
+          // The quote is taken from the SOURCE, not from the selection: what the
+          // request shows and what its locator claims must be the same lines.
+          text: content,
+          onQuote: (payload, range) => {
+            const where = range.start === range.end ? range.start + ' 行' : range.start + '-' + range.end + ' 行'
+            if (quoteTextToComposer(payload)) noticeStore.flash('已插入输入框（第 ' + where + '）')
+            else copyToClipboard(payload, '已复制引用（第 ' + where + '，未能写入输入框）')
+          },
+          // Only when something can actually act on it: this file's editor
+          // publishes itself in src/client/editor.js while it is mounted, and the
+          // shell's read-only document tab never does — a 定位 button there would
+          // do nothing at all.
+          onLocate: editorLocator.path === mdPath && typeof editorLocator.locate === 'function'
+            ? (start, end) => editorLocator.locate(start, end)
+            : null,
+        })
+        return () => {
+          alive = false
+          disposeBar()
+        }
+        // editorLocator is a render-time registry, not a prop: if the editor for
+        // this file mounts after the preview (or leaves), the dep below cannot
+        // see it, so the bar is rebuilt on the next content/skin change and the
+        // button set follows the editor within one interaction.
+      }, [content, mdPath, mdSession, skin, showLines, props.editable])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + (showLines ? ' is-lines' : '') })
     }
 
     const PdfView = (props) => {

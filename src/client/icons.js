@@ -110,6 +110,14 @@
       React.createElement('path', { d: 'M10.2 10.2 L13.6 13.6', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
     )
 
+    // 新建: the tree header's plus. It opens the two create verbs rather than
+    // guessing a kind, which is why it is a plus and not a "new file" glyph.
+    const PlusIcon = (size) => React.createElement('svg', {
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
+    },
+      React.createElement('path', { d: 'M8 3.2 V12.8 M3.2 8 H12.8', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' }),
+    )
+
     const CloseIcon = (size) => React.createElement('svg', {
       width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true,
     }, React.createElement('path', {

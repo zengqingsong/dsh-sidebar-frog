@@ -51,6 +51,22 @@ var DEFAULT_SETTINGS = {
   // dark alike. Applied to the panel, the shell's own document tab and the popout
   // page from this one value; see markdownSkinClass.
   markdownSkin: 'default',
+  // Show each block's SOURCE line in a gutter down the left edge of a rendered
+  // document — the answer to "which line is this?" without leaving the reader.
+  // The numbers come from the anchors the renderer already stamps on every block
+  // (data-lineno, see mdAnchor in src/shared/markdown.js), so they are the file's
+  // real line numbers and not a count of drawn rows.
+  //
+  // Off by default: it is chrome added around a document, and a reader who wants
+  // the text alone should get the text alone. The EDITOR's gutter is a separate
+  // switch (editorLineNumbers) so the two can be had independently — which is the
+  // point of asking for two settings instead of one.
+  previewLineNumbers: false,
+  // CodeMirror's own line-number column, in the panel's editor and the popout
+  // page's alike (both mount the same controller — src/shared/editor.js).
+  // On by default: it is the editor's own convention, and switching it off buys
+  // the width back on a narrow panel.
+  editorLineNumbers: true,
 };
 
 var SETTINGS_RANGES = {

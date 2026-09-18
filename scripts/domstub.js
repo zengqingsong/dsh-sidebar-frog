@@ -85,6 +85,12 @@ class Node {
     this.disabled = false
   }
   get nodeType() { return 1 }
+  // The standard DOM accessor a shared helper reaches for to find the document
+  // it belongs to (src/shared/markdown.js uses it so the same code works in the
+  // panel and in the popout page). The stub kept the document on `doc` only,
+  // which silently made such a helper a no-op here.
+  get ownerDocument() { return this.doc }
+  get defaultView() { return this.doc && this.doc.defaultView ? this.doc.defaultView : null }
   get firstChild() { return this.children[0] || null }
   get lastChild() { return this.children[this.children.length - 1] || null }
   get childNodes() { return this.children }

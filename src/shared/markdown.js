@@ -106,9 +106,10 @@ var BLOCK_HTML_TAGS = {
 // engine on the cases it already handles (width media queries, image formats).
 // Anything else inside is escaped: a <picture> holds sources and an image, so
 // stray text or markup is not silently swallowed.
-function renderPicture(block, opts) {
+function renderPicture(block, opts, startLine, endLine) {
   var open = /<picture((?:\s[^>]*)?)\s*>/i.exec(block);
-  var opener = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+  var rawOpen = sanitizeHtmlTag('<picture' + (open ? (open[1] || '') : '') + '>', opts);
+  var opener = startLine ? mdTag(opts, rawOpen, startLine, endLine) : rawOpen;
   var afterOpen = open ? block.slice(open.index + open[0].length) : block;
   var closeAt = afterOpen.toLowerCase().lastIndexOf('</picture');
   var inner = closeAt >= 0 ? afterOpen.slice(0, closeAt) : afterOpen;
@@ -154,18 +155,21 @@ function gatherBlockHtml(line, i, lines, tag) {
 var INLINE_BLOCK_TAGS = { summary: 1, p: 1, li: 1, dt: 1, dd: 1, figcaption: 1, th: 1, td: 1 };
 // <tr>: render each <th>/<td> cell separately (Markdown inside every cell),
 // keeping the row structure verbatim.
-function renderTr(block, opts) {
+function renderTr(block, opts, startLine) {
   var reClose = /<\/tr\b[^>]*>/i;
   var cIdx = block.lastIndexOf('</tr');
   var inner = cIdx >= 0 ? block.slice(0, cIdx) : block;
   var closeTag = (block.match(reClose) || ['</tr>'])[0];
   var out = [];
+  // The row's own <tr> is emitted by renderBlockHtml, not here; the cells carry
+  // the row's line so that a selection inside a cell still resolves to it.
+  var cellLine = startLine || 0;
   var reCell = /<(th|td)((?:\s[^>]*)?)\s*>[\s\S]*?<\/\1\s*>/gi;
   var m;
   var last = 0;
   while ((m = reCell.exec(inner))) {
     if (m.index > last) out.push(htmlEscape(inner.slice(last, m.index)));
-    var cellAttr = sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>');
+    var cellAttr = mdTag(opts, sanitizeHtmlTag('<' + m[1] + (m[2] || '') + '>'), cellLine);
     var cellText = m[0].slice(m[0].indexOf('>') + 1, m[0].lastIndexOf('</'));
     cellText = cellText.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
     out.push(cellAttr + mdInline(mdEscape(cellText, opts), opts) + '</' + m[1] + '>');
@@ -183,9 +187,14 @@ function renderTr(block, opts) {
 //   - everything else (details, div, figure, ul, ol, dl, table, thead, tbody,
 //     tfoot): the inner source is a mini Markdown document, re-rendered via
 //     mdToHtml — lists, math, nested blocks, fences all work inside
-function renderBlockHtml(block, tag, opts) {
+function renderBlockHtml(block, tag, opts, startLine, nextLine) {
   var m = new RegExp('<' + tag + '((?:\\s[^>]*)?)\\s*>', 'i').exec(block);
   var openTag = sanitizeHtmlTag(m ? ('<' + tag + (m[1] || '') + '>') : ('<' + tag + '>'));
+  // The block's span is known to the caller (gatherBlockHtml counted the lines),
+  // so the opener carries it; the INNER render only needs to know where the
+  // source it was handed begins.
+  var span = mdAnchor(opts, startLine || 0, nextLine || 0);
+  if (span) openTag = openTag.slice(0, -1) + span + '>';
   var reClose = new RegExp('</' + tag + '\\b[^>]*>', 'i');
   var closeMatch = block.match(reClose);
   var closeTag = closeMatch ? closeMatch[0] : '</' + tag + '>';
@@ -195,13 +204,16 @@ function renderBlockHtml(block, tag, opts) {
     var cIdx = closeMatch ? block.lastIndexOf(closeTag) : -1;
     inner = cIdx >= openLen ? block.slice(openLen, cIdx) : block.slice(openLen);
   }
-  if (tag === 'tr') return renderTr(block, opts);
-  if (tag === 'picture') return renderPicture(block, opts);
+  if (tag === 'tr') return renderTr(block, opts, startLine);
+  if (tag === 'picture') return renderPicture(block, opts, startLine, nextLine);
   if (INLINE_BLOCK_TAGS[tag]) {
     var text = inner.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
     return openTag + mdInline(mdEscape(text, opts), opts) + closeTag;
   }
-  return openTag + mdToHtml(inner, opts) + closeTag;
+  // What follows the opening tag on its own line is inner line 1, so the offset
+  // is the opener's line MINUS one: inner line k is source line startLine+k-1.
+  var innerOpts = Object.assign({}, opts, { lineOffset: (opts.lineOffset || 0) + (startLine || 1) - 1 });
+  return openTag + mdToHtml(inner, innerOpts) + closeTag;
 }
 
 function mdEscape(s, opts) {
@@ -316,9 +328,9 @@ function mdRebaseSrcset(value, opts) {
     return m[1] + mdMedia(m[2], opts) + m[3];
   }).join(',');
 }
-function mdCell(src, tag, align, opts) {
+function mdCell(src, tag, align, opts, startLine) {
   var st = align ? ' style="text-align:' + align + '"' : '';
-  return '<' + tag + st + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
+  return '<' + tag + st + mdAnchor(opts, startLine || 0) + '>' + mdInline(mdEscape(String(src).trim(), opts), opts) + '</' + tag + '>';
 }
 
 // ── Inline pass ─────────────────────────────────────────────────────────
@@ -420,12 +432,39 @@ function mdListBlock(lines, start, opts) {
   var html = ['<' + tag + (tag === 'ol' && first.number !== 1 ? ' start="' + first.number + '"' : '') + '>'];
   var open = false;
   var i = start;
-  var item = function (body) {
+  // Where the open item started, so its <li> can carry a span once the item's
+  // last line (a wrapped line, a nested list, a second block) is known. The
+  // span is closed when the NEXT item opens, which is the only point at which
+  // "the end of this item" is known at all.
+  var itemLine = 0;
+  var itemIndex = -1;
+  var closeItem = function (endLine) {
+    if (!open) return;
+    var end = endLine || itemLine;
+    if (end > itemLine && itemIndex >= 0 && typeof html[itemIndex] === 'string') {
+      // The opener was pushed with data-line only (the end was unknown then), so
+      // the full span replaces it: strip ALL THREE anchor attributes — the range
+      // pair and the label — and splice in the pair. Stripping only the range
+      // would leave the element with a stale label beside the new one, and the
+      // browser reads the FIRST of two data-lineno attributes: the reader's gutter
+      // would draw "6" for an item that spans 6-7.
+      var span = mdAnchor(opts, itemLine, end);
+      html[itemIndex] = html[itemIndex].replace(/ data-(?:line|line-end|lineno)="[^"]*"/g, '').replace('>', span + '>');
+    }
+    html.push('</li>');
+    open = false;
+  };
+  var item = function (body, lineNo) {
+    itemLine = lineNo;
     var task = /^\[([ xX])\][ \t]?([\s\S]*)$/.exec(body);
+    // The mdEscape here used to be called WITHOUT opts, so a task item holding
+    // an image kept a document-relative src that never got rebased onto the
+    // media route (the plain item below always passed them).
+    itemIndex = html.length;
     if (task) {
-      html.push('<li class="task-list-item"><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2]), opts));
+      html.push('<li class="task-list-item"' + mdAnchor(opts, lineNo) + '><input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(mdEscape(task[2], opts), opts));
     } else {
-      html.push('<li>' + mdInline(mdEscape(body, opts), opts));
+      html.push('<li' + mdAnchor(opts, lineNo) + '>' + mdInline(mdEscape(body, opts), opts));
     }
     open = true;
   };
@@ -439,8 +478,8 @@ function mdListBlock(lines, start, opts) {
     var mark = mdListMarker(lines[i]);
     if (mark && mark.indent === base) {
       if ((mark.ordered ? 'ol' : 'ul') !== tag) break;
-      if (open) html.push('</li>');
-      item(mark.body);
+      if (open) closeItem(i);
+      item(mark.body, i + 1);
       i += 1;
       continue;
     }
@@ -464,8 +503,12 @@ function mdListBlock(lines, start, opts) {
     if (open && lines[i].search(/\S/) > base) { continuation(lines[i]); i += 1; continue; }
     break;
   }
-  if (open) html.push('</li>');
+  if (open) closeItem(i);
   html.push('</' + tag + '>');
+  // The list element carries the whole list's span; each li carries its own, so
+  // selecting one item resolves to that item and not to the list.
+  var listSpan = mdAnchor(opts, start + 1, i);
+  if (listSpan) html[0] = html[0].slice(0, -1) + listSpan + '>';
   return { html: html.join(''), next: i };
 }
 
@@ -484,6 +527,16 @@ function mdToHtml(src, opts) {
     // The chosen document skin (see src/shared/skins.js): the class the Markdown
     // root carries, so a skin is pure CSS and costs the renderer nothing.
     skin: opts.skin || '',
+    // Source-line anchors are OPT-IN. The reader surfaces ask for them (the
+    // panel, the shell's document tab, the popout page) because they are what
+    // turns "the paragraph I selected" into "lines 12-14 of this file"; every
+    // other caller keeps the plain shapes it has always produced, so nothing
+    // about the rendered document moves for a caller that did not ask.
+    lineAnchors: opts.lineAnchors === true,
+    // Added to every anchored line number. Nested renders (a blockquote inside a
+    // details, an item inside a list) are handed a slice of the source, so their
+    // own line 1 is not the document's line 1.
+    lineOffset: opts.lineOffset || 0,
   };
   var lines = String(src || '').replace(/\r\n/g, '\n').split('\n');
   var out = [];
@@ -492,6 +545,7 @@ function mdToHtml(src, opts) {
     var line = lines[i];
     var fenceOpen = /^\s*(\x60{3,}|~{3,})([\w+-]*)/.exec(line);
     if (fenceOpen) {
+      var fenceStart = i + 1;
       var fenceCh = fenceOpen[1].charAt(0);
       var langHint = fenceOpen[2];
       // Only the fence character that opened the block closes it: a tilde
@@ -500,20 +554,27 @@ function mdToHtml(src, opts) {
       var buf = [];
       i += 1;
       while (i < lines.length && !fenceClose.test(lines[i])) { buf.push(lines[i]); i += 1; }
+      var fenceEnd = (i < lines.length ? i : i - 1) + 1;
       i += 1;
       var codeText = buf.join('\n');
+      // The whole fence is one anchored block. Its lines are NOT anchored
+      // individually: the highlighted HTML is produced by highlightCode, whose
+      // multi-line tokens would be cut in half by a per-line wrapper, and a
+      // document that copies badly is worse than one that quotes a few lines too
+      // many. Selecting inside a fence resolves to the fence.
+      var fenceAnchor = mdAnchor(mdOpts, fenceStart, fenceEnd);
       if (langHint === 'mermaid') {
         // Keep the diagram source verbatim inside a .mermaid container; the
         // renderer replaces it with Mermaid's SVG. tex2jax_ignore keeps the
         // MathJax pass from reading '$'-looking text inside diagram labels.
-        out.push('<div class="mermaid tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+        out.push('<div class="mermaid tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
       } else if (langHint === 'jsxgraph') {
         // Keep the JSXGraph script verbatim inside a .jsxgraph container; the
         // renderer later runs it (with the generated board id in scope) to
         // build an interactive board. Same MathJax ignore rationale.
-        out.push('<div class="jsxgraph tex2jax_ignore">' + htmlEscape(codeText) + '</div>');
+        out.push('<div class="jsxgraph tex2jax_ignore"' + fenceAnchor + '>' + htmlEscape(codeText) + '</div>');
       } else {
-        out.push('<pre><code>' + highlightCode(codeText, langHint) + '</code></pre>');
+        out.push('<pre' + fenceAnchor + '><code>' + highlightCode(codeText, langHint) + '</code></pre>');
       }
       continue;
     }
@@ -524,6 +585,7 @@ function mdToHtml(src, opts) {
     // MathJax can typeset as a single $$...$$ block. Newlines inside the
     // formula are collapsed to spaces — TeX treats them as whitespace.
     if (/^\s*\$\$/.test(line)) {
+      var mathStart = i + 1;
       var rest = line.replace(/^\s*\$\$/, '');
       var closeIdx = rest.indexOf('$$');
       var parts = [];
@@ -542,11 +604,12 @@ function mdToHtml(src, opts) {
         }
       }
       var mathBody = parts.join('\n').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-      out.push('<div class="math-display">' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
+      out.push('<div class="math-display"' + mdAnchor(mdOpts, mathStart, i) + '>' + mdEscape('$$' + mathBody + '$$', mdOpts) + '</div>');
       continue;
     }
     // Standalone SVG block: gather until the closing tag, then emit sanitized.
     if (/^\s*<svg/i.test(line)) {
+      var svgStart = i + 1;
       var svgBuf = [line];
       var closed = /<\/svg>/i.test(line);
       while (!closed && i + 1 < lines.length) {
@@ -554,7 +617,13 @@ function mdToHtml(src, opts) {
         svgBuf.push(lines[i]);
         closed = /<\/svg>/i.test(lines[i]);
       }
-      out.push(sanitizeSvg(svgBuf.join('\n')));
+      var svgEnd = i + 1;
+      // The sanitized SVG is emitted as-is; the anchor rides on a wrapper so the
+      // svg element itself is untouched (a bare <svg> with an extra attribute
+      // would be a second thing to sanitize).
+      out.push(mdOpts.lineAnchors
+        ? '<div class="artifacts-md-svgblock"' + mdAnchor(mdOpts, svgStart, svgEnd) + '>' + sanitizeSvg(svgBuf.join('\n')) + '</div>'
+        : sanitizeSvg(svgBuf.join('\n')));
       i += 1;
       continue;
     }
@@ -568,48 +637,58 @@ function mdToHtml(src, opts) {
     if (bhMatch && BLOCK_HTML_TAGS[bhMatch[1].toLowerCase()]) {
       var bhTag = bhMatch[1].toLowerCase();
       if (!(bhTag === 'summary' && /\/\s*>$/.test(line))) {
+        var bhStart = i + 1;
         var bh = gatherBlockHtml(line, i, lines, bhTag);
-        out.push(renderBlockHtml(bh.block, bhTag, mdOpts));
+        out.push(renderBlockHtml(bh.block, bhTag, mdOpts, bhStart, bh.next));
         i = bh.next;
         continue;
       }
     }
     // GFM table: header row + delimiter row (+ optional body rows).
     if (isTableRow(line) && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
+      var tblStart = i + 1;
       var headCells = tableCells(line);
       var delimCells = tableCells(lines[i + 1]);
       var aligns = [];
       for (var a = 0; a < headCells.length; a += 1) aligns.push(cellAlign(delimCells[a] || ''));
       var tbl = ['<table>'];
-      tbl.push('<thead><tr>');
-      for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts));
+      tbl.push('<thead><tr' + mdAnchor(mdOpts, tblStart) + '>');
+      for (var h = 0; h < headCells.length; h += 1) tbl.push(mdCell(headCells[h], 'th', aligns[h], mdOpts, tblStart));
       tbl.push('</tr></thead>');
       i += 2;
       var openedBody = false;
       while (i < lines.length && isTableRow(lines[i]) && !isDelimRow(lines[i])) {
         var cells = tableCells(lines[i]);
         if (!openedBody) { tbl.push('<tbody>'); openedBody = true; }
-        tbl.push('<tr>');
-        for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts));
+        tbl.push('<tr' + mdAnchor(mdOpts, i + 1) + '>');
+        for (var c = 0; c < headCells.length; c += 1) tbl.push(mdCell(cells[c] == null ? '' : cells[c], 'td', aligns[c], mdOpts, i + 1));
         tbl.push('</tr>');
         i += 1;
       }
       if (openedBody) tbl.push('</tbody>');
       tbl.push('</table>');
+      // The table element carries the whole span; its rows carry their own line,
+      // so a selected ROW resolves to that row rather than to the whole table.
+      // The opener is rewritten here rather than spliced into the finished HTML:
+      // the end line is only known once the body rows have been read.
+      var tableSpan = mdAnchor(mdOpts, tblStart, i);
+      if (tableSpan) tbl[0] = '<table' + tableSpan + '>';
       out.push(tbl.join(''));
       continue;
     }
     var hd = /^(#{1,6})\s+(.*)$/.exec(line);
     if (hd) {
       var lv = hd[1].length;
-      out.push('<h' + lv + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
+      out.push('<h' + lv + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(hd[2], mdOpts), mdOpts) + '</h' + lv + '>');
       i += 1;
       continue;
     }
-    if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr>'); i += 1; continue; }
+    if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) { out.push('<hr' + mdAnchor(mdOpts, i + 1) + '>'); i += 1; continue; }
     if (/^\s*>\s?/.test(line)) {
+      var qStart = i + 1;
       var q = [];
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, '')); i += 1; }
+      var qEnd = i;
       // A quote holds BLOCKS, not a run of inline text. Stripping the marker and
       // running the remainder through mdInline — which is what this did — drew
       // a quoted "- a" as the literal characters "- a": every list, heading,
@@ -625,10 +704,13 @@ function mdToHtml(src, opts) {
       // closer, and the first closer is the last four characters — because a
       // greedy /^<p>([\s\S]*)<\/p>$/ matches from the first opener to the LAST
       // closer and would tear the tags out of a two-paragraph quote.
-      var quoted = mdToHtml(q.join('\n'), mdOpts);
+      // Each stripped line is the next source line, so the inner render is offset
+      // by one less than the quote's first line.
+      var quoted = mdToHtml(q.join('\n'), Object.assign({}, mdOpts, { lineOffset: (mdOpts.lineOffset || 0) + qStart - 1 }));
       var oneParagraph = quoted.slice(0, 3) === '<p>' && quoted.slice(-4) === '</p>' &&
         quoted.indexOf('</p>') === quoted.length - 4;
-      out.push('<blockquote>' + (oneParagraph ? quoted.slice(3, -4) : quoted) + '</blockquote>');
+      var quoteInner = oneParagraph ? quoted.slice(quoted.indexOf('>') + 1, -4) : quoted;
+      out.push('<blockquote' + mdAnchor(mdOpts, qStart, qEnd) + '>' + quoteInner + '</blockquote>');
       continue;
     }
     if (mdListMarker(line)) {
@@ -643,13 +725,254 @@ function mdToHtml(src, opts) {
     // '=====' cannot be anything but an underline, and today it renders as a
     // paragraph containing '=====', which is never what was meant.
     if (line.trim() !== '' && i + 1 < lines.length && /^\s*=+\s*$/.test(lines[i + 1])) {
-      out.push('<h1>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
+      out.push('<h1' + mdAnchor(mdOpts, i + 1, i + 2) + '>' + mdInline(mdEscape(line.trim(), mdOpts), mdOpts) + '</h1>');
       i += 2;
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
-    out.push('<p>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
+    out.push('<p' + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
     i += 1;
   }
   return out.join('\n');
+}
+
+// ── Source-line anchors ─────────────────────────────────────────────────────
+// The block pass stamps every element a reader can see with the 1-based SOURCE
+// line it came from, and with the last line it covers when that is more than
+// one. That attribute is the whole mechanism: a selection inside the rendered
+// document can be walked up to the nearest anchored element, and the reader gets
+// "lines 12-14 of this file" — precise enough to quote into a request, or to
+// send an editor straight to it — without the renderer having to keep a second,
+// parallel map of the document.
+//
+// It is opt-in (mdToHtml's lineAnchors) because these attributes are decoration:
+// a caller that asked for none must keep the exact markup it always produced.
+function mdAnchor(opts, start, end) {
+  if (!opts || opts.lineAnchors !== true) return '';
+  var base = opts.lineOffset || 0;
+  var from = base + start;
+  var to = base + (end == null ? start : end);
+  if (!(from > 0)) return '';
+  // data-lineno is the LABEL a reader displays, decided here beside the range it
+  // describes so that "12" and "12–18" can never disagree with the data-line pair
+  // the selection bar quotes (see .artifacts-markdown.is-lines in styles.js).
+  var label = to > from ? from + '\u2013' + to : String(from);
+  return ' data-line="' + from + '"' + (to > from ? ' data-line-end="' + to + '"' : '') +
+    ' data-lineno="' + label + '"';
+}
+
+// Same anchor, spliced into an already-built opening tag: <p ...> becomes <p ... ...>.
+function mdTag(opts, tagHtml, start, end) {
+  var a = mdAnchor(opts, start, end);
+  return a && tagHtml.charAt(tagHtml.length - 1) === '>' ? tagHtml.slice(0, -1) + a + '>' : tagHtml;
+}
+
+// The source lines one rendered node stands for: the node itself when it is an
+// anchored element, otherwise its nearest anchored ancestor. Null when there is
+// no anchor above it (inline-only content, or a document rendered without them).
+function mdLinesOfNode(node) {
+  var el = node;
+  try {
+    if (el && el.nodeType === 3) el = el.parentElement;
+    if (el && typeof el.closest === 'function') el = el.closest('[data-line]');
+    else { while (el && !(el.getAttribute && el.getAttribute('data-line'))) el = el.parentNode; }
+  } catch (e) { return null; }
+  if (!el || typeof el.getAttribute !== 'function') return null;
+  var start = parseInt(el.getAttribute('data-line'), 10);
+  if (!(start > 0)) return null;
+  var endAttr = parseInt(el.getAttribute('data-line-end'), 10);
+  return { start: start, end: endAttr > start ? endAttr : start };
+}
+
+// The range a live selection covers. Both ends are resolved and then ordered, so
+// a selection dragged upwards reads the same as one dragged down. Null when
+// either end is unanchored, or when the selection is not inside root — a
+// selection in the file tree must not be read as a line range of the document.
+function mdSelectionLines(root, sel) {
+  if (!sel) return null;
+  var a = mdLinesOfNode(sel.anchorNode);
+  var b = mdLinesOfNode(sel.focusNode || sel.anchorNode);
+  if (!a || !b) return null;
+  if (root && typeof root.contains === 'function') {
+    var node = sel.anchorNode && sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+    if (node && !root.contains(node)) return null;
+  }
+  return a.start <= b.end ? { start: a.start, end: b.end } : { start: b.start, end: a.end };
+}
+
+// Lines [start, end] (1-based, inclusive) of a source text. Out-of-range values
+// are clamped rather than refused: a document that changed under the reader must
+// still produce a quote of what is there now.
+function mdSourceLines(text, start, end) {
+  var all = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+  var from = Math.max(1, parseInt(start, 10) || 1);
+  var to = Math.max(from, parseInt(end, 10) || from);
+  if (from > all.length) return '';
+  return all.slice(from - 1, Math.min(to, all.length)).join('\n');
+}
+
+// The info string of a fenced quote, from the file's own extension: a quote the
+// model reads should say what language it is, and guessing from the content is
+// how a shell transcript ends up highlighted as Python.
+function mdQuoteLang(path) {
+  var m = /\.([A-Za-z0-9]+)$/.exec(String(path || ''));
+  if (!m) return '';
+  var ext = m[1].toLowerCase();
+  var map = {
+    md: 'md', markdown: 'md', js: 'js', mjs: 'js', cjs: 'js', ts: 'ts', tsx: 'tsx', jsx: 'jsx',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', c: 'c', h: 'c',
+    cpp: 'cpp', hpp: 'cpp', cs: 'csharp', php: 'php', sh: 'bash', bash: 'bash', ps1: 'powershell',
+    json: 'json', jsonc: 'json', yml: 'yaml', yaml: 'yaml', toml: 'toml', ini: 'ini', xml: 'xml',
+    html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less', sql: 'sql', txt: '',
+  };
+  return Object.prototype.hasOwnProperty.call(map, ext) ? map[ext] : ext;
+}
+
+// The payload a reader gets for one selected range: a locator the agent can act
+// on (path:12-14) followed by exactly those source lines in a fence.
+//
+// The line numbers stay OUT of the fence on purpose. A model handed
+// "12 | const a = 1" will happily write the numbers back into the file, and a
+// patch that corrupts the document is a worse failure than a quote that carries
+// one less hint. The locator above the fence is the only place they appear, and
+// it names the same range the fence holds.
+function mdLineQuote(path, start, end, text) {
+  var p = String(path || '').replace(/\\/g, '/');
+  var from = parseInt(start, 10) || 1;
+  var to = Math.max(from, parseInt(end, 10) || from);
+  var body = mdSourceLines(text, from, to);
+  // A quote that contains its own closing fence would end early; the longer
+  // fence is the standard answer and needs no escaping.
+  var fence = /(^|\n)\s*\x60{3}/.test(body) ? '~~~~' : '\x60\x60\x60';
+  var lang = mdQuoteLang(p);
+  return '@' + p + ':' + from + (to > from ? '-' + to : '') + '\n' +
+    fence + lang + '\n' + body + '\n' + fence + '\n';
+}
+
+// ── The selection bar ───────────────────────────────────────────────────────
+// One floating bar, positioned over the current selection of a RENDERED
+// document: it names the source range and offers the two things a reader wants
+// from it — quote those lines, or open them where they can be edited.
+//
+// Plain DOM and no framework, because the panel (React) and the popout page
+// (plain DOM) both need it; it is appended to <body> rather than into the
+// document, because the panel is a CSS containing block (container-type:
+// inline-size) and a fixed child of it would be positioned against the panel
+// instead of the viewport — the trap that once put the file tree's context menu
+// off screen entirely.
+//
+// opts:
+//   root     — the rendered container a selection must be inside
+//   path     — the document's path (the locator's left half)
+//   text     — the document's SOURCE (the quote is taken from here, not from
+//              the selection, so the reply names exactly the lines it shows)
+//   onQuote  — (payload, range) → void
+//   onLocate — optional (start, end) → void; when absent the 定位 button is not
+//              drawn at all (a button that cannot do anything is worse than none)
+function attachMarkdownSelectionBar(opts) {
+  opts = opts || {};
+  var root = opts.root;
+  var doc = (root && root.ownerDocument) || (typeof document !== 'undefined' ? document : null);
+  if (!doc || !root || typeof doc.createElement !== 'function') return function () {};
+
+  var bar = doc.createElement('div');
+  bar.className = 'artifacts-mdselbar';
+  bar.setAttribute('role', 'toolbar');
+  var label = doc.createElement('span');
+  label.className = 'artifacts-mdselbar-label';
+  bar.appendChild(label);
+  var quoteBtn = doc.createElement('button');
+  quoteBtn.type = 'button';
+  quoteBtn.className = 'artifacts-mdselbar-btn';
+  quoteBtn.textContent = '引用';
+  quoteBtn.title = '把这部分（含文件路径与行号）放进输入框';
+  bar.appendChild(quoteBtn);
+  var locateBtn = null;
+  if (typeof opts.onLocate === 'function') {
+    locateBtn = doc.createElement('button');
+    locateBtn.type = 'button';
+    locateBtn.className = 'artifacts-mdselbar-btn';
+    locateBtn.textContent = '定位';
+    locateBtn.title = '在编辑器里打开并选中这几行';
+    bar.appendChild(locateBtn);
+  }
+  bar.style.display = 'none';
+  if (doc.body && doc.body.appendChild) doc.body.appendChild(bar);
+
+  var current = null;
+  var raf = null;
+  var hide = function () {
+    current = null;
+    bar.style.display = 'none';
+  };
+  var show = function (range, rect) {
+    current = range;
+    label.textContent = range.start === range.end ? '第 ' + range.start + ' 行' : '第 ' + range.start + '–' + range.end + ' 行';
+    bar.style.display = 'flex';
+    // Measured after it is visible: a hidden element has no box to center on.
+    var w = bar.offsetWidth || 180;
+    var h = bar.offsetHeight || 28;
+    var viewportW = (doc.documentElement && doc.documentElement.clientWidth) || 1024;
+    var left = Math.max(8, Math.min((rect.left + rect.width / 2) - w / 2, viewportW - w - 8));
+    var top = rect.top - h - 6;
+    // A selection at the very top of the viewport gets the bar below it instead
+    // of under the toolbar, where it would be unreachable.
+    if (top < 8) top = Math.min(rect.bottom + 6, ((doc.documentElement && doc.documentElement.clientHeight) || 768) - h - 8);
+    bar.style.left = Math.round(left) + 'px';
+    bar.style.top = Math.round(top) + 'px';
+  };
+  var update = function () {
+    raf = null;
+    var sel = typeof doc.getSelection === 'function' ? doc.getSelection() : null;
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hide(); return; }
+    var range = mdSelectionLines(root, sel);
+    if (!range) { hide(); return; }
+    var rect = null;
+    try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch (e) { rect = null; }
+    if (!rect || (!rect.width && !rect.height)) { hide(); return; }
+    show(range, rect);
+  };
+  var schedule = function () {
+    if (raf !== null) return;
+    // Deferred by a frame: selectionchange fires while the browser is still
+    // moving the selection, and reading a rect mid-gesture is how a bar lands
+    // one selection behind the pointer.
+    raf = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame(update)
+      : setTimeout(update, 16);
+  };
+  var onKey = function (e) { if (e && (e.key === 'Escape' || e.key === 'Esc')) hide(); };
+  var onQuote = function () {
+    if (!current) return;
+    var payload = mdLineQuote(opts.path, current.start, current.end, opts.text);
+    var range = current;
+    hide();
+    try { opts.onQuote(payload, range); } catch (e) {}
+  };
+  var onLocateClick = function () {
+    if (!current) return;
+    var range = current;
+    hide();
+    try { opts.onLocate(range.start, range.end); } catch (e) {}
+  };
+
+  doc.addEventListener('selectionchange', schedule);
+  doc.addEventListener('mouseup', schedule);
+  doc.addEventListener('keyup', schedule);
+  doc.addEventListener('keydown', onKey);
+  // Capture, so a scroll inside the document pane counts: a fixed bar left over
+  // a scrolled-away paragraph is worse than no bar.
+  (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).addEventListener('scroll', hide, true);
+  quoteBtn.addEventListener('click', onQuote);
+  if (locateBtn) locateBtn.addEventListener('click', onLocateClick);
+
+  return function dispose() {
+    doc.removeEventListener('selectionchange', schedule);
+    doc.removeEventListener('mouseup', schedule);
+    doc.removeEventListener('keyup', schedule);
+    doc.removeEventListener('keydown', onKey);
+    (doc.defaultView || (typeof window !== 'undefined' ? window : null) || doc).removeEventListener('scroll', hide, true);
+    if (bar.parentNode) bar.parentNode.removeChild(bar);
+    current = null;
+  };
 }
