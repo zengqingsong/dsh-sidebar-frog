@@ -85,6 +85,16 @@ class Node {
     this.disabled = false
   }
   get nodeType() { return 1 }
+  // `id` is a REFLECTED property in the real DOM: `el.id = 'x'` sets the attribute
+  // and `getElementById('x')` finds the element. The stub used to reflect it one
+  // way only (setAttribute registered it; a property assignment did not), so page
+  // code written the ordinary way looked broken here while working in every
+  // browser — a page that creates its own button and then asks
+  // `getElementById` for it got a fresh empty node back and the test drove that
+  // instead. Reading it back matters too: `el.id` is how a caller identifies a
+  // node it did not create.
+  get id() { return this.getAttribute('id') || '' }
+  set id(v) { this.setAttribute('id', String(v)) }
   // The standard DOM accessor a shared helper reaches for to find the document
   // it belongs to (src/shared/markdown.js uses it so the same code works in the
   // panel and in the popout page). The stub kept the document on `doc` only,

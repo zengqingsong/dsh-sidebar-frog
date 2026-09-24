@@ -395,6 +395,10 @@ export async function startHost() {
       // `version`/`size` are the revision the 编辑 pane sends back on save.
       const p = String(u.searchParams.get('path') || '').toLowerCase()
       const wantText = u.searchParams.get('text') === '1'
+      // A path that is not there answers with the host's own failure shape: the
+      // deep-link case asserts that a ?path= naming nothing says so in the preview
+      // area instead of quietly leaving the page on the artifact list.
+      if (p.endsWith('gone.md')) return json({ ok: false, error: 'ENOENT: no such file (stub)' })
       if (p.endsWith('data.csv')) return json({ ok: true, type: 'table', content: CSV, truncated: false, size: CSV.length, version: 'v1' })
       if (p.endsWith('guide.md')) return json({ ok: true, type: 'markdown', content: GUIDE_MD, truncated: false, size: GUIDE_MD.length, version: 'v1' })
       const type = extType(p)
@@ -603,6 +607,65 @@ async function run(s, shots, host) {
       if (await menuOpen(s)) { await s.click(20, 400); await s.wait(80) }
     }
   }
+
+  // The DEFAULT VIEW — asserted before any test clicks a tab, because a click is
+  // exactly what would hide a wrong default. Both surfaces (this page and the
+  // in-app panel) open on the file tree: the tree is how a file is reached, and
+  // the artifact ledger is the record you consult afterwards. The tree's rows are
+  // part of the assertion because a default that is set but never LOADED shows an
+  // empty pane — which is what happens if the boot stops calling setView.
+  await test('the page opens on the file tree, with its rows, and not on the artifact list', async () => {
+    const at = await s.evaluate(`(() => {
+      const tab = (view) => document.querySelector('.tab[data-view="' + view + '"]')
+      return {
+        view: typeof currentView === 'string' ? currentView : String(currentView),
+        treeActive: tab('tree').classList.contains('is-active'),
+        treeSelected: tab('tree').getAttribute('aria-selected'),
+        artActive: tab('artifacts').classList.contains('is-active'),
+        treeShown: document.getElementById('tree').classList.contains('is-active'),
+        listHidden: document.getElementById('list').classList.contains('is-hidden'),
+        rows: document.querySelectorAll('#treeBody [data-path]').length,
+      }
+    })()`)
+    eq(at.view, 'tree', 'the page booted on another view')
+    assert(at.treeActive && at.treeSelected === 'true', 'the 文件树 tab is not the active one: ' + JSON.stringify(at))
+    assert(!at.artActive, 'the 产物 tab is active as well')
+    assert(at.treeShown && at.listHidden, 'the tree pane is not the one on screen: ' + JSON.stringify(at))
+    assert(at.rows > 0, 'the default tree drew no rows (setView did not load the root)')
+  })
+
+  // …and with the tree switched OFF there is nothing to open on, so the artifact
+  // list takes over — the same downgrade the in-app panel makes. Driven through
+  // the settings bridge (the same storage event the sidebar raises), which is also
+  // how the live case is covered: the page is already on the tree when the switch
+  // flips.
+  await test('switching the file tree off moves the page onto the artifact list', async () => {
+    const write = async (show) => {
+      await s.evaluate(`(() => {
+        const key = ${JSON.stringify(SETTINGS_KEY)}
+        const raw = localStorage.getItem(key)
+        const data = raw ? JSON.parse(raw) : {}
+        data.showFileTree = ${show ? 'true' : 'false'}
+        localStorage.setItem(key, JSON.stringify(data))
+        window.dispatchEvent(new StorageEvent('storage', { key: key, newValue: JSON.stringify(data) }))
+      })()`)
+      await s.wait(120)
+    }
+    await write(false)
+    await s.waitFor(`document.querySelector('.tab[data-view="artifacts"]').classList.contains('is-active')`,
+      { label: 'the artifact list to take over' })
+    const off = await s.evaluate(`(() => ({
+      view: String(currentView),
+      treeHidden: document.querySelector('.tab[data-view="tree"]').classList.contains('is-hidden'),
+      listShown: !document.getElementById('list').classList.contains('is-hidden'),
+    }))()`)
+    eq(off.view, 'artifacts', 'the view did not fall back with the tree off')
+    assert(off.treeHidden, 'the 文件树 tab is still offered while the tree is switched off')
+    assert(off.listShown, 'the artifact list is not on screen')
+    await write(true)
+    await s.click((await s.center('.tab[data-view="tree"]')).x, (await s.center('.tab[data-view="tree"]')).y)
+    await s.wait(120)
+  })
 
   await test('the file tree renders the workspace root', async () => {
     const tab = await s.center('.tab[data-view="tree"]')
@@ -1342,6 +1405,177 @@ async function run(s, shots, host) {
   await s.click(at.x, at.y, 'right')
   await s.wait(200)
   shots.push(await s.screenshot(join(tmpdir(), 'dsf-popout-menu.png')))
+
+  // ── 全屏查看 (fullscreen preview) ──────────────────────────────────────────
+  // Driven by a real click on the real button. Two contracts, one test: the
+  // preview must FILL THE SCREEN (a black or zero-height box is the failure), and
+  // the control must report the state it is in — because the page has two ways in
+  // (the Fullscreen API and a CSS mode for engines/frames where the API refuses)
+  // and the state has to be readable from the button either way. Which of the two
+  // happened is recorded in the failure message rather than asserted: a headless
+  // engine may legitimately refuse element fullscreen, and that is exactly the
+  // case the CSS mode exists for.
+  await test('the 全屏 button fills the screen with the open document', async () => {
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown")', { label: 'the document', timeout: 4000 })
+    const btn = await s.center('#previewFull')
+    assert(btn, 'there is no 全屏 button in the preview bar')
+    await s.click(btn.x, btn.y)
+    await s.waitFor('!!document.fullscreenElement || !!document.querySelector("#main.is-preview-full")', { label: 'the preview to fill the screen', timeout: 4000 })
+    const mode = await s.evaluate('document.fullscreenElement ? "element" : "css"')
+    eq(await s.evaluate('document.getElementById("previewFull").getAttribute("aria-pressed")'), 'true', 'the button does not report fullscreen (' + mode + ')')
+    const box = await s.evaluate(`(() => {
+      const el = document.getElementById('preview')
+      const r = el.getBoundingClientRect()
+      return { w: Math.round(r.width), h: Math.round(r.height), vw: window.innerWidth, vh: window.innerHeight, doc: !!document.querySelector('#previewArea .markdown') }
+    })()`)
+    assert(box.w >= box.vw - 2 && box.h >= box.vh - 2, 'the preview does not fill the screen (' + mode + '): ' + JSON.stringify(box))
+    assert(box.doc, 'the document left the screen when fullscreen started')
+    // The same key that leaves fullscreen in a browser leaves it here in both
+    // modes: element fullscreen is the browser's own Escape, the CSS mode is this
+    // page's handler (and the test above cannot tell which one answered, so both
+    // are required to work).
+    await s.key('Escape')
+    await s.waitFor('!document.fullscreenElement && !document.querySelector("#main.is-preview-full")', { label: 'fullscreen to end', timeout: 4000 })
+    eq(await s.evaluate('document.getElementById("previewFull").getAttribute("aria-pressed")'), 'false', 'the button still claims fullscreen after Escape')
+  })
+
+  // The other half of that button: on an engine with NO Fullscreen API at all, the
+  // click must still fill the tab. BOTH spellings are removed, because that is what
+  // "no API" means — Chromium carries `webkitRequestFullscreen` as an alias, and a
+  // test that removed only the standard name would be measuring the alias instead
+  // (which is its own case, right below).
+  await test('with no Fullscreen API the button still fills the tab', async () => {
+    const had = await s.evaluate(`(() => {
+      window.__dsfFs = { std: Element.prototype.requestFullscreen, webkit: Element.prototype.webkitRequestFullscreen }
+      try { delete Element.prototype.requestFullscreen } catch (e) { Element.prototype.requestFullscreen = undefined }
+      try { delete Element.prototype.webkitRequestFullscreen } catch (e) { Element.prototype.webkitRequestFullscreen = undefined }
+      const el = document.getElementById('preview')
+      return { std: typeof el.requestFullscreen, webkit: typeof el.webkitRequestFullscreen }
+    })()`)
+    eq(had.std, 'undefined', 'the standard API is still there')
+    eq(had.webkit, 'undefined', 'the prefixed API is still there')
+    const btn = await s.center('#previewFull')
+    assert(btn, 'there is no 全屏 button in the preview bar')
+    await s.click(btn.x, btn.y)
+    await s.waitFor('!!document.querySelector("#main.is-preview-full")', { label: 'the CSS fullscreen mode', timeout: 4000 })
+    const box = await s.evaluate(`(() => { const r = document.getElementById('preview').getBoundingClientRect(); return { w: Math.round(r.width), vw: window.innerWidth } })()`)
+    assert(box.w >= box.vw - 2, 'the CSS mode did not widen the preview: ' + JSON.stringify(box))
+    await s.key('Escape')
+    await s.waitFor('!document.querySelector("#main.is-preview-full")', { label: 'the CSS mode to end', timeout: 4000 })
+    await s.evaluate(`(() => {
+      if (window.__dsfFs.std) { try { Element.prototype.requestFullscreen = window.__dsfFs.std } catch (e) {} }
+      if (window.__dsfFs.webkit) { try { Element.prototype.webkitRequestFullscreen = window.__dsfFs.webkit } catch (e) {} }
+      return true
+    })()`)
+    // The button must not have been left claiming fullscreen by either mode.
+    eq(await s.evaluate('document.getElementById("previewFull").getAttribute("aria-pressed")'), 'false', 'the button still claims fullscreen')
+  })
+
+  // A browser with ONLY the prefixed API (WebKit's spelling): the click must enter
+  // REAL fullscreen and the button must know it — not enter the CSS mode as well,
+  // which is a screen Escape then cannot leave (the prefixed call returns nothing
+  // to await, so "no return value" is not "no fullscreen").
+  await test('an engine with only the prefixed API still goes fullscreen, and comes back', async () => {
+    const had = await s.evaluate(`(() => {
+      window.__dsfStd = Element.prototype.requestFullscreen
+      try { delete Element.prototype.requestFullscreen } catch (e) { Element.prototype.requestFullscreen = undefined }
+      return typeof document.getElementById('preview').requestFullscreen
+    })()`)
+    eq(had, 'undefined', 'the standard API is still there')
+    const btn = await s.center('#previewFull')
+    assert(btn, 'there is no 全屏 button in the preview bar')
+    await s.click(btn.x, btn.y)
+    await s.waitFor('!!document.fullscreenElement', { label: 'real fullscreen via the prefixed API', timeout: 4000 })
+    const css = await s.evaluate('document.getElementById("main").classList.contains("is-preview-full")')
+    assert(!css, 'the CSS mode was entered on top of real fullscreen — Escape would leave it behind')
+    eq(await s.evaluate('document.getElementById("previewFull").getAttribute("aria-pressed")'), 'true', 'the button does not report fullscreen')
+    await s.key('Escape')
+    await s.waitFor('!document.fullscreenElement && !document.querySelector("#main.is-preview-full")', { label: 'fullscreen to end', timeout: 4000 })
+    await s.evaluate(`(() => {
+      if (window.__dsfStd) { try { Element.prototype.requestFullscreen = window.__dsfStd } catch (e) {} }
+      return true
+    })()`)
+  })
+
+  // …and the case a screenshot would catch but an assertion only catches if it
+  // asks: a COLLAPSED preview that then goes fullscreen. A collapsed preview is
+  // `display: none`, so "filling the screen" would fill it with nothing at all.
+  //
+  // The state is reached deliberately rather than by clicking, and that is the
+  // honest way to test it: the 全屏 button lives INSIDE the collapsed preview, so a
+  // user cannot get here through this page's own UI (a stored divider position or
+  // the settings bridge from another tab can). Which is exactly why the line that
+  // expands it back is defensive — and why it needs a test that can reach the
+  // state at all.
+  await test('全屏 never leaves a hidden document on the screen', async () => {
+    const collapsed = await s.evaluate(`(() => {
+      document.getElementById('main').classList.add('is-preview-collapsed')
+      const el = document.getElementById('preview')
+      return { display: getComputedStyle(el).display, button: !!document.getElementById('previewFull') }
+    })()`)
+    eq(collapsed.display, 'none', 'the collapsed preview is not display:none — this test needs another way to hide it')
+    assert(collapsed.button, 'the 全屏 button is gone from the DOM entirely')
+    await s.evaluate('document.getElementById("previewFull").click()')
+    await s.waitFor('!!document.fullscreenElement || !!document.querySelector("#main.is-preview-full")', { label: 'fullscreen', timeout: 4000 })
+    const state = await s.evaluate(`(() => {
+      const el = document.getElementById('preview')
+      const r = el.getBoundingClientRect()
+      return {
+        display: getComputedStyle(el).display,
+        w: Math.round(r.width), h: Math.round(r.height),
+        vw: window.innerWidth, vh: window.innerHeight,
+        collapsed: document.getElementById('main').classList.contains('is-preview-collapsed'),
+        doc: !!document.querySelector('#previewArea .markdown'),
+      }
+    })()`)
+    assert(state.display !== 'none', 'the preview is still collapsed inside fullscreen: ' + JSON.stringify(state))
+    assert(state.w >= state.vw - 2 && state.h >= state.vh - 2, 'the preview did not fill the screen: ' + JSON.stringify(state))
+    assert(state.doc, 'the document is not on screen: ' + JSON.stringify(state))
+    await s.key('Escape')
+    await s.waitFor('!document.fullscreenElement && !document.querySelector("#main.is-preview-full")', { label: 'fullscreen to end', timeout: 4000 })
+  })
+
+  // ── ?path=<file>: the file the sidebar was showing, opened here ──────────
+  // The sidebar's 「在弹出页打开」is a link to THIS page plus the file, so the page
+  // has to open on that document: a tab that lands on the artifact list while the
+  // sidebar shows the file reads as "the button did nothing". Navigating away
+  // reloads the page, which is why this case runs last (the suite's own state is
+  // rebuilt by every test above, and the two final checks in main() only read the
+  // exception/log collectors, which keep accumulating across the load).
+  await test('a ?path= link opens that file, pinned, and reveals it in the tree', async () => {
+    const target = path('docs', 'guide.md')
+    const before = host.requests.length
+    // `onDialog: 'accept'` because this page ASKS before it leaves when it holds
+    // unsaved edits (its own `beforeunload` guard, which the editor test above
+    // leaves dirty text behind for) — and an unanswered dialog blocks the
+    // navigation, and then the renderer, until it is answered. In the product the
+    // deep link never navigates an existing tab at all: it opens or reuses the
+    // popout TAB, which is exactly why the guard is not in the user's way.
+    await s.navigate(host.url + '?sessionId=seat-7&path=' + encodeURIComponent(target), { onDialog: 'accept' })
+    await s.waitFor('!!document.getElementById("bar") && !!document.getElementById("previewArea")', { label: 'the deep-linked page to boot' })
+    await s.waitFor('!!document.querySelector("#bar .path")', { label: 'the preview bar', timeout: 4000 })
+    eq(await s.text('#bar .path'), target, 'the file the ?path= link named')
+    assert(await s.evaluate('!!document.querySelector("#bar .path.is-pinned")'), 'a deep-linked file is not pinned, so the next click in the tree replaces it')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown h1")', { label: 'the file body', timeout: 6000 })
+    assert(
+      host.requests.slice(before).some((r) => r.indexOf('/content?path=') > 0 && r.indexOf(encodeURIComponent(target)) > 0),
+      'the deep link never asked the host for the file: ' + JSON.stringify(host.requests.slice(before)),
+    )
+    // …and its row is revealed in the tree, which is what makes the tab feel like
+    // the same session as the sidebar rather than a fresh one.
+    const tab = await s.center('.tab[data-view="tree"]')
+    await s.click(tab.x, tab.y)
+    await s.waitFor('!!document.querySelector(' + JSON.stringify(rowSel(target)) + ')', { label: 'the opened file row in the tree', timeout: 6000 })
+  })
+
+  await test('a ?path= link that names nothing still boots, and says why', async () => {
+    await s.navigate(host.url + '?sessionId=seat-7&path=' + encodeURIComponent('D:\\ws\\docs\\gone.md'), { onDialog: 'accept' })
+    await s.waitFor('!!document.querySelector("#previewArea .err")', { label: 'the read failure to be reported', timeout: 6000 })
+    // The bar still names what was asked for — a page that quietly shows the list
+    // instead is the "button did nothing" failure in another costume.
+    eq(await s.text('#bar .path'), path('docs', 'gone.md'), 'the refused path')
+  })
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────

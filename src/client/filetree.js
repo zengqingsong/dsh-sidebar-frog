@@ -770,6 +770,17 @@ const FileTree = (props) => {
     items.push({ label: '复制路径', run: () => copyText(entry.path, '已复制路径') })
     items.push({ label: '复制相对路径', run: () => copyText(relPath(entry.path), '已复制相对路径') })
     items.push({ label: '@引用到输入框', run: () => refToComposer(entry.path) })
+    // Files only, and row-less on purpose: this is the one 「在弹出页打开」 that
+    // exists for EVERY file, including the suffixes this plugin never draws
+    // (the product renders .html, images, Office and PDF by itself, so no view
+    // of ours is on screen to carry the link). window.open of a real address in
+    // a click handler is not blocked, and the shared target name reuses one tab.
+    if (!entry.isDir) {
+      items.push({
+        label: '在弹出页打开',
+        run: () => { try { window.open(popoutFileHrefFor(sessionId, entry.path), POPOUT_TARGET, 'noopener') } catch (e) {} },
+      })
+    }
     if (entry.isDir) {
       items.push({ sep: true })
       items.push({ label: '仅刷新此目录', run: () => refreshDir(entry.path) })

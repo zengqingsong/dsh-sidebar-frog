@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = '4751a11e'
+    const BUILD = '96a03237'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -2001,7 +2001,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="4751a11e" />
+<meta name="dsh-sidebar-frog-build" content="96a03237" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -2181,6 +2181,26 @@ return {
   .preview .bar { display: flex; align-items: center; gap: 8px; height: var(--f-h-strip); padding: 0 var(--f-pad-x); border-bottom: 1px solid var(--p-border-l2); color: var(--p-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .bar .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .area { flex: 1; min-height: 0; overflow: auto; position: relative; }
+  /* ── 全屏查看 (fullscreen preview) ─────────────────────────────────────────
+     Two ways in, one look. The Fullscreen API hands #preview the whole screen —
+     which is what 全屏 means for a document on a second monitor, browser chrome
+     and taskbar included — and the CSS mode fills this tab where the API is
+     missing or refuses (an embedding frame, or a browser that did not see the
+     gesture). The BAR rides along in both, so the control that got you here is
+     also the way out; the browser owns Esc for its own fullscreen, and the key
+     handler below owns it for the CSS mode. */
+  /* The width is set INLINE by applySplit (the dragged or configured share of the
+     split area), and an inline width beats a stylesheet one — so both fullscreen
+     rules have to say !important or the preview would keep its column width while
+     claiming to fill the screen. */
+  #preview:fullscreen, #preview:-webkit-full-screen, #preview.is-full {
+    width: auto !important; background: var(--p-bg);
+  }
+  main.is-preview-full .preview {
+    display: flex; position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+    z-index: 60; width: auto !important; background: var(--p-bg);
+  }
+  .preview .bar .fs-btn.is-on { color: var(--p-text); background: var(--p-hover); }
   /* Divider between the preview (left) and the list/file tree (right). Dragging
      it sizes the preview; the position is remembered across reloads. */
   .split { flex: none; width: 6px; align-self: stretch; position: relative; cursor: col-resize; touch-action: none; border-left: 1px solid var(--p-border-l2); background: transparent; }
@@ -2754,12 +2774,15 @@ return {
       showFileTree: true,  // show the 文件树 (file tree) tab
       defaultOpen: true,   // expand the sidebar by default on load
       previewHeight: 80,   // popout: default preview width as % of the split area (its ceiling — see below)
-      // Where the panel lives. On: it registers as an "extension" band tab type for
-      // the column's own files kind, so the shell's 文件 tab IS this plugin's file
-      // tree — @引用 into the composer, the right-click menu, per-directory refresh —
-      // and the product's own definition resumes the moment this is switched off.
-      // Off: the panel falls back to its own floating window and the product's plain
-      // tree keeps the tab. Read once at load (see src/client/native.js).
+      // Which surface the panel takes. On: every view registers as a tab TYPE of the
+      // shell's own right column, so 展开 / 收起 / 全屏 / 拖宽 / 分栏 and the tab strip
+      // are the shell's. Off: the panel falls back to its own floating window.
+      //
+      // It does NOT govern the product's built-in 文件 tab any more. That tab used to
+      // be taken over (the tree registered into the product's "files" kind at the
+      // extension band); it is now this plugin's OWN kind ("frog-files"), so the
+      // product's tree keeps its tab, its live directory watcher and its auto-refresh
+      // in every case. Read once at load (see src/client/native.js).
       nativeFileTree: true,
       // Lend this plugin's Markdown renderer (offline MathJax / Mermaid / JSXGraph)
       // to the SHELL's own document preview: registered in the "extension" band it
@@ -2769,19 +2792,23 @@ return {
       // See src/client/docpreview.js.
       nativeMarkdown: true,
       // Lend the TABLE renderer (CSV / TSV: sticky header, click-to-sort, row and
-      // column counts) to the same registry. There is no built-in competitor for
-      // these suffixes — the product claims md/markdown/html/pdf and nothing else —
-      // so switching this on is pure gain: a spreadsheet stops being one long line
-      // in the official sidebar as well. Off hands them back to its plain-text view.
+      // column counts) to the same registry. 0.1.7 gave the product its own Excel
+      // renderer claiming csv/tsv too, but the extension band outranks builtin, so
+      // this still wins and a spreadsheet keeps its sortable table in the official
+      // sidebar. Off hands them to the product's own sheet view (on 0.1.6, which had
+      // no such claim, to its plain-text view).
       // See src/client/docpreview.js.
       nativeTable: true,
       // Lend the OFFICE readers (docx / xlsx / pptx, all offline and vendored) to
       // the same registry, which delivers the file's COMPLETE BYTES to them
-      // (loading: 'bytes-complete'). Nothing in the product claims these three
-      // suffixes — without this they are the shell's "no way to view this content"
-      // notice — so it is pure gain, and switching it off hands them back to that
-      // notice. The panel and the popout tab render Office files either way: this
-      // switch is about the SHELL's sidebar, not about this plugin's own previews.
+      // (loading: 'bytes-complete'). The product claims NONE of these as paginated
+      // documents: 0.1.7 routed xls/xlsx out to its new Excel renderer and left its
+      // office reader on doc/docx/ppt/pptx, and nothing claims pptx as slides — so
+      // the extension band wins where they overlap and pptx is ours alone. Off hands
+      // them to the product's coverage, which for pptx is the shell's "no way to view
+      // this content" notice. The panel and the popout tab render Office files either
+      // way: this switch is about the SHELL's sidebar, not about this plugin's own
+      // previews.
       // See src/client/docpreview.js and src/shared/office.js.
       nativeOffice: true,
       // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the
@@ -3376,6 +3403,16 @@ return {
     if (_sm) {
       try { _urlSessionId = decodeURIComponent(_sm[1]); } catch (e) { _urlSessionId = ''; }
     }
+    // ?path=<file> — the sidebar's 「在弹出页打开」 names the document it is showing,
+    // so this tab opens ON that file instead of on an empty shell. Read here with
+    // the session id (same decode guard: this is top-level code, and one malformed
+    // percent-escape would take the whole page down) and opened after the layout
+    // exists — see openPathFromUrl near the bottom of this script.
+    var _pm = /[?&]path=([^&]*)/.exec(location.search);
+    var _urlPath = '';
+    if (_pm) {
+      try { _urlPath = decodeURIComponent(_pm[1].replace(/\+/g, '%20')); } catch (e) { _urlPath = ''; }
+    }
     var SESSION_KEY = BRIDGE.session;
     // Feature settings are owned by the sidebar's settings section; this tab
     // reads the same localStorage entry so both halves behave the same way
@@ -3402,6 +3439,9 @@ return {
     var selectedPath = null;
     var treeRoot = null;
     var treeChildren = {};
+    // A file named by ?path= whose row is not on screen yet: the reveal needs the
+    // tree root, so it is deferred until the root read lands (see loadTreeRoot).
+    var pendingRevealPath = '';
     var treeExpanded = {};
     var treeBusy = {};
     var treeFlash = null;
@@ -3419,7 +3459,13 @@ return {
     var expandIntent = false;   // an expand-all is still filling in levels
     var treeExpandIdle = 0;     // consecutive expand-all passes that added nothing
     var pinnedPath = null;      // pinned preview (vs the italic preview state)
-    var currentView = 'artifacts';
+    // The view this page opens on: the FILE TREE, not the artifact list. Both
+    // surfaces are ways INTO the workspace — the tree is how a file is reached,
+    // and the ledger is the record of what the agent changed, which is the
+    // question you ask afterwards, not the one you arrive with. With the tree
+    // switched off there is nothing to open on, so 产物 takes over; the markup
+    // still marks 产物 active, and the setView call at boot moves it.
+    var currentView = SETTINGS.showFileTree === false ? 'artifacts' : 'tree';
     var treeMenuList = [];      // context-menu items incl. separators (DOM order)
     var treeMenuNav = [];       // indices into treeMenuList that can be run
     var treeMenuBtns = [];      // per raw item index: its node (null for a separator)
@@ -4223,6 +4269,10 @@ return {
     function refreshIcon(size) { return svgIcon([{ d: REFRESH_D }], size); }
     // Rounded stroked chevron (down); the splitter handle rotates it via CSS.
     var CHEVRON_D = 'M1.6 3.6 L5 7 L8.4 3.6';
+    // 全屏: four corners closing in, the usual mark for "fill the screen". Drawn
+    // with the product's own 16-box geometry so it sits level with the tree tools.
+    var FULLSCREEN_D = 'M2 2H6V3.4H3.4V6H2V2ZM10 2H14V6H12.6V3.4H10V2ZM2 10H3.4V12.6H6V14H2V10ZM12.6 10H14V14H10V12.6H12.6V10Z';
+    function fullscreenIcon(size) { return svgIcon([{ d: FULLSCREEN_D }], size); }
     function chevronIcon(size) {
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('width', size || 10);
@@ -6650,6 +6700,7 @@ return {
       qt.title = '@引用到主窗口输入框（主窗口不在时复制）';
       qt.addEventListener('click', function () { quoteRef(path); });
       bar.appendChild(qt);
+      ensurePreviewFullButton();
 
       // Rapid clicks on different files must not let an older, slower read
       // paint over the newer preview: bump a sequence and abort the old read.
@@ -6808,6 +6859,131 @@ return {
     }
 
     function select(it, pinned) { openPath(it.path, it.diff, pinned); }
+
+    // ── 全屏查看 ────────────────────────────────────────────────────────────
+    // Entering: the Fullscreen API first (real fullscreen — no browser chrome, no
+    // taskbar, which is the point of a document tab on a second monitor), and the
+    // CSS mode when the API is absent or REFUSES (requestFullscreen rejects
+    // outside a user gesture, and in any embedding frame): a button that silently
+    // does nothing is the failure this codebase refuses to ship, so there is
+    // always a second answer. Leaving: the same button, or Esc — which the browser
+    // handles for element fullscreen and this handler handles for the CSS mode.
+    function previewEl() { return document.getElementById('preview'); }
+    // The API is read through these two accessors because this page runs in
+    // WHATEVER browser the user opened it in, and WebKit still spells all four of
+    // them with a prefix. A page with no fullscreen support at all answers null /
+    // undefined here, which is exactly the branch the CSS mode exists for.
+    function fullscreenElement() {
+      return document.fullscreenElement || document.webkitFullscreenElement || null;
+    }
+    function exitFullscreen() {
+      if (typeof document.exitFullscreen === 'function') return document.exitFullscreen();
+      if (typeof document.webkitExitFullscreen === 'function') return document.webkitExitFullscreen();
+      return null;
+    }
+    // Asked as "is there an API AT ALL", not "what did it return". Chromium carries
+    // the prefixed alias beside the standard one and the prefixed call returns
+    // NOTHING (the callback era), so treating a missing return value as "no API"
+    // entered the CSS mode ON TOP OF real fullscreen — and then Escape left the
+    // element and kept the CSS class, i.e. a screen the user cannot get out of with
+    // the key that is supposed to get them out. The answer is the same for both
+    // spellings; only the promise differs.
+    function requestFullscreen(el) {
+      if (typeof el.requestFullscreen === 'function') return { called: true, pending: el.requestFullscreen() };
+      if (typeof el.webkitRequestFullscreen === 'function') { el.webkitRequestFullscreen(); return { called: true, pending: null }; }
+      return { called: false, pending: null };
+    }
+    function inElementFullscreen() {
+      var preview = previewEl();
+      return !!(fullscreenElement() && fullscreenElement() === preview);
+    }
+    function inFallbackFullscreen() {
+      var main = document.getElementById('main');
+      return !!(main && main.classList.contains('is-preview-full'));
+    }
+    function applyFullscreenState() {
+      var on = inElementFullscreen() || inFallbackFullscreen();
+      var preview = previewEl();
+      if (preview) preview.classList.toggle('is-full', on);
+      var btn = previewFullButton();
+      if (btn) {
+        // The label says what the click WILL do, so it is re-read at every change
+        // — including the ones the page did not cause (Esc, F11, another tab).
+        btn.title = on ? '退出全屏（Esc）' : '全屏查看（整个屏幕，Esc 退出）';
+        btn.setAttribute('aria-label', btn.title);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.classList.toggle('is-on', on);
+      }
+    }
+    function enterFallbackFullscreen() {
+      var main = document.getElementById('main');
+      if (main) main.classList.add('is-preview-full');
+      applyFullscreenState();
+    }
+    function exitFallbackFullscreen() {
+      var main = document.getElementById('main');
+      if (main) main.classList.remove('is-preview-full');
+      applyFullscreenState();
+    }
+    function togglePreviewFullscreen() {
+      var preview = previewEl();
+      if (!preview) return;
+      if (inElementFullscreen()) {
+        try {
+          var out = exitFullscreen();
+          if (out && typeof out.catch === 'function') out.catch(function () {});
+        } catch (e) {}
+        return;
+      }
+      if (inFallbackFullscreen()) { exitFallbackFullscreen(); return; }
+      // ENTERING, and before the request rather than inside the fallback: a
+      // collapsed preview is display:none, so fullscreen on it draws an empty
+      // screen — and it is empty in BOTH modes (a request that succeeds leaves the
+      // element fullscreen with nothing in it just as surely as the CSS mode does).
+      // The 全屏 button lives inside the collapsed preview, so this state cannot be
+      // reached through this page's own UI; a stored divider position or another
+      // tab's settings bridge can still put it there.
+      var main = document.getElementById('main');
+      if (main && main.classList.contains('is-preview-collapsed')) setCollapsedSplit(false);
+      try {
+        var asked = requestFullscreen(preview);
+        // No API under either spelling: the CSS mode is the only answer. A refused
+        // request (outside a user gesture, inside an embedding frame) is the other
+        // half — and a button that silently does nothing is the failure this
+        // codebase refuses to ship, so both end up fullscreen one way or another.
+        if (!asked.called) { enterFallbackFullscreen(); return; }
+        if (asked.pending && typeof asked.pending.catch === 'function') {
+          asked.pending.catch(function () { enterFallbackFullscreen(); });
+        }
+      } catch (e) {
+        enterFallbackFullscreen();
+      }
+    }
+    // The bar is rebuilt on every open (its textContent is cleared and repainted),
+    // so the button is ensured rather than re-created: one button, whatever the
+    // file and however often the bar is repainted. Looked up IN THE BAR and not
+    // with document.getElementById: the repaint DETACHES the old button, and a
+    // document-wide lookup is the wrong question in both directions — it would
+    // hand back the detached node (and the bar would be left with no control at
+    // all), and asking for an id that does not exist yet is how a phantom gets
+    // conjured in a stub DOM.
+    function previewFullButton() {
+      var bar = document.getElementById('bar');
+      return bar && typeof bar.querySelector === 'function' ? bar.querySelector('#previewFull') : null;
+    }
+    function ensurePreviewFullButton() {
+      var bar = document.getElementById('bar');
+      if (!bar) return;
+      if (previewFullButton()) { applyFullscreenState(); return; }
+      var btn = el('button', 'mini-btn fs-btn', '');
+      btn.id = 'previewFull';
+      btn.type = 'button';
+      btn.setAttribute('data-frog-fullscreen', 'preview');
+      btn.appendChild(fullscreenIcon(13));
+      btn.addEventListener('click', function (ev) { ev.stopPropagation(); togglePreviewFullscreen(); });
+      bar.appendChild(btn);
+      applyFullscreenState();
+    }
 
     // Preview vs pinned: the bar shows a pin marker, the tree/list labels go
     // italic while the file is only previewed (an IDE's preview tab).
@@ -6974,6 +7150,15 @@ return {
             treeRoot = { path: null, entries: [], error: (res && res.error) || '加载失败' };
           }
           renderTree();
+          // A file named by ?path= can only be REVEALED once the root is in: the
+          // reveal walks the ancestors that the root read has just defined. The
+          // document itself is opened independently of this (openPathFromUrl), so
+          // a tree that never loads costs the reveal, not the file.
+          if (pendingRevealPath) {
+            var want = pendingRevealPath;
+            pendingRevealPath = null;
+            revealInTree(want);
+          }
         });
       };
       attempt(hard ? 3 : 1);
@@ -7987,8 +8172,17 @@ return {
           return r.json();
         }).then(function (data) {
           settle();
+          // A file the poll stops listing is dropped from the ledger — but ONLY one
+          // the ledger used to list. The old rule cleared the selection whenever the
+          // path was absent from the artifact list, and a file opened from the TREE
+          // (or handed over by ?path=, which is how 「在弹出页打开」arrives) is
+          // usually not an artifact at all: two seconds after opening it the pin
+          // marker and the highlighted tree row silently disappeared, while the
+          // document itself stayed on screen. "It WAS listed and now is not" is the
+          // transition that means the record is gone.
+          var wasListed = items.some(function (x) { return x.path === selectedPath; });
           items = data && Array.isArray(data.artifacts) ? data.artifacts : [];
-          if (selectedPath && !items.some(function (x) { return x.path === selectedPath; })) { selectedPath = null; }
+          if (selectedPath && wasListed && !items.some(function (x) { return x.path === selectedPath; })) { selectedPath = null; }
           render();
           // The tree shows the same A/M change letters, so it follows the poll.
           if (treeRoot) renderTree();
@@ -8003,6 +8197,40 @@ return {
         });
     }
     load();
+    // ── ?path=<file>: open the document the sidebar was showing ────────────
+    // 「在弹出页打开」hands this tab a file, and a tab that opened on the artifact
+    // list instead — while the sidebar still shows that file — reads as "the button
+    // did nothing". Pinned, because the user asked for THIS document rather than
+    // for a preview the next click in the tree replaces (the page's usual rule for
+    // a single click).
+    //
+    // It runs here rather than at the top of the script because openPath draws
+    // into the tab bar and the preview area, which the static markup owns; and it
+    // does NOT wait for the artifact poll — the file need not be an artifact at
+    // all, since /content answers by path.
+    (function openPathFromUrl() {
+      if (!_urlPath) return;
+      var wanted = _urlPath;
+      // The tree reveals it once the root is in (or right away, if a session
+      // switch already loaded the root before this ran).
+      if (treeRoot) revealInTree(wanted);
+      else pendingRevealPath = wanted;
+      openPath(wanted, null, true);
+    })();
+    // 全屏查看 is available before any file is opened (the bar starts on its hint),
+    // and the state is re-read whenever the BROWSER changes it — Esc, F11 or a
+    // fullscreen request made anywhere else on the page.
+    ensurePreviewFullButton();
+    document.addEventListener('fullscreenchange', applyFullscreenState);
+    document.addEventListener('webkitfullscreenchange', applyFullscreenState);
+    document.addEventListener('keydown', function (ev) {
+      // Only the CSS mode needs this: element fullscreen gets its Escape from the
+      // browser (and the page must not fight it).
+      if (ev.key === 'Escape' && inFallbackFullscreen()) {
+        ev.preventDefault();
+        exitFallbackFullscreen();
+      }
+    });
     // ── Shared settings ───────────────────────────────────────────────────
     // Read once at startup and re-applied whenever the sidebar changes them, so
     // this tab behaves like the panel instead of keeping its own fixed habits:
@@ -8051,6 +8279,12 @@ return {
       applySplit();
     }
     applySettings();
+    // Make the DOM match the view this page starts on (see currentView above):
+    // the static markup marks 产物 active, and setView is what moves the tab,
+    // shows the pane and reads the tree's root level. applySettings has already
+    // downgraded a tree default to 产物 when the tree is switched off, so this
+    // never re-enables a hidden tab.
+    setView(currentView);
     // Follow the active session in real time: the main tab publishes the
     // current session id to localStorage (SESSION_KEY) only when it actually
     // changes, so the storage event alone is enough — no polling.

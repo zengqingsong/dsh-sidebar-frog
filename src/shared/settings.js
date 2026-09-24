@@ -15,12 +15,15 @@ var DEFAULT_SETTINGS = {
   showFileTree: true,  // show the 文件树 (file tree) tab
   defaultOpen: true,   // expand the sidebar by default on load
   previewHeight: 80,   // popout: default preview width as % of the split area (its ceiling — see below)
-  // Where the panel lives. On: it registers as an "extension" band tab type for
-  // the column's own files kind, so the shell's 文件 tab IS this plugin's file
-  // tree — @引用 into the composer, the right-click menu, per-directory refresh —
-  // and the product's own definition resumes the moment this is switched off.
-  // Off: the panel falls back to its own floating window and the product's plain
-  // tree keeps the tab. Read once at load (see src/client/native.js).
+  // Which surface the panel takes. On: every view registers as a tab TYPE of the
+  // shell's own right column, so 展开 / 收起 / 全屏 / 拖宽 / 分栏 and the tab strip
+  // are the shell's. Off: the panel falls back to its own floating window.
+  //
+  // It does NOT govern the product's built-in 文件 tab any more. That tab used to
+  // be taken over (the tree registered into the product's "files" kind at the
+  // extension band); it is now this plugin's OWN kind ("frog-files"), so the
+  // product's tree keeps its tab, its live directory watcher and its auto-refresh
+  // in every case. Read once at load (see src/client/native.js).
   nativeFileTree: true,
   // Lend this plugin's Markdown renderer (offline MathJax / Mermaid / JSXGraph)
   // to the SHELL's own document preview: registered in the "extension" band it
@@ -30,19 +33,23 @@ var DEFAULT_SETTINGS = {
   // See src/client/docpreview.js.
   nativeMarkdown: true,
   // Lend the TABLE renderer (CSV / TSV: sticky header, click-to-sort, row and
-  // column counts) to the same registry. There is no built-in competitor for
-  // these suffixes — the product claims md/markdown/html/pdf and nothing else —
-  // so switching this on is pure gain: a spreadsheet stops being one long line
-  // in the official sidebar as well. Off hands them back to its plain-text view.
+  // column counts) to the same registry. 0.1.7 gave the product its own Excel
+  // renderer claiming csv/tsv too, but the extension band outranks builtin, so
+  // this still wins and a spreadsheet keeps its sortable table in the official
+  // sidebar. Off hands them to the product's own sheet view (on 0.1.6, which had
+  // no such claim, to its plain-text view).
   // See src/client/docpreview.js.
   nativeTable: true,
   // Lend the OFFICE readers (docx / xlsx / pptx, all offline and vendored) to
   // the same registry, which delivers the file's COMPLETE BYTES to them
-  // (loading: 'bytes-complete'). Nothing in the product claims these three
-  // suffixes — without this they are the shell's "no way to view this content"
-  // notice — so it is pure gain, and switching it off hands them back to that
-  // notice. The panel and the popout tab render Office files either way: this
-  // switch is about the SHELL's sidebar, not about this plugin's own previews.
+  // (loading: 'bytes-complete'). The product claims NONE of these as paginated
+  // documents: 0.1.7 routed xls/xlsx out to its new Excel renderer and left its
+  // office reader on doc/docx/ppt/pptx, and nothing claims pptx as slides — so
+  // the extension band wins where they overlap and pptx is ours alone. Off hands
+  // them to the product's coverage, which for pptx is the shell's "no way to view
+  // this content" notice. The panel and the popout tab render Office files either
+  // way: this switch is about the SHELL's sidebar, not about this plugin's own
+  // previews.
   // See src/client/docpreview.js and src/shared/office.js.
   nativeOffice: true,
   // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the

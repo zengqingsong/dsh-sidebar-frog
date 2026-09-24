@@ -32,7 +32,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBundles } from './build.js'
-import { runPopoutTree, runSidebarTree, hiddenControlViolations } from './tree-tests.js'
+import { runPopoutTree, runPopoutPreview, runSidebarTree, hiddenControlViolations } from './tree-tests.js'
 import { createRenderer, settle } from './minireact.js'
 import { createDom } from './domstub.js'
 import {
@@ -1567,7 +1567,7 @@ const bootClient = (options) => {
     // the plugin is supposed to occupy — not against a count that goes stale the
     // moment a view is added or removed.
     const WANT = [
-      { id: 'dsh-sidebar-frog/files', kind: 'files' },
+      { id: 'dsh-sidebar-frog/files', kind: 'frog-files' },
       { id: 'dsh-sidebar-frog/artifacts', kind: 'frog-artifacts' },
       { id: 'dsh-sidebar-frog/jobs', kind: 'frog-jobs' },
       { id: 'dsh-sidebar-frog/usage', kind: 'frog-usage' },
@@ -1601,13 +1601,18 @@ const bootClient = (options) => {
     // Distinct orders, or the guide's own ordering is arbitrary between them.
     const orders = tabs.map((t) => t.guide[0].order)
     if (new Set(orders).size !== orders.length) throw new Error('two views share a guide order: ' + JSON.stringify(orders))
-    // The tree occupies the product's own kind: the column's 文件 tab must BE this
-    // plugin's tree (the product's tree carries no @引用 and no right-click menu at
-    // all), and the extension band is what makes that takeover legal — "an
-    // extension may register a kind a builtin already holds".
+    // The tree must NOT sit on the product's own `files` kind any more. Taking it
+    // over is legal (the extension band outranks the builtin) but it is exactly the
+    // regression this refactor removed: while this plugin holds that kind the
+    // product's own body never mounts, and with it the built-in tree's live
+    // directory watcher and auto-refresh silently stop working. The product's tree
+    // is the product's; this plugin's is its own kind beside it.
     const files = tabs.find((t) => t.id === 'dsh-sidebar-frog/files')
-    if (files.kind !== 'files') {
-      throw new Error('the tree must occupy the column\'s 文件 kind, not a kind of its own')
+    if (files.kind === 'files') {
+      throw new Error('the tree is occupying the product\'s `files` kind again — that suppresses the built-in tree and its watcher')
+    }
+    if (tabs.some((t) => t.kind === 'files')) {
+      throw new Error('a tab type claims the product\'s `files` kind again: ' + JSON.stringify(tabs.filter((t) => t.kind === 'files').map((t) => t.id)))
     }
     // Every type has a body, keyed by its OWN id — the seat looks a body up by
     // `entryKey`, which is the definition's id, never the kind.
@@ -1630,23 +1635,23 @@ const bootClient = (options) => {
   }
 }
 
-// Handing the kind back: with 『用系统右侧边栏承载面板』off the column must get the
-// product's own tree again and this plugin must go back to its floating window —
-// that is the escape hatch for anyone who prefers the builtin, and the reason the
-// takeover is safe to ship at all.
+// The panel surface switch. With 『用系统右侧边栏承载面板』off the plugin must fall
+// back to its own floating window — and, crucially, it must NOT touch the
+// product's `files` kind in either position, because the built-in tree is no
+// longer something this plugin can take away.
 {
   try {
     const off = shared.serializeSettings(shared.normalizeSettings({ nativeFileTree: false }))
     const { registered, tabs, registrations, injectedSeats } = bootClient({ sidebarRight: true, storage: { [shared.BRIDGE.settings]: off } })
-    if (tabs.length) throw new Error('the files kind was taken over while the setting was off')
+    if (tabs.length) throw new Error('tab types were registered while the panel surface was switched off')
     if (registrations.some((r) => r.def.name === 'sidebar.right.pane.tab')) {
-      throw new Error('a tab body was registered for a kind we do not occupy')
+      throw new Error('a tab body was registered with no tab type to draw it')
     }
     if (injectedSeats.includes('sidebar.right.pane.tab')) throw new Error('the seat was injected into with nothing to put in it')
     if (!registered.includes('dsh-sidebar-frog-panel')) {
       throw new Error('the floating panel did not come back — switching the surface off would leave no panel at all')
     }
-    ok('native tab (handed back)', 'switched off, the column keeps the product\'s own file tree and the panel floats again')
+    ok('native tab (handed back)', 'switched off, the panel floats again and the product\'s file tree is untouched either way')
   } catch (e) {
     bad('native tab (handed back)', e && e.message ? e.message : String(e))
   }
@@ -1720,12 +1725,81 @@ const footKid = (stack, id) => {
     const railLabels = (rail.props.children || []).filter((c) => c && c.type === 'span')
     if (railLabels.length) throw new Error('the rail button still draws a label — it is a 36px round icon there')
     wide.props.onClick()
-    if (String(boot.openedTabs) !== 'files') {
-      throw new Error('the footer button opened ' + JSON.stringify(boot.openedTabs) + ', not the 文件 page')
+    if (String(boot.openedTabs) !== 'frog-files') {
+      throw new Error('the footer button opened ' + JSON.stringify(boot.openedTabs) + ', not the 文件树 page')
     }
-    ok('column entry point', 'a standing 文件树 button in the left sidebar\'s foot opens the column\'s 文件 page (present in every state, hero screen included)')
+    ok('column entry point', 'a standing 文件树 button in the left sidebar\'s foot opens the column\'s 文件树 page (present in every state, hero screen included)')
   } catch (e) {
     bad('column entry point', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── @引用 must ride the PRODUCT's document preview, not only this tree ──────
+// This is what makes 「用系统那棵树也能引用」 true: the reference is written through
+// the shell's own composer API and offered as a document action in the built-in
+// preview's header (`sidebar.right.tab.document.actions`, a list seat 0.1.7
+// declares), so it works for a file opened from the SYSTEM tree — which is the
+// whole point of no longer taking that tree over.
+//
+// It must be registered for BOTH panel surfaces: someone whose panel is floating
+// still browses with the product's tree and still needs 引用.
+{
+  try {
+    for (const opts of [{ sidebarRight: true }, {}]) {
+      const boot = bootClient(opts)
+      const seat = boot.injectedSeats.includes('sidebar.right.tab.document.actions')
+      if (!seat) throw new Error('the document-action seat was never injected into (native=' + !!opts.sidebarRight + ')')
+      const entry = boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document.actions')
+      if (!entry) throw new Error('no @引用 document action was registered (native=' + !!opts.sidebarRight + ')')
+      if (typeof entry.def.order !== 'number') throw new Error('the @引用 document action has no order')
+      if (typeof entry.component !== 'function') throw new Error('the @引用 document action is not a component')
+
+      // The seat hands the action the file's ABSOLUTE path — and NOTHING else:
+      // its declared owner props are exactly `{ absolutePath }`. So the action
+      // must reach the session itself to rebase the path. It has to become a
+      // workspace-relative reference, which is the form the composer resolves.
+      //
+      // This assertion used to demand the ABSOLUTE path, because the action read
+      // a `props.sessionId` the seat never passes: the rebase was dead code and
+      // every reference went out absolute. The stub's `cwd: 'D:/ws'` exists so
+      // the rebase is observable — keep it observable.
+      const inside = entry.component({ absolutePath: 'D:/ws/src/a b.ts' })
+      if (!inside) throw new Error('the @引用 action drew nothing for a real path')
+      if (inside.props['data-frog-doc-path'] !== 'src/a b.ts') {
+        throw new Error('the @引用 action did not rebase the path onto the session workspace: ' + JSON.stringify(inside.props['data-frog-doc-path']))
+      }
+      if (inside.props['data-frog-doc-action'] !== 'reference') {
+        throw new Error('the document action is not identifiable as the reference action')
+      }
+      if (typeof inside.props.onClick !== 'function') throw new Error('the @引用 action has no click handler')
+
+      // A path OUTSIDE the session workspace has no relative spelling, so it
+      // must survive absolute rather than be mangled into a wrong reference.
+      const outside = entry.component({ absolutePath: 'D:/other/x.ts' })
+      if (!outside || outside.props['data-frog-doc-path'] !== 'D:/other/x.ts') {
+        throw new Error('a path outside the workspace was not kept absolute: ' + JSON.stringify(outside && outside.props['data-frog-doc-path']))
+      }
+
+      // No path, no button: an action that cannot name a file must not appear.
+      if (entry.component({ absolutePath: '' }) !== null) {
+        throw new Error('the @引用 action appeared with no path to reference')
+      }
+      // …and clicking it must reach the composer, exactly like the tree's own 「@」
+      // button: the harness records the draft the shell's input API was handed.
+      // It carries the REBASED path, not the raw absolute one.
+      const client = bootClient(Object.assign({}, opts, { draft: '看看这个' }))
+      client.registrations.find((r) => r.def.name === 'sidebar.right.tab.document.actions')
+        .component({ absolutePath: 'D:/ws/chart.png' }).props.onClick()
+      if (String(client.draft.value).indexOf('@chart.png') < 0) {
+        throw new Error('clicking @引用 did not write the rebased reference into the composer: ' + JSON.stringify(client.draft.value))
+      }
+      if (/@D:\/ws\/chart\.png/.test(String(client.draft.value))) {
+        throw new Error('clicking @引用 wrote the raw absolute path into the composer: ' + JSON.stringify(client.draft.value))
+      }
+    }
+    ok('document @引用', 'the reference action occupies the product\'s document-preview seat on both surfaces and writes into the composer')
+  } catch (e) {
+    bad('document @引用', e && e.message ? e.message : String(e))
   }
 }
 
@@ -1881,7 +1955,7 @@ const footKid = (stack, id) => {
     if (typeof item.component !== 'function') throw new Error('the per-tab 弹出 item is not a component')
     // Answered for THIS plugin's tabs — current kinds and every retired name a
     // restored tab can still carry — and for nothing else.
-    const ours = ['files', 'frog-artifacts', 'frog-jobs', 'frog-usage', 'frog-git', 'frog', 'frog-browser']
+    const ours = ['frog-files', 'frog-artifacts', 'frog-jobs', 'frog-usage', 'frog-git', 'frog', 'frog-browser']
     for (const kind of ours) {
       const rendered = item.component({ tab: { kind, id: 't1' }, dismiss: () => {} })
       if (!rendered || rendered.type !== 'a') {
@@ -1898,15 +1972,55 @@ const footKid = (stack, id) => {
     // The dismiss contract, driven: the menu is the kit's and closes only on its
     // own actions, so an item that acts must dismiss it.
     let dismissed = 0
-    item.component({ tab: { kind: 'files', id: 't1' }, dismiss: () => { dismissed += 1 } }).props.onClick()
+    item.component({ tab: { kind: 'frog-files', id: 't1' }, dismiss: () => { dismissed += 1 } }).props.onClick()
     if (dismissed !== 1) throw new Error('the per-tab 弹出 item did not dismiss the menu it acted from (' + dismissed + ' dismissals)')
-    // Somebody else's tab: the product's chooser, another plugin's panel.
-    for (const kind of ['guide', 'files-other-plugin', 'frog-unknown']) {
+    // Somebody else's tab: the product's chooser, another plugin's panel — and the
+    // PRODUCT's own `files` tab, which stopped being ours in round 4. Offering this
+    // plugin's popout page on the built-in file tree would be exactly the kind of
+    // cross-plugin button this guard exists to prevent.
+    for (const kind of ['guide', 'files', 'files-other-plugin', 'frog-unknown']) {
       const foreign = item.component({ tab: { kind, id: 't2' }, dismiss: () => {} })
       if (foreign !== null && foreign !== undefined) {
         throw new Error('the per-tab 弹出 item appears on a foreign ' + JSON.stringify(kind) + ' tab — it would offer this plugin\'s page from somebody else\'s panel')
       }
     }
+    // …and a foreign tab that names a page rather than a FILE stays untouched too:
+    // the item keys off the address shape, not off "a tab I did not register".
+    const foreignAddress = item.component({ tab: { kind: 'guide', id: 't2b', contentId: 'dsh-resource://page/guide' }, dismiss: () => {} })
+    if (foreignAddress !== null && foreignAddress !== undefined) {
+      throw new Error('the per-tab 弹出 item appeared on a tab whose address is not a workspace file')
+    }
+    // A RESOURCE tab — a file the shell opened, drawn by whoever claims its
+    // suffix. This is the route that reaches the files this plugin never renders
+    // (.html, images, Office, PDF), because there our bodies do not run at all and
+    // no control of ours can be on screen; it must name the FILE, and the session
+    // the ADDRESS carries rather than the one this window happens to show.
+    const resource = item.component({
+      tab: { kind: 'resource', id: 't3', contentId: 'dsh-resource://file/session/seat-3/docs/page.html' },
+      dismiss: () => {},
+    })
+    if (!resource || resource.type !== 'a') {
+      throw new Error('the per-tab 弹出 item draws nothing on a file tab, so a .html / image / Office / PDF document has no way out at all')
+    }
+    if (String(resource.props.href).indexOf('sessionId=seat-3') < 0) {
+      throw new Error('the file tab item names the wrong session: ' + resource.props.href)
+    }
+    if (String(resource.props.href).indexOf('path=') < 0 || String(resource.props.href).indexOf('page.html') < 0) {
+      throw new Error('the file tab item does not name the file it is on: ' + resource.props.href)
+    }
+    if (resource.props['data-frog-doc-path'] !== 'docs/page.html') {
+      throw new Error('the file tab item carries ' + JSON.stringify(resource.props['data-frog-doc-path']) + ' instead of the address\'s path')
+    }
+    if (String(resource.props.target) !== String(target)) {
+      throw new Error('the file tab item opens ' + JSON.stringify(resource.props.target) + ', want the shared ' + JSON.stringify(target))
+    }
+    let fileDismissed = 0
+    resource.props.onClick()
+    item.component({
+      tab: { kind: 'resource', id: 't3', contentId: 'dsh-resource://file/session/seat-3/docs/page.html' },
+      dismiss: () => { fileDismissed += 1 },
+    }).props.onClick()
+    if (fileDismissed !== 1) throw new Error('the file tab item did not dismiss the menu it acted from (' + fileDismissed + ')')
     if (item.component({}) !== null && item.component({}) !== undefined) {
       throw new Error('the per-tab 弹出 item draws itself with no tab handed to it')
     }
@@ -1942,10 +2056,10 @@ const footKid = (stack, id) => {
 {
   try {
     const blank = bootClient({ sidebarRight: true, blankSession: true })
-    if (String(blank.openedTabs) !== 'files') {
+    if (String(blank.openedTabs) !== 'frog-files') {
       throw new Error('a blank session with an empty column opened ' + JSON.stringify(blank.openedTabs) + ' — the shell\'s own first page is the chooser, so the tree would not be there')
     }
-    if (blank.column.activeTab !== 'files') throw new Error('the open did not land in the column')
+    if (blank.column.activeTab !== 'frog-files') throw new Error('the open did not land in the column')
     if (!blank.sessionSubs().length) throw new Error('no session subscription was installed, so a session switch could never be served')
 
     const used = bootClient({ sidebarRight: true })
@@ -3347,6 +3461,12 @@ if (built) {
     bad('popout tree', e && e.message ? e.message : String(e))
   }
   try {
+    const results = await runPopoutPreview(built.page)
+    for (const r of results) (r.error ? bad : ok)(r.label, r.error || r.detail)
+  } catch (e) {
+    bad('popout preview', e && e.message ? e.message : String(e))
+  }
+  try {
     const results = await runSidebarTree()
     for (const r of results) (r.error ? bad : ok)(r.label, r.error || r.detail)
   } catch (e) {
@@ -3732,14 +3852,27 @@ if (shared) {
     })
     await mountOverlayContent(overlay)
     await overlay.flush()
-    // Exactly ONE 清除: it belongs to the ledger band, so the floating panel must
-    // show it once and only once — and only while the ledger is the view on screen.
+    // The floating panel OPENS ON THE FILE TREE — the same default the popout page
+    // uses, because the tree is how a file is reached and the ledger is the record
+    // you consult afterwards. 清除 belongs to the ledger band, so at this point
+    // there must be none of it on screen: offered anywhere else it would be the
+    // one control that clears a record the view is not even showing.
+    if (overlay.r.findByTitle('清除模式').length) {
+      throw new Error('清除 is on screen while the panel is showing the tree, not the ledger')
+    }
+    if (!overlay.r.findAll('artifacts-pane').some((el) => !/\bis-hidden\b/.test(String(el.props.className)))) {
+      throw new Error('the floating panel opened with every pane hidden: the tree is the default view')
+    }
+    // …and exactly ONE 清除 once the ledger IS the view on screen.
+    const ledgerChip = overlay.r.findAll('artifacts-tab').find((el) => overlay.r.textOf(el) === '产物')
+    if (!ledgerChip) throw new Error('the floating panel has no 产物 chip to switch to')
+    ledgerChip.props.onClick()
+    await overlay.flush()
     const clears = overlay.r.findByTitle('清除模式')
     if (clears.length !== 1) {
-      throw new Error('the floating panel should show exactly one 清除, got ' + clears.length)
+      throw new Error('the ledger should show exactly one 清除, got ' + clears.length)
     }
-    // The floating panel mounts the tree lazily (it is not the view it opens on),
-    // so switch to it the way a user would before asking for its rows.
+    // Back to the tree the way a user would, and ask it for a row.
     const treeChip = overlay.r.findAll('artifacts-tab').find((el) => overlay.r.textOf(el) === '文件树')
     if (!treeChip) throw new Error('the floating panel has no 文件树 chip to switch to')
     treeChip.props.onClick()
@@ -4400,12 +4533,22 @@ if (shared) {
     if (!wrappers[0].props.className.includes('is-office')) {
       throw new Error('the office wrapper carries no is-office class, so the widget gets no height: ' + JSON.stringify(wrappers[0].props.className))
     }
-    const inner = (wrappers[0].props.children || [])[0]
-    if (!inner || typeof inner.type !== 'function' || inner.type.name !== 'OfficeView') {
-      throw new Error('the office body did not delegate to the shared OfficeView (got ' + (inner && inner.type && inner.type.name) + ')')
+    const kids = wrappers[0].props.children || []
+    const inner = kids.find((x) => x && typeof x.type === 'function' && x.type.name === 'OfficeView')
+    if (!inner) {
+      throw new Error('the office body did not delegate to the shared OfficeView (got ' +
+        kids.map((x) => (x && x.type && x.type.name) || typeof x).join(', ') + ')')
     }
     if (!inner.props.bytes || inner.props.kind !== 'docx') {
       throw new Error('the office body handed over ' + JSON.stringify({ kind: inner.props.kind, bytes: !!inner.props.bytes }))
+    }
+    // An Office document has no editor, so it must NOT grow a row of chrome of
+    // its own: the 「在弹出页打开」 this body used to draw as a bar is now an item
+    // in the tab's own actions menu, in the row ABOVE the document (see the
+    // native menu guard). What this body renders is the document and nothing else
+    // — a bar here would be a whole row for one link.
+    if (kids.some((x) => x && x.type && /Popout/.test(x.type.name || ''))) {
+      throw new Error('the office body still draws a popout bar: ' + kids.map((x) => (x && x.type && x.type.name) || typeof x).join(', '))
     }
     mounted.r.setProps({ content: { kind: 'text', text: 'PK…', pages: [], eof: true } })
     await mounted.flush()
@@ -4413,6 +4556,82 @@ if (shared) {
     ok('office document body (rendered)', 'hands the seat\'s complete bytes to the shared OfficeView; a text payload degrades to a hint')
   } catch (e) {
     bad('office document body (rendered)', e && e.message ? e.message : String(e))
+  }
+
+  // The Markdown body the shell mounts: the SAME view the panel uses, plus the
+  // open file's 「在弹出页打开」. The control rides the editor's toolbar when the
+  // seat delivered a payload an editor can save, and the tab's own actions menu
+  // when it did not — never a bar of its own. It must also carry the session the
+  // ADDRESS names, not the one the root read sees (a deep link to the wrong
+  // workspace is a different document).
+  //
+  // The payloads below are the seat's REAL shape: the file's version and byte
+  // count ride the PAGE (`{ offset, text, lines, version, bytes }`) and the owner
+  // memo carries `{ kind, text, pages, eof }` — no `offset` of its own. The first
+  // version of this guard invented `offset` AND `version` on the memo, which is
+  // exactly why it certified a `textEditability` that could never be true against
+  // the real seat: the editor was missing from the sidebar for every file, and
+  // the guard was the only thing that should have noticed.
+  try {
+    const mounted = await mountPanel({ shellMarkdown: true, sessionId: 'seat-1', mainViewSession: 'root-9' })
+    const bodyReg = mounted.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document' && r.def.key === 'dsh-sidebar-frog/markdown')
+    if (!bodyReg) throw new Error('no markdown document body was registered to mount')
+    const find = (node, name, out) => {
+      if (!node || typeof node !== 'object') return out
+      if (typeof node.type === 'function' && node.type.name === name) out.push(node)
+      for (const c of (node.props && node.props.children) || []) find(c, name, out)
+      return out
+    }
+    const mountWith = async (content) => {
+      mounted.r.setComponent(bodyReg.component)
+      mounted.r.setProps({
+        resourceAddress: 'dsh-resource://file/session/seat-9/notes.md',
+        content: content,
+        wrap: false,
+      })
+      await mounted.flush()
+      const pane = find(mounted.r.element, 'EditorPane', [])[0]
+      const bars = find(mounted.r.element, 'DocPopoutBar', []).length
+      if (!pane) throw new Error('the lent markdown body rendered no editor pane')
+      return { docAction: pane.props.docAction, editable: pane.props.editable, bars: bars, pane: pane.props }
+    }
+    const seatPage = (over) => Object.assign({ offset: 1, text: '# t\n', lines: 1, version: 'v1', bytes: 8 }, over)
+
+    // A whole file in one page: the seat's real shape offers an editor, and the
+    // toolbar carries the link — with the page's version and byte count as the
+    // save's conflict basis.
+    const whole = await mountWith({ kind: 'text', text: '# t\n', pages: [seatPage()], eof: true })
+    if (whole.editable !== true) throw new Error('a complete seat payload was not offered an editor')
+    if (!whole.docAction) throw new Error('an editable lent document put the link nowhere: the toolbar got no action')
+    if (whole.docAction.props.sessionId !== 'seat-9') {
+      throw new Error('the lent link used ' + JSON.stringify(whole.docAction.props.sessionId) + ' instead of the address\'s session')
+    }
+    if (whole.docAction.props.path !== 'notes.md') {
+      throw new Error('the lent link carries ' + JSON.stringify(whole.docAction.props.path))
+    }
+    if (whole.pane.baseVersion !== 'v1' || whole.pane.baseSize !== 8) {
+      throw new Error('the save lost its conflict basis: ' + JSON.stringify({ version: whole.pane.baseVersion, size: whole.pane.baseSize }))
+    }
+
+    // A PAGE, not a file. Both shapes the seat can send: a window that is not the
+    // whole file (eof false), and a file long enough that the owner has more than
+    // one page of it (a save built on that prefix would SHORTEN the file).
+    const pageShaped = await mountWith({ kind: 'text', text: '# t\n', pages: [seatPage()], eof: false })
+    if (pageShaped.editable !== false) throw new Error('an unfinished page was offered an editor')
+    if (pageShaped.docAction) throw new Error('an unfinished page was given the toolbar link')
+    const multiPage = await mountWith({
+      kind: 'text', text: '# t\n# u\n', eof: true,
+      pages: [seatPage(), seatPage({ offset: 2, bytes: 16 })],
+    })
+    if (multiPage.editable !== false) throw new Error('a multi-page (partial) file was offered an editor')
+    if (multiPage.docAction) throw new Error('a multi-page file was given the toolbar link')
+    // …and in every one of those cases the body grew no bar of its own.
+    if (pageShaped.bars || multiPage.bars) {
+      throw new Error('a lent document drew a popout bar: ' + JSON.stringify({ pageShaped: pageShaped.bars, multiPage: multiPage.bars }))
+    }
+    ok('markdown document body (rendered)', 'the seat\'s text goes to the same MarkdownView, and 「在弹出页打开」 rides the editor toolbar only when the WHOLE file arrived in one page (the seat\'s real page/version bytes included) — no bar of its own, ever')
+  } catch (e) {
+    bad('markdown document body (rendered)', e && e.message ? e.message : String(e))
   }
 
   // The body that draws a PDF here: the seat's complete bytes go to the SAME
@@ -4437,12 +4656,20 @@ if (shared) {
     if (!wrappers[0].props.className.includes('is-pdf')) {
       throw new Error('the pdf wrapper carries no is-pdf class, so the absolutely positioned viewer has no box: ' + JSON.stringify(wrappers[0].props.className))
     }
-    const inner = (wrappers[0].props.children || [])[0]
-    if (!inner || typeof inner.type !== 'function' || inner.type.name !== 'PdfView') {
-      throw new Error('the pdf body did not delegate to the panel\'s PdfView (got ' + (inner && inner.type && inner.type.name) + ')')
+    const kids = wrappers[0].props.children || []
+    const inner = kids.find((x) => x && typeof x.type === 'function' && x.type.name === 'PdfView')
+    if (!inner) {
+      throw new Error('the pdf body did not delegate to the panel\'s PdfView (got ' +
+        kids.map((x) => (x && x.type && x.type.name) || typeof x).join(', ') + ')')
     }
     if (!inner.props.bytes || inner.props.bytes.length !== bytes.length) {
       throw new Error('the pdf body did not hand the seat\'s bytes over: ' + JSON.stringify({ bytes: !!inner.props.bytes }))
+    }
+    // No bar above an absolutely positioned viewer any more: the viewer gets the
+    // whole body box, and the link lives in the tab's actions menu (the row above
+    // the document) like every other file this plugin does not edit.
+    if (kids.some((x) => x && x.type && /Popout/.test(x.type.name || ''))) {
+      throw new Error('the pdf body still draws a popout bar: ' + kids.map((x) => (x && x.type && x.type.name) || typeof x).join(', '))
     }
     mounted.r.setProps({ content: { kind: 'text', text: '%PDF-1.7', pages: [], eof: true } })
     await mounted.flush()
@@ -5062,6 +5289,196 @@ try {
   ok('编辑 offered (rendered)', 'Markdown is editable with the revision it read; a truncated read, a complete-but-too-big read, an image and every other non-text type are not — and Ctrl+S is bound in the shared mount both faces use')
 } catch (e) {
   bad('编辑 offered (rendered)', e && e.message ? e.message : String(e))
+}
+
+// (A3) 「在弹出页打开」 — the open file's one-click way into the popout tab.
+//
+// Two facts, both of which have already gone wrong in this codebase in other
+// clothes, and neither of which is visible from reading the source:
+//   · ONE control per open file. The link lives in the editor's toolbar when the
+//     file is editable and in a bar of its own when it is not, and those two
+//     conditions must be the SAME question — an independent pair both answering
+//     yes puts the same button on screen twice, and both answering no leaves the
+//     file with no way out at all.
+//   · The RIGHT address. The popout resolves `?path=` against the session's
+//     workspace, so a file the panel knows by a workspace-RELATIVE path (the tree
+//     hands out both spellings) has to be made absolute HERE, where the session
+//     cwd is known. The address is a pure function of (session, path), so it is
+//     evaluated for real rather than pattern-matched; what the panel PASSES to it
+//     is asserted through a real mount, a real row click and the real fetch path.
+try {
+  const grab = (name) => {
+    const at = source.indexOf('const ' + name + ' =')
+    if (at < 0) throw new Error(name + ' is not in src/client/components.js any more')
+    const rest = source.slice(at)
+    // The bodies are indented, so the declaration ends at the first closing brace
+    // that sits at column 0 — which is also the one that must be INCLUDED, or the
+    // extracted text is a function without its end.
+    const close = rest.search(/\r?\n\}/)
+    if (close < 0) throw new Error(name + ' has no top-level closing brace any more')
+    return rest.slice(0, rest.indexOf('}', close) + 1)
+  }
+  const source = read('src/client/components.js')
+  // eslint-disable-next-line no-new-func
+  const urls = new Function('sessionCwd',
+    grab('popoutHrefFor') + '\n' + grab('popoutFileHrefFor') +
+    '\nreturn { popoutHrefFor, popoutFileHrefFor }')((sid) => (sid === 's1' ? 'D:/ws' : ''))
+
+  const want = '/dsh-sidebar-frog?sessionId=s1&path=D%3A%2Fws%2Fnotes.md'
+  const cases = [
+    ['an absolute path', urls.popoutFileHrefFor('s1', 'D:/ws/notes.md'), want],
+    ['a workspace-relative path', urls.popoutFileHrefFor('s1', 'notes.md'), want],
+    ['a ./ relative path', urls.popoutFileHrefFor('s1', './notes.md'), want],
+    ['a Windows-spelled path', urls.popoutFileHrefFor('s1', 'D:\\ws\\notes.md'), want],
+    ['a path under a subdirectory', urls.popoutFileHrefFor('s1', 'docs/a b.md'), '/dsh-sidebar-frog?sessionId=s1&path=D%3A%2Fws%2Fdocs%2Fa%20b.md'],
+    // No session (the shell has not settled) is still a working session link.
+    ['no session', urls.popoutHrefFor(''), '/dsh-sidebar-frog'],
+    ['no session, with a file', urls.popoutFileHrefFor('', 'D:/ws/notes.md'), '/dsh-sidebar-frog?path=D%3A%2Fws%2Fnotes.md'],
+    // No file: the session-only link the other four entry points use.
+    ['no file', urls.popoutFileHrefFor('s1', ''), '/dsh-sidebar-frog?sessionId=s1'],
+  ]
+  const wrongUrls = cases.filter(([, got, exp]) => got !== exp).map(([name, got, exp]) => name + ': ' + JSON.stringify(got) + ' ≠ ' + JSON.stringify(exp))
+  if (wrongUrls.length) throw new Error('the popout address is wrong — ' + wrongUrls.join('; '))
+
+  // …and the panel has to hand that function the file it is SHOWING. Driven by a
+  // real mount + row click; the mini runtime does not expand a component's own
+  // render, so what is asserted here is the pair of props the panel passes down
+  // (the band action's, and the editor toolbar's) — the link component itself is
+  // what the address cases above cover.
+  //
+  // The FLOATING surface is the one to mount, and that is not a detail: on the
+  // native surface a file is opened by the shell's own document tab (see treeOpen
+  // → openInShell), so this panel instance never draws a preview and never draws
+  // the band either. Mounting the native pane here asserted the props of
+  // components the user will never see, which is exactly how the standalone bar
+  // went on being certified after the band replaced it.
+  const mountOne = async (article, read1) => {
+    const mounted = await mountPanel({
+      // NOT `sidebarRight: true`: that flag boots the client for the NATIVE
+      // surface, where no floating panel is registered at all — and the floating
+      // panel is the one that owns a band to put the link in.
+      // The seat's session is set APART from the one the root read sees: the whole
+      // class of bug this file has been bitten by is a page that roots its file
+      // tree (or its file address) at "the session the shell happens to show"
+      // instead of the one the tab belongs to. With both ids equal, an assertion
+      // here cannot tell the two apart.
+      sessionId: 'seat-7',
+      mainViewSession: 'root-9',
+      fetch: (url) => {
+        const u = String(url)
+        if (u.indexOf('/dsh-sidebar-frog/data') === 0) {
+          return Promise.resolve({ status: 200, json: () => Promise.resolve({ artifacts: [article] }) })
+        }
+        return Promise.resolve({ status: 200, json: () => Promise.resolve(Object.assign({ ok: true }, read1)) })
+      },
+    })
+    await mountOverlayContent(mounted)
+    const row = mounted.r.findAll('artifacts-item-main')[0]
+    if (!row) throw new Error('the stubbed artifact list did not render')
+    row.props.onClick()
+    await mounted.flush()
+    const find = (node, name, out) => {
+      if (!node || typeof node !== 'object') return out
+      if (typeof node.type === 'function' && node.type.name === name) out.push(node)
+      for (const c of (node.props && node.props.children) || []) find(c, name, out)
+      return out
+    }
+    const band = find(mounted.r.element, 'DocPopoutBandAction', [])[0]
+    const pane = find(mounted.r.element, 'EditorPane', [])[0]
+    if (!band || !pane) {
+      const names = []
+      const walk = (n) => {
+        if (!n || typeof n !== 'object') return
+        if (typeof n.type === 'function' && n.type.name) names.push(n.type.name)
+        for (const c of (n.props && n.props.children) || []) walk(c)
+      }
+      walk(mounted.r.element)
+      const dump = (n, depth) => {
+        if (!n || typeof n !== 'object' || depth > 2) return []
+        const self = (typeof n.type === 'function' ? n.type.name : String(n.type)) + '.' + String((n.props && n.props.className) || '')
+        const kids = flattenChildren(n)
+        return [self].concat(kids.flatMap((c) => dump(c, depth + 1)))
+      }
+      function flattenChildren(n) {
+        const out = []
+        const push = (c) => {
+          if (Array.isArray(c)) c.forEach(push)
+          else if (c && typeof c === 'object') out.push(c)
+        }
+        push((n.props && n.props.children) || [])
+        return out
+      }
+      throw new Error('the panel rendered no band action / editor pane to inspect (found: ' + names.join(', ') + '; tree: ' + dump(mounted.r.element, 0).slice(0, 24).join(' | ') + ')')
+    }
+    return { band: band.props, docAction: pane.props.docAction }
+  }
+  const countControls = (view) => (view.docAction ? 1 : 0) + (view.band.hidden ? 0 : 1)
+
+  const editable = await mountOne({ path: 'D:/ws/notes.md', kind: 'create', at: Date.now() },
+    { type: 'markdown', content: '# n\n', truncated: false, size: 4, version: 'v1' })
+  if (countControls(editable) !== 1) {
+    throw new Error('an editable file shows ' + countControls(editable) + ' 「在弹出页打开」controls (toolbar: ' + !!editable.docAction + ', band: ' + !editable.band.hidden + ')')
+  }
+  if (!editable.docAction) throw new Error('an editable file put the link nowhere: the editor toolbar got no action')
+  if (editable.docAction.props.path !== 'D:/ws/notes.md') {
+    throw new Error('the editor link carries ' + JSON.stringify(editable.docAction.props.path))
+  }
+  if (editable.band.path !== 'D:/ws/notes.md') throw new Error('the band action was given ' + JSON.stringify(editable.band.path))
+  // The session the PANEL is showing. On the floating surface there is no seat to
+  // hand one down, so that is the shell's current session (`mainViewSession` in
+  // this mount) — while the seat-shaped assertion lives where a seat exists: the
+  // lent document bodies, whose address names the tab's own session (see the
+  // markdown-body guard above). Both halves matter, and mounting the native pane
+  // here is what used to make this one look like it covered the other.
+  if (editable.band.sessionId !== 'root-9') {
+    throw new Error('the band action addressed the popout as ' + JSON.stringify(editable.band.sessionId) + ', not the session the panel shows')
+  }
+  if (editable.docAction.props.sessionId !== 'root-9') {
+    throw new Error('the editor link addressed the popout as ' + JSON.stringify(editable.docAction.props.sessionId) + ', not the session the panel shows')
+  }
+
+  const image = await mountOne({ path: 'D:/ws/pic.png', kind: 'create', at: Date.now() }, { type: 'image', content: '', truncated: false })
+  if (countControls(image) !== 1) {
+    throw new Error('a file with no editor shows ' + countControls(image) + ' 「在弹出页打开」controls (toolbar: ' + !!image.docAction + ', band: ' + !image.band.hidden + ')')
+  }
+  if (image.docAction) throw new Error('a file with no editor was given the toolbar link as well as the band action')
+  if (image.band.path !== 'D:/ws/pic.png') throw new Error('the band action was given ' + JSON.stringify(image.band.path))
+
+  // The truncated case is the one where the two conditions could drift: a complete
+  // payload the host refuses an editor for. Same branch as the image.
+  const cut = await mountOne({ path: 'D:/ws/big.md', kind: 'create', at: Date.now() },
+    { type: 'markdown', content: '# n\n', truncated: true, editable: false, chars: 900000, size: 900000, version: 'v1' })
+  if (countControls(cut) !== 1 || cut.docAction) {
+    throw new Error('a file too big to edit got the wrong control (toolbar: ' + !!cut.docAction + ', band: ' + !cut.band.hidden + ')')
+  }
+  // …and no row of its own, in ANY of those cases: the whole point of the band is
+  // that one link never costs a row. The class is checked as well as the component
+  // name — a mutation that pasted a bare `div.artifacts-docbar` back above the
+  // document survived the name-only version of this line.
+  if (/DocPopoutBar|artifacts-docbar/.test(source)) {
+    throw new Error('a standalone popout bar is back: the link must ride the editor toolbar or the band')
+  }
+
+  // The link component has to ask the builder for the CURRENT file: a link that
+  // stamps the path into its own attributes but builds its href from anything else
+  // is the drift this pins shut. The browsing-context name and `rel` are asserted
+  // from the source because they are what the RENDERED anchor carries, and the
+  // mini runtime does not expand a component's own output (a mutation that dropped
+  // `target` survived the rendered assertions here until this was added).
+  const link = /const DocPopoutLink = \(props\) => \{[\s\S]*?\n\}/.exec(source)
+  if (!link) throw new Error('DocPopoutLink is gone from src/client/components.js')
+  if (!/popoutFileHrefFor\(p\.sessionId, p\.path\)/.test(link[0])) {
+    throw new Error('DocPopoutLink does not build its address from the file it is given')
+  }
+  if (!/target: POPOUT_TARGET/.test(link[0])) {
+    throw new Error('DocPopoutLink opens a new browsing context per click instead of reusing the popout tab')
+  }
+  if (!/noopener/.test(link[0])) {
+    throw new Error('DocPopoutLink does not carry rel=noopener')
+  }
+  ok('在弹出页打开 (rendered)', 'exactly one link per open file — the editor toolbar when it has an editor, its own bar when it has not, always under the SEAT session; addresses: absolute, workspace-relative, ./ relative, Windows-spelled, spaces, and the session-only fallback all resolve as intended; the anchor reuses one popout tab with noopener')
+} catch (e) {
+  bad('在弹出页打开 (rendered)', e && e.message ? e.message : String(e))
 }
 
 // (A3) A CUT READ MUST SAY SO. The note lived only inside the code-view branch,

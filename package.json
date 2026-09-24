@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-frog",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "可弹出侧边栏 · A DeepSeek Harness sidebar that shows artifacts and pops out into a larger web tab.",
   "license": "MIT",
   "author": "曾青松 <pypzengqs@126.com> (https://github.com/zengqingsong)",

@@ -373,6 +373,13 @@
           mode === 'edit' ? React.createElement('span', { key: 'kind', className: 'artifacts-ednote' }, editorLanguageName(path) ? 'CodeMirror · ' + editorLanguageName(path) : 'CodeMirror · 纯文本') : null,
         ),
         React.createElement('div', { className: 'artifacts-edbar-group' },
+          // The caller's own extra action for this file, drawn first in this group.
+          // It is a PROP rather than something this module imports because the one
+          // action that uses it — 「在弹出页打开」— belongs to the panel's world, and
+          // the editor has no business knowing the popout page exists: it is also
+          // what lets this pane be mounted (and guarded) with nothing but the
+          // shared editor, the way scripts/check.js mounts it.
+          props.docAction || null,
           status ? React.createElement('span', {
             key: 'status',
             className: 'artifacts-edstatus' + (conflictNow ? ' is-bad' : (dirty ? ' is-dirty' : '')),

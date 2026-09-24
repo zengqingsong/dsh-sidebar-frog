@@ -146,13 +146,44 @@ class Session {
 
   async wait(ms) { await sleep(ms) }
 
-  async navigate(url) {
-    const done = new Promise((resolve) => {
-      const off = (fn) => fn
-      this.on('Page.loadEventFired', () => { off(); resolve() })
-    })
+  /**
+   * Navigate this tab and wait for the NEW document to be ready.
+   *
+   * Deliberately not `Page.loadEventFired`: that event only arrives once
+   * `Page.enable` has been called, and this page polls the host every two seconds
+   * anyway, so "the load event" is both fragile and beside the point. What matters
+   * is that the URL changed and the new document is no longer `loading`.
+   *
+   * `onDialog` answers a JavaScript dialog raised BY THE NAVIGATION: the popout
+   * page asks before it leaves when it holds unsaved edits (`beforeunload`), and a
+   * dialog blocks the navigation until somebody answers it — which is why the
+   * first version of the deep-link test timed out on `Page.navigate` and then on
+   * every command after it (a blocked navigation blocks the renderer). Pass
+   * 'accept' to leave anyway, 'dismiss' to stay.
+   */
+  async navigate(url, { onDialog = null, timeout = 20000 } = {}) {
+    if (onDialog) {
+      await this.send('Page.enable')
+      this.on('Page.javascriptDialogOpening', () => {
+        this.send('Page.handleJavaScriptDialog', { accept: onDialog !== 'dismiss' }).catch(() => {})
+      })
+    }
     await this.send('Page.navigate', { url })
-    await Promise.race([done, sleep(15000)])
+    const deadline = Date.now() + timeout
+    for (;;) {
+      let info = null
+      try {
+        info = await this.evaluate('({ href: location.href, state: document.readyState })')
+      } catch (e) {
+        // Mid-commit the old execution context can be gone: that is not a failure.
+        info = null
+      }
+      if (info && info.href === url && info.state !== 'loading') return
+      if (Date.now() > deadline) {
+        throw new Error('navigate: the tab never reached ' + url + ' (at ' + JSON.stringify(info) + ')')
+      }
+      await sleep(50)
+    }
   }
 
   /** Centre point of the first element matching `selector`, or null. */

@@ -23,27 +23,38 @@
     // and the tab menu are all the shell's, and each body draws its view and
     // nothing else.
     //
-    // ── Why the tree rides the product's own `files` kind ───────────────────
-    // The first row is not a new kind: it takes the product's `files` over. That
-    // is the documented half of its two-band rule — "a kind may carry one
-    // `builtin` and one `extension` registration at once: the extension is the one
-    // in force — claims, `get`, the guide page, and the body and title, which the
-    // seat finds under the definition's own `id` — and the builtin resumes when
-    // the extension unregisters" — and it is what makes the column's 文件 tab THIS
-    // file tree: the one with @引用 into the composer, the right-click menu,
-    // per-directory refresh, filtering, keyboard navigation and A/M change
-    // letters. The product's own tree is a plain list (its bundle has no
-    // `contextmenu` and no reference action at all), so a user coming from this
-    // plugin's floating panel watched the file tree "lose" both capabilities the
-    // moment the column started showing the product's tab instead of ours.
+    // ── Why the tree is its OWN kind, and no longer the product's `files` ────
+    // This row used to take the product's `files` kind over (the extension band
+    // outranks its `builtin`, so the column's 文件 tab became this tree). That is
+    // no longer what happens, for a reason the product itself created: 0.1.7's
+    // built-in tree grew a live per-directory WATCHER (`workspaceFiles.changes`,
+    // auto-refresh, `data-files-auto-refresh`) that only runs while the product's
+    // own body is the one mounted. A takeover keeps that body off screen, so it
+    // silently suppressed the capability — the tree stopped noticing the files
+    // the agent wrote.
+    //
+    // So the two get separate kinds and BOTH are on the strip: the product's
+    // `files` stays exactly as it ships (watcher and all), and this tree is its
+    // own tab beside it. Nothing is taken from the product, so nothing has to be
+    // handed back — `nativeFileTree` now only chooses the column over the
+    // floating panel, and the built-in tree is never touched either way.
+    //
+    // What the product's tree still does not have is the two capabilities this
+    // one does — its bundle has no `contextmenu` and no reference action at all.
+    // The reference half is no longer a reason to take the tree over: `@引用`
+    // never depended on this tree in the first place, it writes through the
+    // shell's own `conversation.input.for(...).setDraft` (see quoteToComposer in
+    // src/client/core.js). So it is offered on the PRODUCT's flow too, as a
+    // document action in the product's own preview header — see
+    // installDocumentActions below. The right-click menu, 新建 / 删除 and the
+    // A/M change letters stay here, which is what this tab is for.
     //
     // ── One guide entry per view ────────────────────────────────────────────
     // Each row carries exactly one, so the chooser page lists the whole set. The
     // column's own seeding rule then applies — "one entry ⇒ open it; several ⇒
     // open the chooser" (ui-sidebar-right's defaultSeed) — which is the accepted
     // price of listing every view instead of hiding three of them behind the
-    // first. Handing the column back is one click in settings (`nativeFileTree`),
-    // and the builtin resumes exactly as the contract promises.
+    // first.
     //
     // `view` is the internal name the body factory switches on (see the
     // `fixedView` prop in src/client/components.js); `order` is the position in
@@ -52,13 +63,17 @@
     // inlined into this same closure just below, and are only READ when
     // registration runs, long after they exist.
     const FROG_FILES_ID = 'dsh-sidebar-frog/files'
-    // The kind the tree occupies, spelled once: the tab definition below, the
-    // footer entry point and the 「加载时展开」default all open the SAME page by it.
-    const FROG_FILES_KIND = 'files'
+    // The kind this tree occupies. Deliberately NOT the product's `files`: that
+    // name belongs to the built-in tree, which keeps it (see the block above).
+    // Spelled once, because the tab definition below, the footer entry point and
+    // the 「加载时展开」default all open the SAME page by it.
+    const FROG_FILES_KIND = 'frog-files'
     const FROG_TABS = [
       {
-        id: FROG_FILES_ID, kind: FROG_FILES_KIND, view: 'tree', title: '文件', order: 10,
-        description: '工作区文件树：@引用到输入框、右键菜单、按目录刷新与 A/M 改动字母。',
+        // 文件树, not 文件: the product's own tab is the 文件 one, and two chips
+        // reading the same word would be indistinguishable on the strip.
+        id: FROG_FILES_ID, kind: FROG_FILES_KIND, view: 'tree', title: '文件树', order: 10,
+        description: '本插件的文件树：@引用到输入框、右键菜单、新建/删除、按目录刷新与 A/M 改动字母。系统的「文件」标签是另一棵（自带实时监听）。',
       },
       {
         id: 'dsh-sidebar-frog/artifacts', kind: 'frog-artifacts', view: 'artifacts', title: '产物', order: 20,
@@ -89,6 +104,13 @@
     //
     // THE RULE: renaming the kind or the id again means APPENDING the retired
     // name below, never replacing it.
+    //
+    // The ONE exception is the round-4 move off the product's `files` kind. A
+    // restored tab of kind `files` needs no body from this plugin, because the
+    // PRODUCT declares that kind itself (id `@deepseek-ai/dsh-client-ui-sidebar-files`),
+    // so the seat resolves `entryKey` to the product's id and draws the product's
+    // tree — the right answer, and a body of ours under the bare key `files` would
+    // never be reached anyway. Retiring a name INTO another owner is not a gap.
     //
     // `frog-browser` is on the list for the second reason a name retires: the
     // view is GONE (the 内置浏览器 tab was removed after review — the product's
@@ -197,6 +219,81 @@
       }
     }
 
+    // ── @引用 on the PRODUCT's own document preview ────────────────────────
+    // The reference half of this plugin is not a tree feature and never was: it
+    // writes `@path` through the shell's own composer API (quoteToComposer in
+    // src/client/core.js, which calls `conversation.input.for(...).setDraft`).
+    // Nothing about it needed this tree — the tree was only ever where the
+    // BUTTON happened to live.
+    //
+    // 0.1.7 gives that button a first-class home: `sidebar.right.tab.document.actions`
+    // is a LIST seat the product's own document preview renders in its header
+    // ("Header toolbar contributions acting on the previewed file", declared by
+    // ui-sidebar-documentpreview as a child of the text preview), handing each
+    // occupant `{ absolutePath }`. So the flow the user actually wants —
+    // click a file in the SYSTEM tree, reference it — now works on the product's
+    // tree, its preview, and its document tabs alike, without a single DOM probe.
+    //
+    // Degrading safely is the whole reason this is a separate registration. The
+    // seat does not exist before 0.1.7, and `slots.inject` does not throw for a
+    // key that is never declared: it parks the callback until a declaration
+    // appears and disposes it when one collapses ("Install an effect for each
+    // declaration lifetime of a slot"). On an older shell the wait simply never
+    // resolves, so this contributes nothing and costs nothing.
+    //
+    // The path is made WORKSPACE-RELATIVE before it becomes a reference — that is
+    // what the composer's grammar resolves, and what every other caller in this
+    // plugin passes (the tree's rows, the popout bridge). An absolute path is only
+    // kept when it cannot be expressed under the session's root, so a reference is
+    // never silently wrong; the composer's own help still accepts it.
+    // READ THE SEAT'S OWN CONTRACT, NOT A GUESS: this seat's owner props are
+    // `{ absolutePath }` and NOTHING else, so a `props.sessionId` here would be
+    // `undefined` on every render — which silently made `referenceFor` skip the
+    // rebase and emit an ABSOLUTE path into the composer. The seat is
+    // `scope: 'session'`, and the preview belongs to the session the column is
+    // showing, so the shell's own current-session reader is the right fallback.
+    const referenceFor = (absolutePath, sessionId) => {
+      const raw = String(absolutePath == null ? '' : absolutePath).replace(/\\/g, '/')
+      if (!raw) return ''
+      const owner = sessionId || currentSessionId()
+      const root = (owner ? sessionCwd(owner) : '').replace(/\\/g, '/').replace(/\/+$/, '')
+      if (root && raw.indexOf(root + '/') === 0) return raw.slice(root.length + 1)
+      return raw
+    }
+
+    // One small button, in the product's own toolbar idiom: icon + label, so it
+    // reads the same as the reload / wrap controls it stands beside.
+    const DocumentReferenceAction = (props) => {
+      const path = referenceFor(props && props.absolutePath, props && props.sessionId)
+      if (!path) return null
+      return React.createElement('button', {
+        type: 'button',
+        className: 'artifacts-doc-action',
+        'data-frog-doc-action': 'reference',
+        'data-frog-doc-path': path,
+        title: '把 @' + path + ' 引用到输入框',
+        'aria-label': '引用到输入框',
+        onClick: () => {
+          if (quoteToComposer(path)) noticeStore.flash('已插入 @' + basename(path))
+          else copyToClipboard('@' + path, '已复制 @引用')
+        },
+      },
+        React.createElement('span', { className: 'artifacts-doc-action-label' }, '@引用'),
+      )
+    }
+
+    const installDocumentActions = (slots) => {
+      try {
+        slots.inject('sidebar.right.tab.document.actions', () => slots.register({
+          name: 'sidebar.right.tab.document.actions',
+          id: 'dsh-sidebar-frog-doc-reference',
+          order: 40,
+          label: '@引用到输入框',
+        }, DocumentReferenceAction))
+        return true
+      } catch (e) { return false }
+    }
+
     // ── The column's own entry points ───────────────────────────────────────
     // Where this plugin asks the shell to show its tree. One command does both
     // jobs: `openTab` claims the page, places it, and expands the column in the
@@ -278,9 +375,9 @@
 
     const installColumnEntryPoints = (slots) => {
       if (!frogNativeSurface) return false
-      // Gated by the takeover switch and 「加载时展开」only. NOT by the floating
+      // Gated by the panel-surface switch and 「加载时展开」only. NOT by the floating
       // panel's 「文件树」 preference: that one governs the OVERLAY's band, while
-      // the column's 文件 tab is drawn regardless of it (a native 文件 tab must
+      // the column's 文件树 tab is drawn regardless of it (a native 文件树 tab must
       // never be blank — see the `fixedView === 'tree'` rule in components.js).
       // Reading it here would quietly disable both entry points for anyone who had
       // switched that view off while the panel was floating.
@@ -447,21 +544,53 @@
     //   · the item decides its own visibility from the tab it is handed, so a tab
     //     that is not ours renders nothing. An item that acts must also dismiss
     //     the menu: the menu is the kit's and closes only on its own actions.
+    //
+    // TWO kinds of tab get an item here, and the second one is why this component
+    // grew:
+    //   · this plugin's own views — the page itself (在新标签页弹出);
+    //   · any RESOURCE tab whose address names a file (在弹出页打开 <name>). That
+    //     is the single route that works for a document this plugin does not draw
+    //     at all — the product renders .html, images, Office, PDF and anything
+    //     else by itself, so no body of ours runs and no button of ours can be on
+    //     screen. It is also what replaced the one-line bar that used to sit above
+    //     every document tab: the row above that body is the product's own header
+    //     (path, renderer picker, reload) and has no extension point, so a bar of
+    //     ours could only ever be a second, near-empty row — while this item rides
+    //     the tab strip, which is the row above the whole document.
     const PopoutMenuItem = (props) => {
       const tab = props && props.tab
       const dismiss = props && props.dismiss
-      if (!tab || !FROG_TAB_KINDS.has(tab.kind)) return null
+      if (!tab) return null
+      if (FROG_TAB_KINDS.has(tab.kind)) {
+        return React.createElement('a', {
+          className: 'artifacts-menuitem',
+          href: popoutHrefFor(currentSessionId()),
+          target: POPOUT_TARGET,
+          rel: 'noreferrer noopener',
+          role: 'menuitem',
+          'data-frog-popout': 'tab',
+          title: '在新标签页弹出（可拖到另一块显示器）',
+          onClick: () => { if (typeof dismiss === 'function') dismiss() },
+        },
+          PopoutIcon(14),
+          React.createElement('span', { className: 'artifacts-menuitem-label' }, '在新标签页弹出'),
+        )
+      }
+      const path = pathFromFileAddress(tab.contentId || tab.address || '')
+      if (!path) return null
+      const sessionId = sessionFromFileAddress(tab.contentId || tab.address || '') || currentSessionId()
       return React.createElement('a', {
         className: 'artifacts-menuitem',
-        href: popoutHrefFor(currentSessionId()),
+        href: popoutFileHrefFor(sessionId, path),
         target: POPOUT_TARGET,
         rel: 'noreferrer noopener',
         role: 'menuitem',
-        'data-frog-popout': 'tab',
-        title: '在新标签页弹出（可拖到另一块显示器）',
+        'data-frog-popout': 'file',
+        'data-frog-doc-path': path,
+        title: '在弹出页打开「' + basename(path) + '」（独立标签页，与侧边栏实时同步）',
         onClick: () => { if (typeof dismiss === 'function') dismiss() },
       },
         PopoutIcon(14),
-        React.createElement('span', { className: 'artifacts-menuitem-label' }, '在新标签页弹出'),
+        React.createElement('span', { className: 'artifacts-menuitem-label' }, '在弹出页打开 ' + basename(path)),
       )
     }

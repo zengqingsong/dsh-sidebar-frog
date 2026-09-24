@@ -255,6 +255,22 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-menuitem svg { flex: none; }
 .artifacts-menuitem:hover { background: rgba(127, 127, 127, .14); background: color-mix(in srgb, currentColor 14%, transparent); }
 .artifacts-menuitem-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* 「@引用」 in the PRODUCT's document-preview toolbar
+   (sidebar.right.tab.document.actions — declared by ui-sidebar-documentpreview
+   and rendered in that preview's own header). It has to read as one of the
+   product's tools, so it is styled from the SAME aliases its reload/wrap buttons
+   use rather than from this panel's palette: a compact ghost button that borrows
+   the surrounding label colour. */
+.artifacts-doc-action {
+  box-sizing: border-box; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; height: 26px; margin: 0; padding: 0 8px;
+  border: none; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary);
+  cursor: pointer; font: inherit; font-size: 12px; line-height: 18px;
+  transition: color .15s, background .15s;
+}
+.artifacts-doc-action:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-doc-action-label { white-space: nowrap; }
 .artifacts-item {
   position: relative; display: flex; align-items: stretch; width: 100%;
   padding: 0; cursor: default ; border-bottom: 1px solid var(--dsw-alias-border-l2);
@@ -901,6 +917,32 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
    relative box is an invisible PDF. Hence the min-height floor. */
 .artifacts-doc.is-pdf { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 320px; }
 .artifacts-doc.is-pdf > .artifacts-pdfview { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+
+/* ── 在弹出页打开 (open the file that is on screen in the popout tab) ────────
+   ONE control per open file, and it never owns a row: the editor toolbar carries
+   it where the file is editable (that toolbar exists anyway), and where it does
+   not, the BAND carries it — the strip of file tabs, which is the row above the
+   document. It reads as a quiet link rather than a primary action, because it
+   LEAVES the sidebar and so must not compete with 保存. */
+.artifacts-doclink-slot { display: inline-flex; align-items: center; flex: none; }
+/* The band scrolls sideways and 清除 already sticks to its right edge: two sticky
+   items in one row would overlap, so this one takes the free slot after it. */
+.artifacts-tabs > .artifacts-doclink-slot { order: 90; }
+.artifacts-doclink {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; color: var(--dsw-alias-label-secondary);
+  font-size: 11px; font-weight: 500; line-height: 1.4; text-decoration: none;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.artifacts-doclink:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-interactive-bg-hover); text-decoration: none; }
+.artifacts-doclink:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+.artifacts-doclink svg { flex: none; }
+/* In a narrow column the two words cost the file tabs their width, and the tab
+   names are the more useful of the two: the label goes, the icon, title and
+   aria-label stay. */
+.artifacts-doclink.is-compact .artifacts-doclink-label { display: none; }
+.artifacts-doclink.is-compact { padding: 2px 6px; }
 
 /* ── 编辑 (editing) ──────────────────────────────────────────────────────────
    The editor pane: a toolbar (预览/编辑 toggle, 重新载入, 保存), an optional

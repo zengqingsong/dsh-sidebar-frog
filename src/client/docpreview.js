@@ -231,20 +231,39 @@
 
     // A text payload the editor may safely write back.
     //
-    // The seat hands a PAGE, not a file: `offset` is the 1-based first line and
-    // `eof` says whether the last line is included. Editing a page and saving it
-    // would replace the whole file with that page — the one failure worse than
-    // not offering an editor at all. So the gate is the whole file, and the
-    // version/size the seat reported ride along as the save's conflict basis.
+    // The owner hands PAGES, not a file. One page is one line window from the
+    // seat — `{ offset, text, lines }` plus the file's `version` and complete
+    // `bytes` from the stat that preceded it — and `eof` says whether the last
+    // page includes the file's last line. Editing a WINDOW and saving it would
+    // replace the whole file with that window, which is the one failure worse
+    // than not offering an editor at all. So the gate is the whole file: exactly
+    // one page, starting at line 1, with `eof` set. (The seat's page size is
+    // 5000 lines, so every file up to that is editable and anything longer is
+    // not — which is also why the popout page, with its own editor, stays the
+    // way out for the long ones.)
+    //
+    // The version and byte count that ride the page are the save's conflict
+    // basis. They are read from the PAGE (with the payload itself as a fallback
+    // for an older shape) because that is where the seat puts them — the first
+    // version of this function asked for `content.offset`, a field the owner's
+    // memo does not carry at all, so `Number(undefined) !== 1` was true for every
+    // payload and the shell's sidebar NEVER offered its editor. Nothing noticed
+    // because the fixture in scripts/check.js invented the missing field.
     const textEditability = (content) => {
       if (!content || content.kind !== 'text') return null
-      if (Number(content.offset) !== 1 || content.eof !== true) return null
-      const bytes = typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null
+      const pages = Array.isArray(content.pages) ? content.pages : null
+      const first = pages && pages.length ? pages[0] : null
+      const startsAtOne = first ? Number(first.offset) === 1 : Number(content.offset) === 1
+      if (content.eof !== true || !startsAtOne) return null
+      if (pages && pages.length > 1) return null
+      const source = first || content
+      const bytes = typeof source.bytes === 'number' && isFinite(source.bytes) ? source.bytes
+        : (typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null)
       // The host refuses a save past its own text ceiling; saying so here keeps
       // the toolbar from appearing on a file that could only fail on Ctrl+S.
       if (bytes !== null && bytes > 4 * 1024 * 1024) return null
       return {
-        version: typeof content.version === 'string' && content.version ? content.version : null,
+        version: typeof source.version === 'string' && source.version ? source.version : null,
         size: bytes,
       }
     }
@@ -275,6 +294,15 @@
       const session = sessionFromFileAddress(p.resourceAddress)
       const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
+        // NO standalone bar here, on purpose. The one row of chrome a document
+        // tab gets from this plugin is the editor's own toolbar, and it is drawn
+        // because the file can be edited — so 「在弹出页打开」 rides it. Where
+        // there is no editor (a payload too big to hold whole) the link is not
+        // missing, it moved to the tab's own actions menu, one row up: the row
+        // ABOVE this body belongs to the product's document header (path,
+        // renderer picker, reload) and has no extension point, so a bar of ours
+        // could only ever be a second, near-empty row — which is exactly what it
+        // was, and what this removes. See PopoutMenuItem in src/client/native.js.
         React.createElement(EditorPane, {
           path: path,
           editable: !!edit,
@@ -282,6 +310,14 @@
           content: content,
           baseVersion: edit ? edit.version : null,
           baseSize: edit ? edit.size : null,
+          docAction: edit
+            ? React.createElement(DocPopoutLink, {
+              path: path,
+              sessionId: session || currentSessionId(),
+              compact: true,
+              place: 'editor',
+            })
+            : null,
         },
           React.createElement(MarkdownView, {
             content,
@@ -306,15 +342,27 @@
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
       const path = pathFromFileAddress(p.resourceAddress)
+      const session = sessionFromFileAddress(p.resourceAddress)
       const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
+        // No standalone bar: see the note on the Markdown body above. The same
+        // link is on the editor's toolbar when the file is editable, and in the
+        // tab's actions menu when it is not.
         React.createElement(EditorPane, {
           path: path,
           editable: !!edit,
-          sessionId: sessionFromFileAddress(p.resourceAddress),
+          sessionId: session,
           content: content,
           baseVersion: edit ? edit.version : null,
           baseSize: edit ? edit.size : null,
+          docAction: edit
+            ? React.createElement(DocPopoutLink, {
+              path: path,
+              sessionId: session || currentSessionId(),
+              compact: true,
+              place: 'editor',
+            })
+            : null,
         },
           React.createElement(TableView, { content, path: path }),
         ),
@@ -333,6 +381,9 @@
       }
       const path = pathFromFileAddress(address)
       return React.createElement('div', { className: 'artifacts-doc is-office' },
+        // No editor and no standalone bar: this body's 「在弹出页打开」 is the
+        // tab's actions menu, which is the only chrome that costs no row (see
+        // PopoutMenuItem in src/client/native.js).
         React.createElement(OfficeView, { bytes: content.data, path: path, kind: officeKind(path) }),
       )
     }
@@ -350,6 +401,9 @@
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理完整字节内容。')
       }
       return React.createElement('div', { className: 'artifacts-doc is-pdf' },
+        // No bar. It used to sit here, with a z-index, only because the PDF view
+        // fills its box absolutely; the tab's actions menu replaces it and the
+        // row it claimed goes back to the document.
         React.createElement(PdfView, { bytes: content.data, path: pathFromFileAddress(p.resourceAddress) }),
       )
     }

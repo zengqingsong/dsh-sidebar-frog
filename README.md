@@ -20,7 +20,7 @@ Forked from [e2mcc/dsh-popout-sidebar](https://github.com/e2mcc/dsh-popout-sideb
 - **MIT** · zero runtime dependencies · **no network requests** · no telemetry.
 - Reads and writes only inside the session workspace. Every data route is fenced with the browser cookie exactly the way the product's own `/api` is, and answers `401` without it.
 - Every preview library is **bundled**, so it works offline, on an intranet, behind no CDN.
-- Targets DSH `0.1.6-alpha.2` on the `web` profile. Installing runs **no build script**.
+- Targets DSH `0.1.7-rc.1` on the `web` profile. Installing runs **no build script**.
 
 ## Highlights
 
@@ -31,7 +31,7 @@ Forked from [e2mcc/dsh-popout-sidebar](https://github.com/e2mcc/dsh-popout-sideb
 | 🎯 | Quote the lines you mean | Select a paragraph in a rendered document and a small bar appears over it naming its source lines ("第 12–14 行"); 引用 puts that locator plus exactly those lines into the composer, and 定位 opens the file in the editor with the same lines selected. It works on headings, paragraphs, list items, quotes, tables and fenced blocks, and it resolves through nested content correctly (a list item inside a blockquote reports the line it really is on). A Markdown fence quotes as one block: its lines are not addressed individually, because splitting the highlighted markup per line would break what you copy out of it. |
 | 📦 | Previews that work offline | Code, Markdown with math and diagrams, PDF, HTML, images, sortable CSV tables, Word / Excel / PowerPoint, and audio and video with HTTP Range. Every renderer is bundled — no CDN, no network call. |
 | 🌳 | An artifact ledger | Files the agent wrote or edited appear on their own, including files produced indirectly by a shell command. Edited files keep their before/after hunks, and Undo lives there. |
-| ↔️ | The workspace file tree | Takes over the system sidebar's own Files tab, so `@`-references into the composer, the context menu, per-directory refresh and deleting a single file sit where you already look. |
+| ↔️ | The workspace file tree | The system's own Files tab is left exactly as it ships — including 0.1.7's live directory watching and auto-refresh — and this plugin's tree is a **File tree** tab beside it: `@`-references into the composer, the context menu, create/delete and per-directory refresh all live there. The same `@`-reference is also mounted on the system document preview's own toolbar, so a file opened from the system tree can be referenced too. |
 | ✏️ | Editing and saving in place | Markdown, plain text and CSV open in a CodeMirror editor with `Ctrl+S`. The save is fenced to the workspace, checked against the version you opened, and puts the file's own line endings and byte-order mark back. |
 | 🌿 | A read-only Git slice | Branch, ahead/behind, and the changed / staged / untracked / conflicted lists, with a line-level diff against HEAD for any file. Read-only is a hard boundary: no staging, no commit, no checkout, no discard. |
 
@@ -45,7 +45,7 @@ npm install -g @deepseek-ai/dsh
 dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
 ```
 
-Then restart the DSH service and hard-refresh the browser (`Ctrl/Cmd+Shift+R`). The right sidebar gains five tabs — **Files**, **Artifacts**, **Jobs**, **Usage** and **Git** — and a permanent **File tree** button appears at the bottom of the left column, which is also how you get into the sidebar from a brand-new session.
+Then restart the DSH service and hard-refresh the browser (`Ctrl/Cmd+Shift+R`). The right sidebar gains five tabs — **File tree**, **Artifacts**, **Jobs**, **Usage** and **Git** — beside the system's own **Files** tab, and a permanent **File tree** button appears at the bottom of the left column, which is also how you get into the sidebar from a brand-new session.
 
 To update, run the same `add` command again. To remove it, `dsh plugin --profile web remove dsh-sidebar-frog`.
 
@@ -84,13 +84,15 @@ dsh plugin --profile web add github:zengqingsong/dsh-sidebar-frog
 
 ## Features
 
-- **Popout page.** `/dsh-sidebar-frog` is a standalone two-column page — preview on the left, ledger or file tree on the right, with a draggable divider. It is a normal tab, so you can drag it to another monitor, and it stays in sync with the sidebar through a `storage` bridge. The `@` button on the popout page writes the reference straight into the main window's composer; if that window is gone, it falls back to the clipboard.
+- **Popout page.** `/dsh-sidebar-frog` is a standalone two-column page — preview on the left, file tree or ledger on the right, with a draggable divider. It is a normal tab, so you can drag it to another monitor, and it stays in sync with the sidebar through a `storage` bridge. The `@` button on the popout page writes the reference straight into the main window's composer; if that window is gone, it falls back to the clipboard. **It opens — like the sidebar — on the file tree**: the tree is how you reach a file, the ledger is what the agent changed, which is the question you ask afterwards. Switch the file tree off and both fall back to the ledger, since there is no tree left to open on.
+- **Open the file you are looking at in the popout.** Every open document carries a **在弹出页打开** link, and it never costs a row of its own: in the editor's own toolbar where the file is editable (a row that has to exist anyway, for 预览/编辑/保存), and otherwise at the right end of the **file-tab strip** — the row above the document. In the system sidebar the product's own header row is the one that carries the document's controls, so editable files use the editor toolbar and everything else (HTML, images, Office, PDF, a file too large to edit) uses the **file tab's actions menu** — `在弹出页打开 <name>`, which is also the only entry that can reach a file this plugin does not draw at all. The file tree's context menu carries the same item, for any file. One click opens or reuses the popout tab **on that file**, addressed absolutely against the session workspace, so the same document is on screen in both places. The popout page honours `?path=<file>` on load and reveals the file in its tree; a path that no longer exists says so in the preview area instead of quietly showing the list. (The header itself does take contributions — that is where `@引用` is offered, see below — but the popout link stays on the tab strip so it is reachable for documents this plugin does not render.)
+- **Fullscreen preview on the popout page.** The preview bar's 全屏 button gives the document the whole screen — the Fullscreen API where the browser allows it (no chrome, no taskbar: what a document on a second monitor wants), and a CSS mode that fills the tab where the API is missing or refuses, such as inside an embedding frame. `Esc` leaves it either way, and the button reports the state it is in (`aria-pressed`), including when the browser changes it on its own.
 - **Artifact ledger.** Successful `write` and `edit` calls are recorded as they happen, with the file's type, its change letter and its before/after text. Shell commands are covered too: the workspace is fingerprinted before and after `bash` / `pwsh` runs, so a chart or a report produced by a script is picked up as well. Removing an entry and undoing a change both go through the same bounded history.
 - **File tree.** Expand, collapse, filter, keyboard navigation, per-directory refresh (the toolbar refresh keeps your expansion state; `Shift`-click reloads everything), and a context menu with copy path, copy relative path, `@`-reference, refresh this folder, expand/collapse all, and delete for the single row you right-clicked. Expansion state survives reloads.
 - **Deleting from the tree.** Right-click one file — or one folder, which goes recursively — and that entry alone is removed from disk; the popout page offers the same item. The menu item only arms the action: a dialog that names the target has to be confirmed, and `Enter` / `Esc` run or cancel it. Every deletion is fenced by the host to the session workspace, which refuses the workspace root, a path outside it, a socket or a FIFO, and a locked file, and answers with its reason instead of failing silently. `清除` in the artifact ledger is deliberately a different thing: it drops the in-memory record and never touches disk.
 - **Previews.** Code with syntax highlighting, Markdown with MathJax, Mermaid and JSXGraph, PDF, HTML, images, CSV and TSV as sortable tables, Word / Excel / PowerPoint rendered fully offline, and audio and video streamed with byte ranges so the scrubber actually works. A file it cannot render gets a short explanation instead of mojibake.
 - **Renderers lent to the system sidebar.** The same Markdown, table and Office renderers register into the product's own document-preview registry, so the system's Markdown preview gains math and diagrams, spreadsheets stop being one long line of text, and Word / Excel / PowerPoint become readable there too. Each of the three is a separate switch, and the settings page states which ones actually took effect.
-- **Editing and saving.** Markdown, plain text and CSV are editable in the panel or on the popout page. A save that conflicts with a change made in the meantime is refused with a clear choice rather than written over, and it joins the same undo history as the agent's edits — so Undo takes your change back too.
+- **Editing and saving.** Markdown, plain text and CSV are editable in the panel, on the popout page, and in the system sidebar's own document page (the gate there is "the whole file arrived in one delivery" — the seat pages text by 5000 lines, so anything up to that is editable and a longer file goes out to the popout page's editor through 在弹出页打开). A save that conflicts with a change made in the meantime is refused with a clear choice rather than written over, and it joins the same undo history as the agent's edits — so Undo takes your change back too.
 - **Git slice.** Branch, ahead/behind and four file lists, each row opening that file's diff against HEAD. Every git call goes through the harness's own subprocess service with a literal argument vector, and no mutating verb exists anywhere in the code.
 - **Usage.** Context occupancy, its breakdown and cumulative token usage, read from the same session projection the ring above the composer uses, so the two can never disagree.
 - **Settings and theme.** Seven switches and three width preferences, all reachable from the standard settings page, following the harness's light and dark themes.
@@ -101,10 +103,10 @@ The built-in browser view that earlier versions carried has been **removed**. It
 
 | Setting | Default | Notes |
 |---|---|---|
-| Expand on load | on | Open the panel after the page loads. On the native sidebar it also opens the Files page for a brand-new session, which both expands the column and lands on the file tree. Sessions you have already used are never touched. |
+| Expand on load | on | Open the panel after the page loads. On the native sidebar it also opens this plugin's **File tree** page for a brand-new session, which both expands the column and lands on the tree. Sessions you have already used are never touched. |
 | Auto refresh | on | Poll for new artifacts every two seconds while the panel is open. The popout page obeys this switch as well, and still refreshes once when you return to it. |
-| File tree | on | Show the file tree on the floating panel's strip. The native sidebar does not offer this switch: the system's Files tab *is* this plugin's tree and always draws it. |
-| Carry the panel in the system right sidebar | on | Register every view as a tab of the system right sidebar, with the file tree taking over the system's own Files kind. Switching it off hands all five kinds back and returns the panel to its floating form. Takes effect on page refresh. |
+| File tree | on | Show the file tree on the floating panel's strip. The native sidebar does not offer this switch: this plugin's **File tree** tab always draws it. The system's own **Files** tab is separate and unaffected. |
+| Carry the panel in the system right sidebar | on | Register every view as a tab of the system right sidebar, so expansion, fullscreen, drag-width and the tab strip are the system's. The system's own **Files** tab is not touched and always keeps its own tree. Switching it off returns the panel to its floating form. Takes effect on page refresh. |
 | Render system Markdown with this plugin | on | Lend the Markdown renderer to the system's document previews, so the system sidebar gets math, Mermaid and JSXGraph. Off hands it back to the built-in renderer. Takes effect immediately. |
 | Render system tables with this plugin | on | Lend the table renderer for `csv` and `tsv`. The product has no table renderer of its own, so there is no trade-off here. Takes effect immediately. |
 | Render system Office documents with this plugin | on | Lend the Office reader for `docx`, `xlsx` and `pptx`, which the system cannot display otherwise. It only affects the system sidebar; this plugin's own panel renders Office either way. |
@@ -127,7 +129,7 @@ The plugin ships as two committed halves and needs no build at install time.
 
 ## Compatibility and risk
 
-- Built and tested against **DSH `0.1.5-rc.2`** on the `web` profile, which is the profile that has a browser UI. DSH's `latest` tag currently resolves to `0.1.5-rc.1`; the two releases publish the same files with the same contents and differ only in the version string, so either works.
+- Built and tested against **DSH `0.1.7-rc.1`** on the `web` profile, which is the profile that has a browser UI.
 - On a build whose right-sidebar tab registry is missing or has changed shape, the plugin falls back to its floating panel instead of failing to load.
 - It reads and writes only paths inside the session workspace. Writes are limited to the edit-and-save feature and to removing an artifact entry, and both are checked against the workspace root before anything touches disk.
 - It makes no outbound network request of any kind, and it reports nothing anywhere.
@@ -151,7 +153,7 @@ Four checks stand behind that, and they are independent on purpose — each one 
 - **The working tree**, through `dsh-plugin-verify` (above): 7/7 waterfall, `tools/result` clean, no bare `child_process` spawn, no `single`-slot registration.
 - **The packed artifact**, which is what a marketplace actually installs: `npm pack`, then `dsh plugin --profile headless add <the tarball>`. pnpm installs it, the profile's `dsh.profile.bundles` gains `dsh-sidebar-frog` beside the shipped bundles, and the host logs the same build id out of `node_modules` rather than out of a checkout — the loop still ends 7/7. Nothing on that path runs a build script, and the only step that needs the network is the fetch.
 - **The registry's own admission test**: `dsh --profile headless --dump-config` exits 0 with the package installed — the gate `awesome-dsh-plugins` applies before it will list anything as verified.
-- **Every push, on Linux and Windows**: the guard suite, 188 assertions plus 28 cases driving the pop-out page in real Chrome.
+- **Every push, on Linux and Windows**: the guard suite, 228 assertions plus 37 cases driving the pop-out page in real Chrome.
 
 ## Development
 

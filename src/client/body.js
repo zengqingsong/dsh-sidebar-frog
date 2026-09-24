@@ -188,7 +188,7 @@ window.__ModuleLoader__.load({
     // Canonical plugin body — extract this `return { ... }` for cordis_define.
     const plugin = (() => {
       return {
-        inject: ['timer'],
+        inject: ['timer', 'sidebarRightTabs'],
         apply(ctx) {
           const slots = ctx.get('slots')
           if (slots === undefined) return
@@ -273,6 +273,16 @@ window.__ModuleLoader__.load({
           }
           frogNativeSurface = registerNativeTab(slots, (view) => VIEW_BODIES[view]
             || ((props) => React.createElement(ArtifactsContent, Object.assign({}, props, { surface: 'native', fixedView: view }))))
+
+          // @引用 on the PRODUCT's own document preview, registered for BOTH
+          // surfaces and for no panel at all. It is deliberately NOT inside
+          // installColumnEntryPoints: that one is gated on this plugin owning the
+          // column, while this is the capability that must survive the built-in
+          // tree being the one on screen — it is what keeps 引用 working for
+          // someone who never opens this plugin's own 文件树 tab. See
+          // installDocumentActions in src/client/native.js.
+          installDocumentActions(slots)
+
 
           // The column's own entry points, once that column is ours: the standing
           // 文件树 button in the left sidebar's foot (the shell's only expand

@@ -210,6 +210,216 @@ export const runPopoutTree = async (html) => {
   return results
 }
 
+// ── the popout's two NEW ways in: ?path=<file>, and 全屏查看 ────────────────
+// Both live in the page's own inline script and both are about the PREVIEW rather
+// than the tree, so they get their own boot: the deep link is only exercised by a
+// URL that carries one, and the fullscreen button is only meaningful once a file
+// is open. The fake DOM has no Fullscreen API, which is exactly the case worth
+// driving here — the CSS mode is the fallback for an engine (or frame) that never
+// had `requestFullscreen`, and the browser suite covers the API path for real.
+export const runPopoutPreview = async (html) => {
+  const results = []
+  const check = async (label, fn) => {
+    try { results.push({ label, detail: await fn() }) } catch (e) { results.push({ label, error: e && e.message ? e.message : String(e) }) }
+  }
+  const boot = (search, extraLines) => bootPage(html, {
+    storage: { 'dsh-sidebar-frog:session': 's1' },
+    search: search,
+    extra: (extraLines || []).join('\n'),
+    expose: ['setView'],
+    routes: {
+      '/dsh-sidebar-frog/data': () => ({ ok: true, artifacts: [] }),
+      '/dsh-sidebar-frog/listdir': (u) => {
+        const m = /[?&]path=([^&]*)/.exec(u)
+        const path = m ? unquote(m[1]) : ROOT
+        return { ok: true, path, entries: FS[path] || [] }
+      },
+      '/dsh-sidebar-frog/content': (u) => {
+        const path = unquote((/[?&]path=([^&]*)/.exec(u) || [])[1] || '')
+        if (path.indexOf('gone') >= 0) return { ok: false, error: 'ENOENT: no such file' }
+        return { ok: true, type: 'markdown', content: '# ' + path + '\n', truncated: false, size: 10, version: 'v1' }
+      },
+    },
+  })
+
+  // The deep link. A ?path= that names nothing still boots and says so — the
+  // failure this guards against is a tab that quietly shows the artifact list
+  // while the sidebar shows a file.
+  {
+    const page = boot('?sessionId=s1&path=' + encodeURIComponent('D:/ws/docs/c.md'))
+    await tick(60)
+    await check('popout: ?path= opens that file, pinned', () => {
+      const el = page.document.getElementById('bar').querySelector('.path')
+      if (!el) throw new Error('the preview bar has no path')
+      if (el.textContent !== 'D:/ws/docs/c.md') throw new Error('the bar shows ' + JSON.stringify(el.textContent))
+      if (!el.classList.contains('is-pinned')) throw new Error('a deep-linked file is not pinned, so the next click replaces it')
+      return 'D:/ws/docs/c.md, pinned'
+    })
+    await check('popout: ?path= really reads the file', () => {
+      const asked = page.calls.filter((c) => c.indexOf('/content?') > 0)
+      if (!asked.length) throw new Error('the page never asked for the file: ' + JSON.stringify(page.calls))
+      const body = page.document.getElementById('previewArea').querySelector('.markdown')
+      if (!body) throw new Error('no document was rendered: ' + JSON.stringify(page.document.getElementById('previewArea').textContent))
+      return 'content requested and rendered'
+    })
+    // …and its row appears in the tree, under expanded parents. The reveal needs
+    // the root read, which is why it is deferred to when that lands.
+    await check('popout: ?path= reveals the file in the tree', async () => {
+      page.api.setView('tree')
+      await tick(150)
+      const row = page.document.getElementById('treeBody')
+        .querySelectorAll('.tree-row').find((el) => el.getAttribute('data-path') === 'D:/ws/docs/c.md')
+      if (!row) throw new Error('the opened file has no row in the tree: ' + JSON.stringify(page.rows().map((r) => r.path)))
+      return 'row present'
+    })
+    // …and the selection survives the artifact poll. This fixture ledger is EMPTY,
+    // which is the ordinary case for a deep-linked file (and for one opened from
+    // the tree): the old rule cleared the selection whenever the path was missing
+    // from the ledger. The visible consequence is not the bar's own pin marker —
+    // nothing repaints that until something else happens — it is what the NEXT
+    // click does: a file that is no longer "selected" is treated as a different
+    // file, so its pinned state is dropped and it is read from the host again.
+    await check('popout: the artifact poll does not drop a file it never listed', async () => {
+      await tick(2400)
+      const before = page.calls.filter((c) => c.indexOf('c.md') > 0).length
+      const row = page.document.getElementById('treeBody')
+        .querySelectorAll('.tree-row').find((el) => el.getAttribute('data-path') === 'D:/ws/docs/c.md')
+      if (!row) throw new Error('the file lost its tree row to the poll')
+      row.dispatch('click', { detail: 1 })
+      await tick(60)
+      const el = page.document.getElementById('bar').querySelector('.path')
+      if (!el || !el.classList.contains('is-pinned')) {
+        throw new Error('clicking the open file dropped its pinned state: ' + JSON.stringify(el && el.className))
+      }
+      const after = page.calls.filter((c) => c.indexOf('c.md') > 0).length
+      if (after !== before) throw new Error('the already-open file was read again (' + before + ' → ' + after + ')')
+      return 'still open, still pinned, not re-read'
+    })
+    await check('popout: no ?path= means no file, and no error either', () => {
+      const plain = boot('?sessionId=s1')
+      const bar = plain.document.getElementById('bar')
+      if (bar.querySelector('.path')) throw new Error('a plain popout opened on a file nobody asked for')
+      if (plain.calls.some((c) => c.indexOf('/content?') > 0)) throw new Error('a plain popout read a file: ' + JSON.stringify(plain.calls))
+      // …and 全屏 is available BEFORE anything is opened: the bar starts on its
+      // hint, so a button that only appears once a file is open is a button the
+      // user cannot find on the page they just opened.
+      if (!bar.querySelector('#previewFull')) throw new Error('a plain popout has no 全屏 button')
+      plain.stop()
+      return 'starts on the list, as before'
+    })
+    page.stop()
+  }
+
+  {
+    const page = boot('?sessionId=s1&path=' + encodeURIComponent('D:/ws/docs/gone.md'))
+    await tick(60)
+    await check('popout: a ?path= that names nothing is reported, not hidden', () => {
+      const area = page.document.getElementById('previewArea')
+      if (!area.querySelector('.err')) throw new Error('the failure was not reported: ' + JSON.stringify(area.textContent))
+      const bar = page.document.getElementById('bar').querySelector('.path')
+      if (!bar || bar.textContent !== 'D:/ws/docs/gone.md') throw new Error('the bar does not name what was asked for')
+      return 'the reason is on screen'
+    })
+    page.stop()
+  }
+
+  // A malformed percent-escape in the URL must not take the page down: the query
+  // is decoded at the TOP LEVEL of the page's only script, so one bad link would
+  // leave a blank tab with no way back.
+  {
+    const page = boot('?sessionId=s1&path=%E4%')
+    await tick(60)
+    await check('popout: a malformed ?path= escape does not kill the page', () => {
+      if (!page.document.getElementById('tabs')) throw new Error('the page never rendered')
+      if (!page.document.getElementById('previewFull')) throw new Error('the page script did not finish booting')
+      if (page.document.getElementById('bar').querySelector('.path')) throw new Error('a broken path was opened as a file anyway')
+      return 'the page boots without a document'
+    })
+    page.stop()
+  }
+
+  // 全屏查看: the button exists before and after a file is opened, it reports the
+  // state it is in, and Escape leaves the CSS mode. (No Fullscreen API in this
+  // DOM, so this drives the branch a browser without it takes.)
+  {
+    const page = boot('?sessionId=s1&path=' + encodeURIComponent('D:/ws/docs/c.md'))
+    await tick(60)
+    const btn = page.document.getElementById('previewFull')
+    await check('popout: 全屏 button is in the bar, and starts off', () => {
+      if (!btn) throw new Error('no 全屏 button in the preview bar')
+      if (btn.getAttribute('aria-pressed') !== 'false') throw new Error('it claims fullscreen before any click: ' + btn.getAttribute('aria-pressed'))
+      if (!/全屏/.test(btn.title || '')) throw new Error('the button does not say what it does: ' + JSON.stringify(btn.title))
+      return 'present, off, labelled'
+    })
+    await check('popout: clicking 全屏 fills the tab (the no-API branch)', () => {
+      page.document.getElementById('preview').requestFullscreen = undefined
+      btn.click()
+      const main = page.document.getElementById('main')
+      if (!main.classList.contains('is-preview-full')) throw new Error('nothing happened: ' + main.className)
+      if (btn.getAttribute('aria-pressed') !== 'true') throw new Error('the button does not report fullscreen')
+      if (!/退出全屏/.test(btn.title || '')) throw new Error('the label still offers to enter fullscreen: ' + JSON.stringify(btn.title))
+      return 'CSS mode on, button says 退出全屏'
+    })
+    await check('popout: Escape leaves the CSS mode', () => {
+      const ev = { key: 'Escape', preventDefault() {} }
+      page.document.dispatch('keydown', ev)
+      const main = page.document.getElementById('main')
+      if (main.classList.contains('is-preview-full')) throw new Error('Escape left it in fullscreen')
+      if (btn.getAttribute('aria-pressed') !== 'false') throw new Error('the button still claims fullscreen after Escape')
+      return 'exited'
+    })
+    // A browser that HAS the API but REFUSES the request (no user gesture, or an
+    // embedding frame) must still end up fullscreen — that rejection is the other
+    // half of the fallback, and the half a headless engine never exercises.
+    await check('popout: a refused fullscreen request falls back to the CSS mode', async () => {
+      const preview = page.document.getElementById('preview')
+      preview.requestFullscreen = function () { return Promise.reject(new Error('denied by the engine')) }
+      btn.click()
+      await tick(20)
+      const main = page.document.getElementById('main')
+      if (!main.classList.contains('is-preview-full')) throw new Error('a refused request left the screen as it was: ' + main.className)
+      if (btn.getAttribute('aria-pressed') !== 'true') throw new Error('the button does not report the fallback state')
+      preview.requestFullscreen = undefined
+      page.document.dispatch('keydown', { key: 'Escape', preventDefault() {} })
+      return 'refused → CSS mode'
+    })
+    // …and the state follows the BROWSER, not only this page's own clicks: Esc, F11
+    // and another tab's fullscreen all arrive as `fullscreenchange`, and a button
+    // that keeps claiming fullscreen afterwards is lying.
+    await check('popout: the button follows a state change it did not cause', () => {
+      const main = page.document.getElementById('main')
+      main.classList.add('is-preview-full')
+      page.document.dispatch('fullscreenchange', {})
+      if (btn.getAttribute('aria-pressed') !== 'true') throw new Error('a browser-driven change was not picked up')
+      main.classList.remove('is-preview-full')
+      page.document.dispatch('fullscreenchange', {})
+      if (btn.getAttribute('aria-pressed') !== 'false') throw new Error('leaving fullscreen elsewhere left the button claiming it')
+      if (!/全屏查看/.test(btn.title || '')) throw new Error('the label did not go back: ' + JSON.stringify(btn.title))
+      return 'follows the document'
+    })
+    // The bar is rebuilt on every open, so the button must survive it — a file
+    // opened after the first one used to leave the bar with no 全屏 control at
+    // all (the bar is emptied and repainted by openPath).
+    await check('popout: the button survives opening another file', async () => {
+      page.document.getElementById('previewFull').click()
+      page.api.setView('tree')
+      await tick(40)
+      page.document.body.querySelectorAll('.tree-row')
+        .filter((el) => /c\.md$/.test(el.getAttribute('data-path') || ''))
+        .forEach((el) => el.dispatch('click', { detail: 1 }))
+      await tick(60)
+      const again = page.document.getElementById('previewFull')
+      if (!again) throw new Error('the 全屏 button disappeared when the bar was repainted')
+      const count = page.document.getElementById('bar').querySelectorAll('#previewFull').length
+      if (count !== 1) throw new Error('the bar holds ' + count + ' 全屏 buttons, not one')
+      return 'one button, still there'
+    })
+    page.stop()
+  }
+
+  return results
+}
+
 // ── the sidebar: mount FileTree, click the same buttons ────────────────────
 // A panel 380px wide at the right edge of a 1920px window: the default width
 // (20% of the window) and the configuration the hidden-toolbar bug appeared in.

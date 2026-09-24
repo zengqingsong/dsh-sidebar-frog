@@ -188,7 +188,7 @@ window.__ModuleLoader__.load({
     // Canonical plugin body — extract this `return { ... }` for cordis_define.
     const plugin = (() => {
       return {
-        inject: ['timer'],
+        inject: ['timer', 'sidebarRightTabs'],
         apply(ctx) {
           const slots = ctx.get('slots')
           if (slots === undefined) return
@@ -197,7 +197,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '4751a11e'
+          const BUILD = '96a03237'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -308,12 +308,15 @@ window.__ModuleLoader__.load({
       showFileTree: true,  // show the 文件树 (file tree) tab
       defaultOpen: true,   // expand the sidebar by default on load
       previewHeight: 80,   // popout: default preview width as % of the split area (its ceiling — see below)
-      // Where the panel lives. On: it registers as an "extension" band tab type for
-      // the column's own files kind, so the shell's 文件 tab IS this plugin's file
-      // tree — @引用 into the composer, the right-click menu, per-directory refresh —
-      // and the product's own definition resumes the moment this is switched off.
-      // Off: the panel falls back to its own floating window and the product's plain
-      // tree keeps the tab. Read once at load (see src/client/native.js).
+      // Which surface the panel takes. On: every view registers as a tab TYPE of the
+      // shell's own right column, so 展开 / 收起 / 全屏 / 拖宽 / 分栏 and the tab strip
+      // are the shell's. Off: the panel falls back to its own floating window.
+      //
+      // It does NOT govern the product's built-in 文件 tab any more. That tab used to
+      // be taken over (the tree registered into the product's "files" kind at the
+      // extension band); it is now this plugin's OWN kind ("frog-files"), so the
+      // product's tree keeps its tab, its live directory watcher and its auto-refresh
+      // in every case. Read once at load (see src/client/native.js).
       nativeFileTree: true,
       // Lend this plugin's Markdown renderer (offline MathJax / Mermaid / JSXGraph)
       // to the SHELL's own document preview: registered in the "extension" band it
@@ -323,19 +326,23 @@ window.__ModuleLoader__.load({
       // See src/client/docpreview.js.
       nativeMarkdown: true,
       // Lend the TABLE renderer (CSV / TSV: sticky header, click-to-sort, row and
-      // column counts) to the same registry. There is no built-in competitor for
-      // these suffixes — the product claims md/markdown/html/pdf and nothing else —
-      // so switching this on is pure gain: a spreadsheet stops being one long line
-      // in the official sidebar as well. Off hands them back to its plain-text view.
+      // column counts) to the same registry. 0.1.7 gave the product its own Excel
+      // renderer claiming csv/tsv too, but the extension band outranks builtin, so
+      // this still wins and a spreadsheet keeps its sortable table in the official
+      // sidebar. Off hands them to the product's own sheet view (on 0.1.6, which had
+      // no such claim, to its plain-text view).
       // See src/client/docpreview.js.
       nativeTable: true,
       // Lend the OFFICE readers (docx / xlsx / pptx, all offline and vendored) to
       // the same registry, which delivers the file's COMPLETE BYTES to them
-      // (loading: 'bytes-complete'). Nothing in the product claims these three
-      // suffixes — without this they are the shell's "no way to view this content"
-      // notice — so it is pure gain, and switching it off hands them back to that
-      // notice. The panel and the popout tab render Office files either way: this
-      // switch is about the SHELL's sidebar, not about this plugin's own previews.
+      // (loading: 'bytes-complete'). The product claims NONE of these as paginated
+      // documents: 0.1.7 routed xls/xlsx out to its new Excel renderer and left its
+      // office reader on doc/docx/ppt/pptx, and nothing claims pptx as slides — so
+      // the extension band wins where they overlap and pptx is ours alone. Off hands
+      // them to the product's coverage, which for pptx is the shell's "no way to view
+      // this content" notice. The panel and the popout tab render Office files either
+      // way: this switch is about the SHELL's sidebar, not about this plugin's own
+      // previews.
       // See src/client/docpreview.js and src/shared/office.js.
       nativeOffice: true,
       // Which DOCUMENT SKIN rendered Markdown wears: the shipped look, or one of the
@@ -4127,6 +4134,22 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-menuitem svg { flex: none; }
 .artifacts-menuitem:hover { background: rgba(127, 127, 127, .14); background: color-mix(in srgb, currentColor 14%, transparent); }
 .artifacts-menuitem-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* 「@引用」 in the PRODUCT's document-preview toolbar
+   (sidebar.right.tab.document.actions — declared by ui-sidebar-documentpreview
+   and rendered in that preview's own header). It has to read as one of the
+   product's tools, so it is styled from the SAME aliases its reload/wrap buttons
+   use rather than from this panel's palette: a compact ghost button that borrows
+   the surrounding label colour. */
+.artifacts-doc-action {
+  box-sizing: border-box; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; height: 26px; margin: 0; padding: 0 8px;
+  border: none; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary);
+  cursor: pointer; font: inherit; font-size: 12px; line-height: 18px;
+  transition: color .15s, background .15s;
+}
+.artifacts-doc-action:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.artifacts-doc-action-label { white-space: nowrap; }
 .artifacts-item {
   position: relative; display: flex; align-items: stretch; width: 100%;
   padding: 0; cursor: default ; border-bottom: 1px solid var(--dsw-alias-border-l2);
@@ -4773,6 +4796,32 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
    relative box is an invisible PDF. Hence the min-height floor. */
 .artifacts-doc.is-pdf { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 320px; }
 .artifacts-doc.is-pdf > .artifacts-pdfview { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+
+/* ── 在弹出页打开 (open the file that is on screen in the popout tab) ────────
+   ONE control per open file, and it never owns a row: the editor toolbar carries
+   it where the file is editable (that toolbar exists anyway), and where it does
+   not, the BAND carries it — the strip of file tabs, which is the row above the
+   document. It reads as a quiet link rather than a primary action, because it
+   LEAVES the sidebar and so must not compete with 保存. */
+.artifacts-doclink-slot { display: inline-flex; align-items: center; flex: none; }
+/* The band scrolls sideways and 清除 already sticks to its right edge: two sticky
+   items in one row would overlap, so this one takes the free slot after it. */
+.artifacts-tabs > .artifacts-doclink-slot { order: 90; }
+.artifacts-doclink {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; color: var(--dsw-alias-label-secondary);
+  font-size: 11px; font-weight: 500; line-height: 1.4; text-decoration: none;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.artifacts-doclink:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-interactive-bg-hover); text-decoration: none; }
+.artifacts-doclink:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+.artifacts-doclink svg { flex: none; }
+/* In a narrow column the two words cost the file tabs their width, and the tab
+   names are the more useful of the two: the label goes, the icon, title and
+   aria-label stay. */
+.artifacts-doclink.is-compact .artifacts-doclink-label { display: none; }
+.artifacts-doclink.is-compact { padding: 2px 6px; }
 
 /* ── 编辑 (editing) ──────────────────────────────────────────────────────────
    The editor pane: a toolbar (预览/编辑 toggle, 重新载入, 保存), an optional
@@ -6730,6 +6779,17 @@ const FileTree = (props) => {
     items.push({ label: '复制路径', run: () => copyText(entry.path, '已复制路径') })
     items.push({ label: '复制相对路径', run: () => copyText(relPath(entry.path), '已复制相对路径') })
     items.push({ label: '@引用到输入框', run: () => refToComposer(entry.path) })
+    // Files only, and row-less on purpose: this is the one 「在弹出页打开」 that
+    // exists for EVERY file, including the suffixes this plugin never draws
+    // (the product renders .html, images, Office and PDF by itself, so no view
+    // of ours is on screen to carry the link). window.open of a real address in
+    // a click handler is not blocked, and the shared target name reuses one tab.
+    if (!entry.isDir) {
+      items.push({
+        label: '在弹出页打开',
+        run: () => { try { window.open(popoutFileHrefFor(sessionId, entry.path), POPOUT_TARGET, 'noopener') } catch (e) {} },
+      })
+    }
     if (entry.isDir) {
       items.push({ sep: true })
       items.push({ label: '仅刷新此目录', run: () => refreshDir(entry.path) })
@@ -7602,6 +7662,13 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
           mode === 'edit' ? React.createElement('span', { key: 'kind', className: 'artifacts-ednote' }, editorLanguageName(path) ? 'CodeMirror · ' + editorLanguageName(path) : 'CodeMirror · 纯文本') : null,
         ),
         React.createElement('div', { className: 'artifacts-edbar-group' },
+          // The caller's own extra action for this file, drawn first in this group.
+          // It is a PROP rather than something this module imports because the one
+          // action that uses it — 「在弹出页打开」— belongs to the panel's world, and
+          // the editor has no business knowing the popout page exists: it is also
+          // what lets this pane be mounted (and guarded) with nothing but the
+          // shared editor, the way scripts/check.js mounts it.
+          props.docAction || null,
           status ? React.createElement('span', {
             key: 'status',
             className: 'artifacts-edstatus' + (conflictNow ? ' is-bad' : (dirty ? ' is-dirty' : '')),
@@ -7674,17 +7741,94 @@ const cssEscape = (value) => String(value).replace(/\\/g, '\\\\').replace(/"/g, 
 // 「在新标签页弹出」 item on each of this plugin's own tabs.
 const POPOUT_TARGET = 'dsh-sidebar-frog-popout'
 
-// The popout page's address for a session, composed in ONE place: four entry
-// points across two files must never disagree about what 「弹出」 opens, and a
+// The popout page's address for a session, composed in ONE place: five entry
+// points across four files must never disagree about what 「弹出」 opens, and a
 // session-scoped page opened without its `sessionId` would root its file tree at
-// the wrong workspace.
-const popoutHrefFor = (sid) => '/dsh-sidebar-frog' + (sid ? '?sessionId=' + encodeURIComponent(sid) : '')
+// the wrong workspace. `path` is optional and asks the page to open THAT FILE
+// (see openPathFromUrl in src/host/page.js) — 「在弹出页打开」for the document that
+// is on screen, as opposed to the session-wide links.
+const popoutHrefFor = (sid, path) => {
+  const query = []
+  if (sid) query.push('sessionId=' + encodeURIComponent(sid))
+  if (path) query.push('path=' + encodeURIComponent(path))
+  return '/dsh-sidebar-frog' + (query.length ? '?' + query.join('&') : '')
+}
+
+// The address of ONE file inside the popout, from the spelling the sidebar holds.
+//
+// The popout's `?path=` is resolved by the host against the session's workspace
+// (same rule as /content and the page's own tree rows), so a BARE RELATIVE path
+// is ambiguous the moment the page's idea of the workspace differs from the
+// caller's — and it cannot be revealed in the page's tree, whose rows are
+// absolute. The absolute form is therefore built HERE, where the session's cwd is
+// still known, rather than guessed there.
+const popoutFileHrefFor = (sid, path) => {
+  const raw = String(path == null ? '' : path)
+  if (!raw) return popoutHrefFor(sid)
+  const normalized = raw.replace(/\\/g, '/')
+  if (/^(?:[A-Za-z]:[\\/]|\/\/|\/)/.test(normalized)) return popoutHrefFor(sid, normalized)
+  const root = (sid ? sessionCwd(sid) : '').replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!root) return popoutHrefFor(sid, normalized.replace(/^(?:\.\/)+/, ''))
+  return popoutHrefFor(sid, root + '/' + normalized.replace(/^(?:\.\/)+/, ''))
+}
 
 // 后台任务 (background jobs). A READ-ONLY view of the shell's own job mirror:
 // the panel never starts or stops anything — the jobs service is owner-scoped
 // and the shell owns that lifecycle — it just shows the same array the shell's
 // header button shows, in the same order (live first, then most recent), so a
 // long-running command started by the agent is visible next to its artifacts.
+// 「在弹出页打开」for the file that is open — the sidebar's shortcut to the SAME
+// document in the popout tab.
+//
+// One control per open file, and deliberately ONE. It rides:
+//   · the editor's own toolbar, where the file is editable and that toolbar
+//     already exists (so it costs no row at all);
+//   · the band — the strip of file tabs — where it does not. That strip IS the
+//     row above the document, which is why the link lives at its right end
+//     (sticky, like 清除 on the ledger) instead of on a bar of its own: a bar
+//     holding one link is a whole row of chrome for one button.
+// Which one is decided by the SAME predicate that decides whether the editor is
+// offered at all (isEditablePreview / textEditability), because two independent
+// conditions would sooner or later both answer true and put the button on screen
+// twice — which is exactly what scripts/check.js pins ("exactly one popout
+// control per open file").
+//
+// It is an <a>, not a button calling window.open: a real navigation cannot be
+// eaten by a popup blocker (a blocked window.open returns null and the click
+// looks dead), and the shared target name reuses ONE tab instead of piling up a
+// new one per file.
+const DocPopoutLink = (props) => {
+  const p = props || {}
+  const href = popoutFileHrefFor(p.sessionId, p.path)
+  const name = basename(p.path || '')
+  return React.createElement('a', {
+    className: 'artifacts-doclink' + (p.compact ? ' is-compact' : ''),
+    href,
+    target: POPOUT_TARGET,
+    rel: 'noreferrer noopener',
+    'data-frog-doc-popout': p.place || 'doc',
+    'data-frog-doc-path': p.path || '',
+    title: name
+      ? '在弹出页打开「' + name + '」（独立标签页，与侧边栏实时同步）'
+      : '在弹出页打开（独立标签页，与侧边栏实时同步）',
+    'aria-label': name ? '在弹出页打开 ' + name : '在弹出页打开',
+  },
+    PopoutIcon(p.compact ? 13 : 14),
+    React.createElement('span', { className: 'artifacts-doclink-label' }, '在弹出页打开'),
+  )
+}
+
+// The band's copy of the control: the same link as a sticky right-end action of
+// the file-tab strip, so an open file that has no editor still has its way out
+// without a second row above the document.
+const DocPopoutBandAction = (props) => {
+  const p = props || {}
+  if (p.hidden) return null
+  return React.createElement('span', { className: 'artifacts-tab-action artifacts-doclink-slot' },
+    React.createElement(DocPopoutLink, { path: p.path, sessionId: p.sessionId, compact: true, place: 'band' }),
+  )
+}
+
 const jobStatusLabel = (status) =>
   status === 'running' ? '运行中'
     : status === 'stopping' ? '正在停止'
@@ -7795,11 +7939,14 @@ const ArtifactsContent = (props) => {
   const seatSessionId = (props && typeof props.sessionId === 'string' && props.sessionId) || ''
   const sessionId = seatSessionId || currentSessionId()
   // Which inner view is showing: pinned on a native tab, chosen by the band on the
-  // floating panel. The ledger is the floating panel's first view (that is what it
-  // exists for); a bare native instance with no pin also starts there.
-  const [activeTab, setActiveTab] = React.useState(
-    fixedView || (overlay || !settings.showFileTree ? 'artifacts' : 'tree'),
-  ) // 'artifacts' | 'tree' | 'jobs' | 'git' | 'file:<path>'
+  // floating panel. Both surfaces open on the FILE TREE when it is offered — the
+  // tree is how a file is reached, and the ledger answers "what did the agent
+  // change", which is the question you ask after that one. With the tree switched
+  // off there is nothing to open on, so the ledger takes over. (A bare native
+  // instance with no pin lands on the same default, and so does closing the last
+  // file tab.)
+  const defaultTab = fixedView || (settings.showFileTree ? 'tree' : 'artifacts')
+  const [activeTab, setActiveTab] = React.useState(defaultTab) // 'artifacts' | 'tree' | 'jobs' | 'git' | 'file:<path>'
   const view = fixedView || activeTab
   // What the active file tab renders: { path, type, diff, loading, content… }.
   const [preview, setPreview] = React.useState(null)
@@ -7811,8 +7958,11 @@ const ArtifactsContent = (props) => {
   // unmounted) — see the panes below. Mounting it lazily would cost a /listdir
   // on every panel open for people who never open that tab; unmounting it on the
   // way out is what used to lose the loaded levels and the scroll position. An
-  // instance that IS the tree mounts it straight away.
-  const [treeReady, setTreeReady] = React.useState(fixedView ? fixedView === 'tree' : (!overlay && !!settings.showFileTree))
+  // instance that IS the tree mounts it straight away — and so does one that
+  // STARTS on the tree, which is every instance now that the tree is the default
+  // view: without this the panel would open on an empty pane, because `treeReady`
+  // used to be set only by a click on the band's 文件树 chip.
+  const [treeReady, setTreeReady] = React.useState(fixedView ? fixedView === 'tree' : !!settings.showFileTree)
   // 撤销 (change review). `undoBusy` disables the button while the host writes,
   // and `reloadAt` forces the preview to re-read the file after a revert instead
   // of showing the content the user just undid.
@@ -8020,9 +8170,10 @@ const ArtifactsContent = (props) => {
     // silent discard.
     draftStore.drop(path)
     // Closing the tab you are looking at falls back to the tab on its left
-    // (the most recently opened other file), or to the artifact list.
+    // (the most recently opened other file), or to the view this surface opens
+    // on — the file tree where it is offered, the ledger where it is not.
     if (activeTab === 'file:' + path) {
-      setActiveTab(next.length ? 'file:' + next[next.length - 1].path : 'artifacts')
+      setActiveTab(next.length ? 'file:' + next[next.length - 1].path : defaultTab)
     }
   }
 
@@ -8302,6 +8453,16 @@ const ArtifactsContent = (props) => {
         title: deleteMode ? '退出清除模式' : '清除模式',
         onClick: () => { setDeleteMode(!deleteMode); setDeleteTarget(null) },
       }, '清除') : null,
+      // The open file's way out to the popout tab, at this strip's right end —
+      // the row above the document rather than a row of its own. Drawn only where
+      // the editor's toolbar does NOT carry the same link, so a file never shows
+      // two of them (see DocPopoutLink).
+      activeFile && preview ? React.createElement(DocPopoutBandAction, {
+        key: 'docpopout',
+        path: activeFile,
+        sessionId: sid,
+        hidden: isEditablePreview(preview),
+      }) : null,
     ) : null,
     React.createElement('div', { className: 'artifacts-main' },
       // ONE pane visible at a time, full width — but the two list views stay
@@ -8311,6 +8472,9 @@ const ArtifactsContent = (props) => {
       // component's own state, and a React unmount throws them away.
       activeFile
         ? React.createElement('div', { className: 'artifacts-preview' },
+          // No bar above the document: the open file's way out to the popout tab
+          // is either on the editor's toolbar (below) or at the right end of the
+          // band a row up — never on a row of its own. See DocPopoutLink.
           preview ? React.createElement(EditorPane, {
             // One instance per file: switching tabs must not carry the previous
             // file's 已保存 status (or its edit mode) across. Unsaved text does
@@ -8322,6 +8486,13 @@ const ArtifactsContent = (props) => {
             initialMode: pendingEdit && pendingEdit === activeFile ? 'edit' : 'view',
             // The seat's session: a save is filed against it (see EditorPane).
             sessionId: sid,
+            // …and the open file's one-click way out to the popout tab, drawn in
+            // the editor's own toolbar. The SAME condition as `editable` above, so
+            // a file has either this control or the standalone bar above — never
+            // both, never neither (scripts/check.js pins exactly that).
+            docAction: isEditablePreview(preview)
+              ? React.createElement(DocPopoutLink, { path: activeFile, sessionId: sid, compact: true, place: 'editor' })
+              : null,
             content: preview.content,
             // The revision this preview read. The save sends it back, which is
             // what turns "somebody changed the file while you were typing" into
@@ -8342,11 +8513,11 @@ const ArtifactsContent = (props) => {
         : null,
       // A native tab pinned to the tree draws the tree WHATEVER the floating
       // panel's 「文件树」 preference says. That preference switches the floating
-      // band between its views; the column's 文件 tab, by contrast, always exists
-      // (this plugin takes the product's own `files` kind over), so honouring the
-      // preference here would leave the tab PRESENT AND EMPTY — a blank column
-      // with nothing to click and nothing in any log. The setting is not offered
-      // on the native surface for the same reason (see SettingsSection).
+      // band between its views; the column's 文件树 tab, by contrast, always
+      // exists, so honouring the preference here would leave the tab PRESENT AND
+      // EMPTY — a blank column with nothing to click and nothing in any log. The
+      // setting is not offered on the native surface for the same reason (see
+      // SettingsSection).
       ((settings.showFileTree || fixedView === 'tree') && treeReady) ? React.createElement('div', {
         className: 'artifacts-pane' + (activeFile || view !== 'tree' ? ' is-hidden' : ''),
         'aria-hidden': (activeFile || view !== 'tree') ? 'true' : undefined,
@@ -8587,18 +8758,22 @@ const SettingsSection = () => {
       // that tab, which is precisely what a "fake switch" is.
       frogNativeSurface ? null : React.createElement(SettingsToggle, {
         label: '文件树',
-        desc: '在浮动面板的带子上显示「文件树」视图，浏览工作区目录。原生形态下不显示这一项：系统的「文件」标签就是本插件的文件树。',
+        desc: '在浮动面板的带子上显示「文件树」视图，浏览工作区目录。原生形态下不显示这一项：系统的「文件」标签是系统自带的文件树，本插件的树是旁边的「文件树」标签，两者都在。',
         value: settings.showFileTree,
         onToggle: (v) => set('showFileTree', v),
       }),
-      // Which surface the panel takes. The native one REPLACES the column's own
-      // 文件 tab (that is the point: the product's tree has no @引用 and no
-      // right-click menu, so the column's file tree would look crippled next to
-      // this plugin's). Switching it off hands the tab straight back to the
-      // product's tree and moves this panel into its own floating window.
+      // Which surface the panel takes. The native one gives every view a real tab
+      // in the shell's right column (expansion, fullscreen, drag-width and the tab
+      // strip are the shell's); switching it off moves the panel back into its own
+      // floating window.
+      //
+      // It no longer means "take the product's 文件 tab over" — that tab is the
+      // product's and keeps its own tree, live watcher and auto-refresh. This
+      // plugin's tree is a separate 文件树 tab (see the `FROG_FILES_KIND` note in
+      // src/client/native.js), which is why the two never conflict.
       React.createElement(SettingsToggle, {
         label: '用系统右侧边栏承载面板',
-        desc: '把本插件的面板注册为系统右侧边栏「文件」标签的实现（extension 档压过系统自带实现）：那棵文件树即本插件的文件树，带 @引用到输入框、右键菜单、按目录刷新等能力，展开/收起、全屏、拖宽由系统提供。关闭则交回系统自带的文件树，面板退回本插件的浮动窗口。修改后需刷新页面生效。',
+        desc: '把本插件的视图注册为系统右侧边栏的标签（展开/收起、全屏、拖宽、标签条由系统提供）。系统的「文件」标签不受影响，仍是系统自带的文件树（自带实时监听与自动刷新）；本插件自己的文件树是旁边的「文件树」标签，带 @引用到输入框、右键菜单、新建/删除与 A/M 改动字母。@引用同时出现在系统文档预览的工具栏上，因此用系统那棵树也能引用。关闭则退回本插件的浮动窗口。修改后需刷新页面生效。',
         value: settings.nativeFileTree,
         onToggle: (v) => set('nativeFileTree', v),
       }),
@@ -9285,27 +9460,38 @@ const SettingsSection = () => {
     // and the tab menu are all the shell's, and each body draws its view and
     // nothing else.
     //
-    // ── Why the tree rides the product's own `files` kind ───────────────────
-    // The first row is not a new kind: it takes the product's `files` over. That
-    // is the documented half of its two-band rule — "a kind may carry one
-    // `builtin` and one `extension` registration at once: the extension is the one
-    // in force — claims, `get`, the guide page, and the body and title, which the
-    // seat finds under the definition's own `id` — and the builtin resumes when
-    // the extension unregisters" — and it is what makes the column's 文件 tab THIS
-    // file tree: the one with @引用 into the composer, the right-click menu,
-    // per-directory refresh, filtering, keyboard navigation and A/M change
-    // letters. The product's own tree is a plain list (its bundle has no
-    // `contextmenu` and no reference action at all), so a user coming from this
-    // plugin's floating panel watched the file tree "lose" both capabilities the
-    // moment the column started showing the product's tab instead of ours.
+    // ── Why the tree is its OWN kind, and no longer the product's `files` ────
+    // This row used to take the product's `files` kind over (the extension band
+    // outranks its `builtin`, so the column's 文件 tab became this tree). That is
+    // no longer what happens, for a reason the product itself created: 0.1.7's
+    // built-in tree grew a live per-directory WATCHER (`workspaceFiles.changes`,
+    // auto-refresh, `data-files-auto-refresh`) that only runs while the product's
+    // own body is the one mounted. A takeover keeps that body off screen, so it
+    // silently suppressed the capability — the tree stopped noticing the files
+    // the agent wrote.
+    //
+    // So the two get separate kinds and BOTH are on the strip: the product's
+    // `files` stays exactly as it ships (watcher and all), and this tree is its
+    // own tab beside it. Nothing is taken from the product, so nothing has to be
+    // handed back — `nativeFileTree` now only chooses the column over the
+    // floating panel, and the built-in tree is never touched either way.
+    //
+    // What the product's tree still does not have is the two capabilities this
+    // one does — its bundle has no `contextmenu` and no reference action at all.
+    // The reference half is no longer a reason to take the tree over: `@引用`
+    // never depended on this tree in the first place, it writes through the
+    // shell's own `conversation.input.for(...).setDraft` (see quoteToComposer in
+    // src/client/core.js). So it is offered on the PRODUCT's flow too, as a
+    // document action in the product's own preview header — see
+    // installDocumentActions below. The right-click menu, 新建 / 删除 and the
+    // A/M change letters stay here, which is what this tab is for.
     //
     // ── One guide entry per view ────────────────────────────────────────────
     // Each row carries exactly one, so the chooser page lists the whole set. The
     // column's own seeding rule then applies — "one entry ⇒ open it; several ⇒
     // open the chooser" (ui-sidebar-right's defaultSeed) — which is the accepted
     // price of listing every view instead of hiding three of them behind the
-    // first. Handing the column back is one click in settings (`nativeFileTree`),
-    // and the builtin resumes exactly as the contract promises.
+    // first.
     //
     // `view` is the internal name the body factory switches on (see the
     // `fixedView` prop in src/client/components.js); `order` is the position in
@@ -9314,13 +9500,17 @@ const SettingsSection = () => {
     // inlined into this same closure just below, and are only READ when
     // registration runs, long after they exist.
     const FROG_FILES_ID = 'dsh-sidebar-frog/files'
-    // The kind the tree occupies, spelled once: the tab definition below, the
-    // footer entry point and the 「加载时展开」default all open the SAME page by it.
-    const FROG_FILES_KIND = 'files'
+    // The kind this tree occupies. Deliberately NOT the product's `files`: that
+    // name belongs to the built-in tree, which keeps it (see the block above).
+    // Spelled once, because the tab definition below, the footer entry point and
+    // the 「加载时展开」default all open the SAME page by it.
+    const FROG_FILES_KIND = 'frog-files'
     const FROG_TABS = [
       {
-        id: FROG_FILES_ID, kind: FROG_FILES_KIND, view: 'tree', title: '文件', order: 10,
-        description: '工作区文件树：@引用到输入框、右键菜单、按目录刷新与 A/M 改动字母。',
+        // 文件树, not 文件: the product's own tab is the 文件 one, and two chips
+        // reading the same word would be indistinguishable on the strip.
+        id: FROG_FILES_ID, kind: FROG_FILES_KIND, view: 'tree', title: '文件树', order: 10,
+        description: '本插件的文件树：@引用到输入框、右键菜单、新建/删除、按目录刷新与 A/M 改动字母。系统的「文件」标签是另一棵（自带实时监听）。',
       },
       {
         id: 'dsh-sidebar-frog/artifacts', kind: 'frog-artifacts', view: 'artifacts', title: '产物', order: 20,
@@ -9351,6 +9541,13 @@ const SettingsSection = () => {
     //
     // THE RULE: renaming the kind or the id again means APPENDING the retired
     // name below, never replacing it.
+    //
+    // The ONE exception is the round-4 move off the product's `files` kind. A
+    // restored tab of kind `files` needs no body from this plugin, because the
+    // PRODUCT declares that kind itself (id `@deepseek-ai/dsh-client-ui-sidebar-files`),
+    // so the seat resolves `entryKey` to the product's id and draws the product's
+    // tree — the right answer, and a body of ours under the bare key `files` would
+    // never be reached anyway. Retiring a name INTO another owner is not a gap.
     //
     // `frog-browser` is on the list for the second reason a name retires: the
     // view is GONE (the 内置浏览器 tab was removed after review — the product's
@@ -9459,6 +9656,81 @@ const SettingsSection = () => {
       }
     }
 
+    // ── @引用 on the PRODUCT's own document preview ────────────────────────
+    // The reference half of this plugin is not a tree feature and never was: it
+    // writes `@path` through the shell's own composer API (quoteToComposer in
+    // src/client/core.js, which calls `conversation.input.for(...).setDraft`).
+    // Nothing about it needed this tree — the tree was only ever where the
+    // BUTTON happened to live.
+    //
+    // 0.1.7 gives that button a first-class home: `sidebar.right.tab.document.actions`
+    // is a LIST seat the product's own document preview renders in its header
+    // ("Header toolbar contributions acting on the previewed file", declared by
+    // ui-sidebar-documentpreview as a child of the text preview), handing each
+    // occupant `{ absolutePath }`. So the flow the user actually wants —
+    // click a file in the SYSTEM tree, reference it — now works on the product's
+    // tree, its preview, and its document tabs alike, without a single DOM probe.
+    //
+    // Degrading safely is the whole reason this is a separate registration. The
+    // seat does not exist before 0.1.7, and `slots.inject` does not throw for a
+    // key that is never declared: it parks the callback until a declaration
+    // appears and disposes it when one collapses ("Install an effect for each
+    // declaration lifetime of a slot"). On an older shell the wait simply never
+    // resolves, so this contributes nothing and costs nothing.
+    //
+    // The path is made WORKSPACE-RELATIVE before it becomes a reference — that is
+    // what the composer's grammar resolves, and what every other caller in this
+    // plugin passes (the tree's rows, the popout bridge). An absolute path is only
+    // kept when it cannot be expressed under the session's root, so a reference is
+    // never silently wrong; the composer's own help still accepts it.
+    // READ THE SEAT'S OWN CONTRACT, NOT A GUESS: this seat's owner props are
+    // `{ absolutePath }` and NOTHING else, so a `props.sessionId` here would be
+    // `undefined` on every render — which silently made `referenceFor` skip the
+    // rebase and emit an ABSOLUTE path into the composer. The seat is
+    // `scope: 'session'`, and the preview belongs to the session the column is
+    // showing, so the shell's own current-session reader is the right fallback.
+    const referenceFor = (absolutePath, sessionId) => {
+      const raw = String(absolutePath == null ? '' : absolutePath).replace(/\\/g, '/')
+      if (!raw) return ''
+      const owner = sessionId || currentSessionId()
+      const root = (owner ? sessionCwd(owner) : '').replace(/\\/g, '/').replace(/\/+$/, '')
+      if (root && raw.indexOf(root + '/') === 0) return raw.slice(root.length + 1)
+      return raw
+    }
+
+    // One small button, in the product's own toolbar idiom: icon + label, so it
+    // reads the same as the reload / wrap controls it stands beside.
+    const DocumentReferenceAction = (props) => {
+      const path = referenceFor(props && props.absolutePath, props && props.sessionId)
+      if (!path) return null
+      return React.createElement('button', {
+        type: 'button',
+        className: 'artifacts-doc-action',
+        'data-frog-doc-action': 'reference',
+        'data-frog-doc-path': path,
+        title: '把 @' + path + ' 引用到输入框',
+        'aria-label': '引用到输入框',
+        onClick: () => {
+          if (quoteToComposer(path)) noticeStore.flash('已插入 @' + basename(path))
+          else copyToClipboard('@' + path, '已复制 @引用')
+        },
+      },
+        React.createElement('span', { className: 'artifacts-doc-action-label' }, '@引用'),
+      )
+    }
+
+    const installDocumentActions = (slots) => {
+      try {
+        slots.inject('sidebar.right.tab.document.actions', () => slots.register({
+          name: 'sidebar.right.tab.document.actions',
+          id: 'dsh-sidebar-frog-doc-reference',
+          order: 40,
+          label: '@引用到输入框',
+        }, DocumentReferenceAction))
+        return true
+      } catch (e) { return false }
+    }
+
     // ── The column's own entry points ───────────────────────────────────────
     // Where this plugin asks the shell to show its tree. One command does both
     // jobs: `openTab` claims the page, places it, and expands the column in the
@@ -9540,9 +9812,9 @@ const SettingsSection = () => {
 
     const installColumnEntryPoints = (slots) => {
       if (!frogNativeSurface) return false
-      // Gated by the takeover switch and 「加载时展开」only. NOT by the floating
+      // Gated by the panel-surface switch and 「加载时展开」only. NOT by the floating
       // panel's 「文件树」 preference: that one governs the OVERLAY's band, while
-      // the column's 文件 tab is drawn regardless of it (a native 文件 tab must
+      // the column's 文件树 tab is drawn regardless of it (a native 文件树 tab must
       // never be blank — see the `fixedView === 'tree'` rule in components.js).
       // Reading it here would quietly disable both entry points for anyone who had
       // switched that view off while the panel was floating.
@@ -9709,22 +9981,54 @@ const SettingsSection = () => {
     //   · the item decides its own visibility from the tab it is handed, so a tab
     //     that is not ours renders nothing. An item that acts must also dismiss
     //     the menu: the menu is the kit's and closes only on its own actions.
+    //
+    // TWO kinds of tab get an item here, and the second one is why this component
+    // grew:
+    //   · this plugin's own views — the page itself (在新标签页弹出);
+    //   · any RESOURCE tab whose address names a file (在弹出页打开 <name>). That
+    //     is the single route that works for a document this plugin does not draw
+    //     at all — the product renders .html, images, Office, PDF and anything
+    //     else by itself, so no body of ours runs and no button of ours can be on
+    //     screen. It is also what replaced the one-line bar that used to sit above
+    //     every document tab: the row above that body is the product's own header
+    //     (path, renderer picker, reload) and has no extension point, so a bar of
+    //     ours could only ever be a second, near-empty row — while this item rides
+    //     the tab strip, which is the row above the whole document.
     const PopoutMenuItem = (props) => {
       const tab = props && props.tab
       const dismiss = props && props.dismiss
-      if (!tab || !FROG_TAB_KINDS.has(tab.kind)) return null
+      if (!tab) return null
+      if (FROG_TAB_KINDS.has(tab.kind)) {
+        return React.createElement('a', {
+          className: 'artifacts-menuitem',
+          href: popoutHrefFor(currentSessionId()),
+          target: POPOUT_TARGET,
+          rel: 'noreferrer noopener',
+          role: 'menuitem',
+          'data-frog-popout': 'tab',
+          title: '在新标签页弹出（可拖到另一块显示器）',
+          onClick: () => { if (typeof dismiss === 'function') dismiss() },
+        },
+          PopoutIcon(14),
+          React.createElement('span', { className: 'artifacts-menuitem-label' }, '在新标签页弹出'),
+        )
+      }
+      const path = pathFromFileAddress(tab.contentId || tab.address || '')
+      if (!path) return null
+      const sessionId = sessionFromFileAddress(tab.contentId || tab.address || '') || currentSessionId()
       return React.createElement('a', {
         className: 'artifacts-menuitem',
-        href: popoutHrefFor(currentSessionId()),
+        href: popoutFileHrefFor(sessionId, path),
         target: POPOUT_TARGET,
         rel: 'noreferrer noopener',
         role: 'menuitem',
-        'data-frog-popout': 'tab',
-        title: '在新标签页弹出（可拖到另一块显示器）',
+        'data-frog-popout': 'file',
+        'data-frog-doc-path': path,
+        title: '在弹出页打开「' + basename(path) + '」（独立标签页，与侧边栏实时同步）',
         onClick: () => { if (typeof dismiss === 'function') dismiss() },
       },
         PopoutIcon(14),
-        React.createElement('span', { className: 'artifacts-menuitem-label' }, '在新标签页弹出'),
+        React.createElement('span', { className: 'artifacts-menuitem-label' }, '在弹出页打开 ' + basename(path)),
       )
     }
 
@@ -9962,20 +10266,39 @@ const SettingsSection = () => {
 
     // A text payload the editor may safely write back.
     //
-    // The seat hands a PAGE, not a file: `offset` is the 1-based first line and
-    // `eof` says whether the last line is included. Editing a page and saving it
-    // would replace the whole file with that page — the one failure worse than
-    // not offering an editor at all. So the gate is the whole file, and the
-    // version/size the seat reported ride along as the save's conflict basis.
+    // The owner hands PAGES, not a file. One page is one line window from the
+    // seat — `{ offset, text, lines }` plus the file's `version` and complete
+    // `bytes` from the stat that preceded it — and `eof` says whether the last
+    // page includes the file's last line. Editing a WINDOW and saving it would
+    // replace the whole file with that window, which is the one failure worse
+    // than not offering an editor at all. So the gate is the whole file: exactly
+    // one page, starting at line 1, with `eof` set. (The seat's page size is
+    // 5000 lines, so every file up to that is editable and anything longer is
+    // not — which is also why the popout page, with its own editor, stays the
+    // way out for the long ones.)
+    //
+    // The version and byte count that ride the page are the save's conflict
+    // basis. They are read from the PAGE (with the payload itself as a fallback
+    // for an older shape) because that is where the seat puts them — the first
+    // version of this function asked for `content.offset`, a field the owner's
+    // memo does not carry at all, so `Number(undefined) !== 1` was true for every
+    // payload and the shell's sidebar NEVER offered its editor. Nothing noticed
+    // because the fixture in scripts/check.js invented the missing field.
     const textEditability = (content) => {
       if (!content || content.kind !== 'text') return null
-      if (Number(content.offset) !== 1 || content.eof !== true) return null
-      const bytes = typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null
+      const pages = Array.isArray(content.pages) ? content.pages : null
+      const first = pages && pages.length ? pages[0] : null
+      const startsAtOne = first ? Number(first.offset) === 1 : Number(content.offset) === 1
+      if (content.eof !== true || !startsAtOne) return null
+      if (pages && pages.length > 1) return null
+      const source = first || content
+      const bytes = typeof source.bytes === 'number' && isFinite(source.bytes) ? source.bytes
+        : (typeof content.bytes === 'number' && isFinite(content.bytes) ? content.bytes : null)
       // The host refuses a save past its own text ceiling; saying so here keeps
       // the toolbar from appearing on a file that could only fail on Ctrl+S.
       if (bytes !== null && bytes > 4 * 1024 * 1024) return null
       return {
-        version: typeof content.version === 'string' && content.version ? content.version : null,
+        version: typeof source.version === 'string' && source.version ? source.version : null,
         size: bytes,
       }
     }
@@ -10006,6 +10329,15 @@ const SettingsSection = () => {
       const session = sessionFromFileAddress(p.resourceAddress)
       const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
+        // NO standalone bar here, on purpose. The one row of chrome a document
+        // tab gets from this plugin is the editor's own toolbar, and it is drawn
+        // because the file can be edited — so 「在弹出页打开」 rides it. Where
+        // there is no editor (a payload too big to hold whole) the link is not
+        // missing, it moved to the tab's own actions menu, one row up: the row
+        // ABOVE this body belongs to the product's document header (path,
+        // renderer picker, reload) and has no extension point, so a bar of ours
+        // could only ever be a second, near-empty row — which is exactly what it
+        // was, and what this removes. See PopoutMenuItem in src/client/native.js.
         React.createElement(EditorPane, {
           path: path,
           editable: !!edit,
@@ -10013,6 +10345,14 @@ const SettingsSection = () => {
           content: content,
           baseVersion: edit ? edit.version : null,
           baseSize: edit ? edit.size : null,
+          docAction: edit
+            ? React.createElement(DocPopoutLink, {
+              path: path,
+              sessionId: session || currentSessionId(),
+              compact: true,
+              place: 'editor',
+            })
+            : null,
         },
           React.createElement(MarkdownView, {
             content,
@@ -10037,15 +10377,27 @@ const SettingsSection = () => {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理文本内容。')
       }
       const path = pathFromFileAddress(p.resourceAddress)
+      const session = sessionFromFileAddress(p.resourceAddress)
       const edit = textEditability(p.content)
       return React.createElement('div', { className: 'artifacts-doc' },
+        // No standalone bar: see the note on the Markdown body above. The same
+        // link is on the editor's toolbar when the file is editable, and in the
+        // tab's actions menu when it is not.
         React.createElement(EditorPane, {
           path: path,
           editable: !!edit,
-          sessionId: sessionFromFileAddress(p.resourceAddress),
+          sessionId: session,
           content: content,
           baseVersion: edit ? edit.version : null,
           baseSize: edit ? edit.size : null,
+          docAction: edit
+            ? React.createElement(DocPopoutLink, {
+              path: path,
+              sessionId: session || currentSessionId(),
+              compact: true,
+              place: 'editor',
+            })
+            : null,
         },
           React.createElement(TableView, { content, path: path }),
         ),
@@ -10064,6 +10416,9 @@ const SettingsSection = () => {
       }
       const path = pathFromFileAddress(address)
       return React.createElement('div', { className: 'artifacts-doc is-office' },
+        // No editor and no standalone bar: this body's 「在弹出页打开」 is the
+        // tab's actions menu, which is the only chrome that costs no row (see
+        // PopoutMenuItem in src/client/native.js).
         React.createElement(OfficeView, { bytes: content.data, path: path, kind: officeKind(path) }),
       )
     }
@@ -10081,6 +10436,9 @@ const SettingsSection = () => {
         return React.createElement('div', { className: 'artifacts-hint' }, '此渲染器只处理完整字节内容。')
       }
       return React.createElement('div', { className: 'artifacts-doc is-pdf' },
+        // No bar. It used to sit here, with a z-index, only because the PDF view
+        // fills its box absolutely; the tab's actions menu replaces it and the
+        // row it claimed goes back to the document.
         React.createElement(PdfView, { bytes: content.data, path: pathFromFileAddress(p.resourceAddress) }),
       )
     }
@@ -10332,6 +10690,16 @@ const SettingsSection = () => {
           }
           frogNativeSurface = registerNativeTab(slots, (view) => VIEW_BODIES[view]
             || ((props) => React.createElement(ArtifactsContent, Object.assign({}, props, { surface: 'native', fixedView: view }))))
+
+          // @引用 on the PRODUCT's own document preview, registered for BOTH
+          // surfaces and for no panel at all. It is deliberately NOT inside
+          // installColumnEntryPoints: that one is gated on this plugin owning the
+          // column, while this is the capability that must survive the built-in
+          // tree being the one on screen — it is what keeps 引用 working for
+          // someone who never opens this plugin's own 文件树 tab. See
+          // installDocumentActions in src/client/native.js.
+          installDocumentActions(slots)
+
 
           // The column's own entry points, once that column is ours: the standing
           // 文件树 button in the left sidebar's foot (the shell's only expand
