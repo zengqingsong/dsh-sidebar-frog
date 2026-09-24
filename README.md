@@ -153,7 +153,7 @@ Four checks stand behind that, and they are independent on purpose — each one 
 - **The working tree**, through `dsh-plugin-verify` (above): 7/7 waterfall, `tools/result` clean, no bare `child_process` spawn, no `single`-slot registration.
 - **The packed artifact**, which is what a marketplace actually installs: `npm pack`, then `dsh plugin --profile headless add <the tarball>`. pnpm installs it, the profile's `dsh.profile.bundles` gains `dsh-sidebar-frog` beside the shipped bundles, and the host logs the same build id out of `node_modules` rather than out of a checkout — the loop still ends 7/7. Nothing on that path runs a build script, and the only step that needs the network is the fetch.
 - **The registry's own admission test**: `dsh --profile headless --dump-config` exits 0 with the package installed — the gate `awesome-dsh-plugins` applies before it will list anything as verified.
-- **Every push, on Linux and Windows**: the guard suite, 228 assertions plus 37 cases driving the pop-out page in real Chrome.
+- **Every push, on Linux and Windows**: the guard suite, 228 assertions plus 39 cases driving the pop-out page in real Chrome.
 
 ## Development
 

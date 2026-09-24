@@ -152,7 +152,7 @@ npx dsh-plugin-verify . --repo <dsh-checkout>
 - **工作区**，经 `dsh-plugin-verify`（见上）：7/7 waterfall、`tools/result` 干净、没有裸 `child_process` spawn、没有 `single` 槽注册。
 - **打包产物**，也就是市场真正会装的那个东西：`npm pack` 之后 `dsh plugin --profile headless add <那个 tarball>`。pnpm 把包装进去，profile 的 `dsh.profile.bundles` 里多出 `dsh-sidebar-frog`，宿主从 `node_modules`（而不是从工作区）加载并打印同一个构建 id，循环依然是 7/7。这条路上没有任何构建脚本，唯一需要联网的只有下载本身。
 - **注册表自己的准入测试**：装了包之后 `dsh --profile headless --dump-config` 退出码 0——这是 `awesome-dsh-plugins` 在把插件标为 verified 之前会跑的闸。
-- **每次推送，Linux 与 Windows 双平台**：守卫套件 228 条断言，外加 37 条在真实 Chrome 里驱动弹出页的用例。
+- **每次推送，Linux 与 Windows 双平台**：守卫套件 228 条断言，外加 39 条在真实 Chrome 里驱动弹出页的用例。
 
 ## 开发
 
