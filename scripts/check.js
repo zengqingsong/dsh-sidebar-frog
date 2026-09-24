@@ -29,7 +29,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve, relative } from 'node:path'
+import { dirname, isAbsolute, join, resolve, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBundles } from './build.js'
 import { runPopoutTree, runPopoutPreview, runSidebarTree, hiddenControlViolations } from './tree-tests.js'
@@ -2833,11 +2833,14 @@ try {
       // The backend's containment test, expressed with node:path exactly the way
       // dsh-fs-local's LocalFileSystem does it: `child` is contained when the
       // relative path from `parent` to `child` is not an upward walk (a leading
-      // `..` or an absolute path). The root vs itself resolves to '', which IS
-      // contained — which is also why the host refuses the root explicitly.
+      // `..` segment or an absolute path). The separator is the PLATFORM's —
+      // hardcoding `..\\` made this stub answer "contained" for a POSIX sibling,
+      // which is the one thing this case exists to catch. The root vs itself
+      // resolves to '', which IS contained — which is also why the host refuses
+      // the root explicitly.
       contains: (parent, child) => {
         const rel = relative(String(parent.targetKey || parent), String(child.targetKey || child))
-        return rel !== '..' && !rel.startsWith('..\\') && !/^[A-Za-z]:/.test(rel)
+        return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))
       },
       stat: async (t) => {
         const s = await nodeFs.stat(String(t.targetKey || t))
@@ -2910,9 +2913,12 @@ try {
         return { targetKey: abs, displayPath: abs }
       },
       processPath: (t) => String(t.targetKey || t),
+      // Same platform-correct containment as the delete case above: the walk-out
+      // test must use THIS platform's separator, or a POSIX sibling reads as
+      // contained and the create's fence is never exercised on the release runner.
       contains: (parent, child) => {
         const rel = relative(String(parent.targetKey || parent), String(child.targetKey || child))
-        return rel !== '..' && !rel.startsWith('..\\') && !/^[A-Za-z]:/.test(rel)
+        return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))
       },
       stat: async (t) => {
         const s = await nodeFs.stat(String(t.targetKey || t))
