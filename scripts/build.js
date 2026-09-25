@@ -61,6 +61,11 @@ const assertNoMarkers = (text, label) => {
 export function buildBundles() {
   // ── Shared (portable) ───────────────────────────────────────────────────
   const ext = read('src/shared/ext.js')
+  // The file tree's icon classifier + the 48 brand glyphs it resolves to. Shared
+  // because BOTH faces draw file icons — the panel from React, the popout page
+  // from plain DOM — and one artwork table is the only way the two windows can
+  // be guaranteed to show the same picture for the same file.
+  const filetype = read('src/shared/filetype.js')
   const markdown = read('src/shared/markdown.js')
   const skins = read('src/shared/skins.js')
   const highlight = read('src/shared/highlight.js')
@@ -140,7 +145,7 @@ export function buildBundles() {
   // keeps `buildBundles()` the single place that decides what a build contains.)
   const logo = read('scripts/logo.js')
   const build = createHash('sha1')
-    .update([ext, markdown, highlight, bridge, settings, format, paths, linediff, table, range, gitslice,
+    .update([ext, filetype, markdown, highlight, bridge, settings, format, paths, linediff, table, range, gitslice,
       editor, office, officeCss,
       hostBody, core, pageSrc, routes,
       clientBody, clientCore, styles, icons, preview, filetree, editorUi, components, native, docpreview, usage, git, logo].join('\u0000'))
@@ -181,6 +186,8 @@ export function buildBundles() {
   page = replaceAll(page, '@@paths@@', indent(paths, 4))
   page = replaceAll(page, '@@linediff@@', indent(linediff, 4))
   page = replaceAll(page, '@@ext@@', indent(ext, 4))
+  // After `ext`: the popout page's icon renderer classifies with this module.
+  page = replaceAll(page, '@@filetype@@', indent(filetype, 4))
   page = replaceAll(page, '@@office@@', indent(office, 4))
   page = replaceAll(page, '@@table@@', indent(table, 4))
   page = replaceAll(page, '@@highlight@@', indent(highlight, 4))
@@ -226,6 +233,8 @@ export function buildBundles() {
   client = replaceAll(client, '@@paths@@', indent(paths, 4))
   client = replaceAll(client, '@@linediff@@', indent(linediff, 4))
   client = replaceAll(client, '@@ext@@', indent(ext, 4))
+  // Before `icons`: FileTypeGlyph reads iconGlyph/CODE_ICON_* from this module.
+  client = replaceAll(client, '@@filetype@@', indent(filetype, 4))
   client = replaceAll(client, '@@office@@', indent(office, 4))
   client = replaceAll(client, '@@table@@', indent(table, 4))
   client = replaceAll(client, '@@gitslice@@', indent(gitslice, 4))

@@ -691,6 +691,14 @@ const ArtifactsContent = (props) => {
           title: f.path,
           onClick: () => { setActiveTab('file:' + f.path); setDeleteMode(false); setDeleteTarget(null); setCloseArmed('') },
         },
+          // The TYPE icon the tree and the product's own tabs both show, so a tab
+          // and its row are recognisably the same file. It is the same
+          // FileTypeGlyph the tree rows draw from src/shared/filetype.js — one
+          // classifier, so a tab can never disagree with the row that opened it.
+          // `aria-hidden` because the label right beside it already names the
+          // file; the icon is the quick-glance channel, not a second name.
+          React.createElement('span', { key: 'ico', className: 'artifacts-tab-ico', 'aria-hidden': true },
+            React.createElement(FileTypeGlyph, { size: 13, path: f.path })),
           // The dot is the file's unsaved draft: a tab that unloads its editor on
           // every switch has to say which files are still holding edits.
           draftStore.isDirty(f.path) ? React.createElement('span', { key: 'dirty', className: 'artifacts-tab-dirty', title: '有未保存的修改' }, '●') : null,

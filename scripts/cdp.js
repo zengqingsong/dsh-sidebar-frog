@@ -65,6 +65,10 @@ class Session {
     this._pending = new Map()
     this._handlers = new Map()
     this._closed = false
+    // Dialogs the page raised that nobody asked for, and the policy the current
+    // navigation installed. See the handler in `launch`.
+    this.dialogs = []
+    this._dialogPolicy = null
     ws.addEventListener('message', (ev) => this._onMessage(ev))
     ws.addEventListener('close', () => {
       this._closed = true
@@ -154,35 +158,34 @@ class Session {
    * anyway, so "the load event" is both fragile and beside the point. What matters
    * is that the URL changed and the new document is no longer `loading`.
    *
-   * `onDialog` answers a JavaScript dialog raised BY THE NAVIGATION: the popout
-   * page asks before it leaves when it holds unsaved edits (`beforeunload`), and a
-   * dialog blocks the navigation until somebody answers it — which is why the
-   * first version of the deep-link test timed out on `Page.navigate` and then on
-   * every command after it (a blocked navigation blocks the renderer). Pass
-   * 'accept' to leave anyway, 'dismiss' to stay.
+   * Answers the dialog for the duration of THIS navigation. The session has one
+   * permanent `Page.javascriptDialogOpening` handler (see `launch`) that dismisses
+   * anything unexpected and records it; this only sets the answer it should give.
+   * The previous version added a handler per call, so navigating twice left two
+   * handlers answering the same dialog.
    */
   async navigate(url, { onDialog = null, timeout = 20000 } = {}) {
-    if (onDialog) {
-      await this.send('Page.enable')
-      this.on('Page.javascriptDialogOpening', () => {
-        this.send('Page.handleJavaScriptDialog', { accept: onDialog !== 'dismiss' }).catch(() => {})
-      })
-    }
-    await this.send('Page.navigate', { url })
-    const deadline = Date.now() + timeout
-    for (;;) {
-      let info = null
-      try {
-        info = await this.evaluate('({ href: location.href, state: document.readyState })')
-      } catch (e) {
-        // Mid-commit the old execution context can be gone: that is not a failure.
-        info = null
+    const previous = this._dialogPolicy
+    this._dialogPolicy = onDialog
+    try {
+      await this.send('Page.navigate', { url })
+      const deadline = Date.now() + timeout
+      for (;;) {
+        let info = null
+        try {
+          info = await this.evaluate('({ href: location.href, state: document.readyState })')
+        } catch (e) {
+          // Mid-commit the old execution context can be gone: that is not a failure.
+          info = null
+        }
+        if (info && info.href === url && info.state !== 'loading') return
+        if (Date.now() > deadline) {
+          throw new Error('navigate: the tab never reached ' + url + ' (at ' + JSON.stringify(info) + ')')
+        }
+        await sleep(50)
       }
-      if (info && info.href === url && info.state !== 'loading') return
-      if (Date.now() > deadline) {
-        throw new Error('navigate: the tab never reached ' + url + ' (at ' + JSON.stringify(info) + ')')
-      }
-      await sleep(50)
+    } finally {
+      this._dialogPolicy = previous
     }
   }
 
@@ -365,5 +368,20 @@ export async function launch({ url, width = 1400, height = 900, timeout = 30000 
   await session.send('Page.enable')
   await session.send('Runtime.enable')
   await session.send('Log.enable')
+  // A native dialog BLOCKS the renderer: this page calls `window.confirm` before
+  // destructive work (removing a file), and an unanswered one makes every later
+  // `Runtime.evaluate` time out at 20s. One stray confirm therefore used to turn
+  // into a cascade of ~15 unrelated failures and finally an abort with no summary
+  // — which the mutation harness could not classify at all.
+  //
+  // Answer everything, record what was answered, and let the test that provoked
+  // it fail on its own merits. `navigate({ onDialog })` overrides the answer for
+  // the duration of that navigation (the popout asks before it leaves a dirty
+  // editor, and that one must be ACCEPTED).
+  session.on('Page.javascriptDialogOpening', (p) => {
+    const policy = session._dialogPolicy
+    if (!policy) session.dialogs.push(p && p.message ? p.message : '(dialog)')
+    session.send('Page.handleJavaScriptDialog', { accept: policy === 'accept' }).catch(() => {})
+  })
   return session
 }

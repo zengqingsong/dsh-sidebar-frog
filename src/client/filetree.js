@@ -977,8 +977,8 @@ const FileTree = (props) => {
       },
         guides,
         React.createElement('span', { className: 'artifacts-tree-twisty is-file' }),
-        React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + (c.kind === 'dir' ? 'folder' : 'text') },
-          c.kind === 'dir' ? FolderClosedIcon(16) : TreeFileIcon(16)),
+        React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + (c.kind === 'dir' ? 'folder' : iconGlyph(c.name || '').kind) },
+          c.kind === 'dir' ? FolderClosedIcon(16) : React.createElement(FileTypeGlyph, { size: 16, path: c.name || '' })),
         React.createElement('input', {
           ref: createRef,
           className: 'artifacts-tree-create',
@@ -1080,8 +1080,11 @@ const FileTree = (props) => {
       isDir
         ? React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-folder' },
           isOpen ? FolderOpenIcon(16) : FolderClosedIcon(16))
-        : React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + fileIconKind(entry.path) },
-          TreeFileIcon(16)),
+        // The class segment is the ONE description's kind (iconGlyph), not a
+        // second classifier: a row's icon and its colour can then never disagree
+        // about what the file is.
+        : React.createElement('span', { className: 'artifacts-tree-ico artifacts-tree-ico-' + iconGlyph(entry.path).kind },
+          React.createElement(FileTypeGlyph, { size: 16, path: entry.path })),
       React.createElement('span', {
         className: 'artifacts-tree-name' +
           (flat ? ' is-flat' : '') +

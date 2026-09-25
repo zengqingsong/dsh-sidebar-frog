@@ -167,6 +167,67 @@ export const runPopoutTree = async (html) => {
       if (paths.length !== new Set(paths).size) throw new Error('a row was rendered twice: ' + JSON.stringify(paths))
       return paths.length + ' rows, no duplicates'
     })
+
+    // The icon system, in the popout page's DOM renderer. Nothing else covers the
+    // DOM half: the sidebar tree is a different renderer (React, stubbed in this
+    // file's sibling suite) and the browser suite's tree tests never look at a
+    // row's picture. Both faces are supposed to draw the SAME description
+    // (src/shared/filetype.js), so what is asserted here is the branch the DOM
+    // renderer took and the box it drew in.
+    //
+    // The fake DOM drops innerHTML, so the inlined brand artwork itself cannot be
+    // read back here — that is asserted against the module in scripts/check.js.
+    await check('popout: rows draw the shared file-type glyph', () => {
+      const boxOf = (p) => {
+        const row = rowFor(p)
+        if (!row) throw new Error('no row for ' + p)
+        const box = row.querySelectorAll('.tree-ico')[0]
+        if (!box) throw new Error('no icon box on ' + p)
+        return box
+      }
+      const svgOf = (p) => {
+        const svg = boxOf(p).querySelectorAll('svg')[0]
+        if (!svg) throw new Error('no glyph svg on ' + p)
+        return svg
+      }
+      const js = svgOf('D:/ws/src/a.js')
+      const jsCls = boxOf('D:/ws/src/a.js').getAttribute('class')
+      if (jsCls.indexOf('tree-ico-code') < 0) throw new Error('a .js row is not tinted as code: ' + jsCls)
+      if (js.getAttribute('viewBox') !== '0 0 20 20') {
+        throw new Error('a .js row did not use the 20×20 brand box: ' + js.getAttribute('viewBox'))
+      }
+      // Directory rows draw the built-in tree's own outline folder. Both shapes are
+      // on screen here: `src` is expanded (the open folder — three fills, its front
+      // panel translucent) and `src/deep` is not (the closed one — two 1px strokes,
+      // no fill). Neither is the amber card.
+      const open = svgOf('D:/ws/src')
+      if (open.getAttribute('viewBox') !== '0 0 16 16') throw new Error('an open folder row is not on the 16-box')
+      const openPaths = open.querySelectorAll('path')
+      if (openPaths.length !== 3) throw new Error('the open folder drew ' + openPaths.length + ' paths, want 3')
+      if (openPaths[0].getAttribute('opacity') !== '0.16') throw new Error('the open folder lost its translucent front panel')
+      for (const p of openPaths) {
+        if (p.getAttribute('fill') !== 'currentColor') throw new Error('an open-folder path is not filled: ' + p.getAttribute('fill'))
+      }
+      const closed = svgOf('D:/ws/src/deep')
+      const closedPaths = closed.querySelectorAll('path')
+      if (closedPaths.length !== 2) throw new Error('the closed folder drew ' + closedPaths.length + ' paths, want 2')
+      for (const p of closedPaths) {
+        if (!p.getAttribute('stroke')) throw new Error('a closed-folder path is not stroked')
+        if (p.getAttribute('fill') !== 'none') throw new Error('a closed-folder path is filled: ' + p.getAttribute('fill'))
+      }
+      const md = svgOf('D:/ws/docs/c.md')
+      const mdCls = boxOf('D:/ws/docs/c.md').getAttribute('class')
+      if (mdCls.indexOf('tree-ico-markdown') < 0) throw new Error('a .md row is not tinted as markdown: ' + mdCls)
+      if (md.getAttribute('viewBox') !== '0 0 28 28') throw new Error('a .md row did not use the 28×28 card box')
+      const paths = md.querySelectorAll('path').length
+      if (paths !== 3) throw new Error('the card drew ' + paths + ' paths, want body + fold + mark')
+      const groups = md.querySelectorAll('g')
+      if (groups.length !== 1) throw new Error('the card drew ' + groups.length + ' mark groups, want 1')
+      const t = groups[0].getAttribute('transform')
+      if (!t || t.indexOf('scale(1.22)') < 0) throw new Error('the MD mark lost its scale transform: ' + t)
+      return 'brand 20×20 + card 28×28 with the scaled MD mark'
+    })
+
     page.els('treeCollapseAll').click()
     await tick(40)
   }
@@ -476,18 +537,24 @@ const mountSidebar = (store, options) => {
   // every shared helper undefined — and a ReferenceError thrown inside an effect
   // is swallowed by the hook runtime, so the tree would silently lose the
   // behaviour under test instead of failing the test.
+  //
+  // `ext.js` comes before `filetype.js` for the same reason the build puts it
+  // there: the icon classifier calls `fileExt` from ext.js. `FileTypeGlyph`
+  // itself stays a stub — it is the one piece of icons.js the tree needs, and
+  // this suite is about the tree's behaviour, not its artwork.
   const mod = new Function(
     'React', 'ReactDOM', 'currentSessionId', 'ctx', 'host', 'quoteToComposer', 'basename', 'fileIconKind', 'fallbackCopy',
-    'RefreshIcon', 'TreeChevronIcon', 'FolderOpenIcon', 'FolderClosedIcon', 'TreeFileIcon', 'SearchIcon',
+    'RefreshIcon', 'TreeChevronIcon', 'FolderOpenIcon', 'FolderClosedIcon', 'FileTypeGlyph', 'SearchIcon',
     'ExpandAllIcon', 'CollapseAllIcon', 'CloseIcon', 'PlusIcon', 'window', 'document', 'localStorage', 'navigator', 'console',
     'setTimeout', 'clearTimeout',
-    read('src/shared/paths.js') + '\n' + read('src/client/filetree.js') + '\nreturn { FileTree };',
+    read('src/shared/paths.js') + '\n' + read('src/shared/ext.js') + '\n' + read('src/shared/filetype.js')
+      + '\n' + read('src/client/filetree.js') + '\nreturn { FileTree };',
   )(
     r.React, ReactDOM, () => 's1',
     { get: (n) => (n === 'sessions' ? { list: { subscribe: () => () => {} } } : undefined) },
     host, () => false, (p) => String(p).split(/[/\\]/).pop(), () => 'js', () => {},
     icon('RefreshIcon'), icon('TreeChevronIcon'), icon('FolderOpenIcon'), icon('FolderClosedIcon'),
-    icon('TreeFileIcon'), icon('SearchIcon'), icon('ExpandAllIcon'), icon('CollapseAllIcon'), icon('CloseIcon'), icon('PlusIcon'),
+    icon('FileTypeGlyph'), icon('SearchIcon'), icon('ExpandAllIcon'), icon('CollapseAllIcon'), icon('CloseIcon'), icon('PlusIcon'),
     windowStub,
     { body: bodyStub },
     {

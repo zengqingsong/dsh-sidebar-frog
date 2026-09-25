@@ -10,6 +10,7 @@
  *   settings   → src/shared/settings.js   (the settings shape, shared with the popout)
  *   format     → src/shared/format.js     (relative time, shared with the popout)
  *   ext        → src/shared/ext.js
+ *   filetype   → src/shared/filetype.js   (file-tree icon classifier + brand artwork, shared with the popout page)
  *   highlight  → src/shared/highlight.js
  *   markdown   → src/shared/markdown.js
  *   editor     → src/shared/editor.js     (the CodeMirror mount, shared with the popout page)
@@ -205,6 +206,7 @@ window.__ModuleLoader__.load({
           @@paths@@
           @@linediff@@
           @@ext@@
+          @@filetype@@
           @@office@@
           @@table@@
           @@gitslice@@

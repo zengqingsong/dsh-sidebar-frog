@@ -297,7 +297,7 @@ try {
 // literals are only allowed to exist in one place.
 console.log('shared modules')
 
-const SHARED_SOURCES = ['src/shared/bridge.js', 'src/shared/settings.js', 'src/shared/format.js', 'src/shared/paths.js', 'src/shared/linediff.js', 'src/shared/ext.js', 'src/shared/office.js', 'src/shared/table.js', 'src/shared/range.js', 'src/shared/gitslice.js']
+const SHARED_SOURCES = ['src/shared/bridge.js', 'src/shared/settings.js', 'src/shared/format.js', 'src/shared/paths.js', 'src/shared/linediff.js', 'src/shared/ext.js', 'src/shared/filetype.js', 'src/shared/office.js', 'src/shared/table.js', 'src/shared/range.js', 'src/shared/gitslice.js']
 const SHARED_EXPORTS = [
   'BRIDGE', 'BRIDGE_QUOTE_TTL_MS', 'BRIDGE_ACK_TIMEOUT_MS', 'bridgeNonce', 'bridgeEncodeQuote',
   'bridgeDecodeQuote', 'bridgeEncodeAck', 'bridgeDecodeAck', 'bridgeQuoteIsFresh', 'bridgeParseWidth',
@@ -307,6 +307,9 @@ const SHARED_EXPORTS = [
   'pathUnder', 'pathRelativeTo', 'pathAncestorsOf',
   'diffLines', 'diffStats',
   'extType', 'fileExt', 'fileIconKind',
+  'CODE_ICON_TYPES', 'CODE_ICON_ART', 'CODE_ICON_ID_TOKEN', 'CARD_KINDS',
+  'isCodeIconType', 'codeIconType', 'fileIconType', 'cardKindOf', 'iconGlyph', 'isCodeIconPath',
+  'fileCardParts', 'cardMarkTransform', 'folderGlyphParts', 'FOLDER_CLOSE_D', 'FOLDER_OPEN_D',
   'OFFICE_KINDS', 'officeKind', 'officeKindLabel', 'OFFICE_ASSETS', 'OFFICE_MAX_FILE', 'OFFICE_MAX_EXPANDED',
   'officeZipTotals', 'officeBytesVerdict', 'officeSizeText', 'officeMount', 'officeMediaUrl',
   'tableParse', 'tableSniffDelimiter', 'tableDelimiterLabel', 'tableSortRows', 'tableCompare',
@@ -344,6 +347,218 @@ if (shared) {
   }
   if (duplicated.length) bad('key literals', 'must live only in src/shared/bridge.js: ' + duplicated.join(', '))
   else ok('key literals', 'all cross-window keys come from src/shared/bridge.js')
+}
+
+// ── 2c. the file tree's icon table ─────────────────────────────────────────
+// The tree draws one of 48 full-colour brand glyphs for a code file and a card
+// for everything else, and BOTH faces draw from src/shared/filetype.js. The table
+// is generated from the installed primitives, so the failure worth guarding is
+// not a typo but "the generator kept 47 of 48": a dropped entry renders one file
+// as a blank square, which no diff and no reviewer notices.
+//
+// This also closes the loop the class names used to be hand-listed for. A kind the
+// classifier can return with no colour rule is a file that renders with an
+// inherited colour — nearly invisible, and the kind of thing a hand-written list
+// stops catching the moment a kind is added.
+console.log('file-type icons')
+if (shared) {
+  try {
+    const { CODE_ICON_TYPES: types, CODE_ICON_ART: art, CARD_KINDS: kinds, iconGlyph, isCodeIconType } = shared
+    const failures = []
+    if (!Array.isArray(types) || types.length !== 48) {
+      failures.push('expected 48 code icon types, got ' + (types ? types.length : 'none'))
+    } else {
+      if (new Set(types).size !== types.length) failures.push('CODE_ICON_TYPES has duplicates')
+      const keys = Object.keys(art)
+      const missing = types.filter((t) => !Object.prototype.hasOwnProperty.call(art, t))
+      const undeclared = keys.filter((k) => !types.includes(k))
+      if (missing.length) failures.push('no artwork for ' + missing.join(', '))
+      if (undeclared.length) failures.push('artwork keys not in CODE_ICON_TYPES: ' + undeclared.join(', '))
+      const stray = []
+      const undecoded = []
+      const byGlyph = new Map()
+      for (const t of types) {
+        const v = art[t]
+        if (typeof v !== 'string' || !v.startsWith('<') || v.length <= 20) {
+          failures.push('CODE_ICON_ART.' + t + ' is not drawable markup')
+          continue
+        }
+        if (!isCodeIconType(t)) failures.push(t + ' is in CODE_ICON_TYPES but isCodeIconType says no')
+        // Nothing between tags but whitespace, outside a <text> label (four of
+        // these glyphs draw CSS / .ENV / INI / OC as text). The mangled escape
+        // this catches shipped as `>n<polygon` in the yaml glyph: a decoded
+        // `\n` that lost its backslash became a bare letter, and the markup
+        // still looked like SVG in a diff.
+        if (v.replace(/<text[\s\S]*?<\/text>/g, '').replace(/<[^>]*>/g, '').trim() !== '') stray.push(t)
+        // A backslash+letter left in the DATA means an escape reached it
+        // undecoded — dropped (bare `n`) or kept as text (literal `\n`).
+        if (/\\[A-Za-z]/.test(v)) undecoded.push(t)
+        if (byGlyph.has(v)) failures.push(t + ' and ' + byGlyph.get(v) + ' carry the identical glyph')
+        else byGlyph.set(v, t)
+      }
+      if (stray.length) failures.push('text outside the tags in ' + stray.join(', ') + ' — an escape was mangled')
+      if (undecoded.length) failures.push('an escape survived decoding in ' + undecoded.join(', '))
+      // Well-formed is not the same as RIGHT: these five brand colours prove the
+      // table is the product's artwork, not 48 plausible-looking placeholders.
+      const BRAND = { javascript: 'F0DB4F', typescript: '007ACC', python: '3776AB', rust: '2B2B2B', react: '61DAFB' }
+      for (const [t, hex] of Object.entries(BRAND)) {
+        if (!String(art[t]).toUpperCase().includes(hex)) failures.push('CODE_ICON_ART.' + t + ' is missing its brand colour #' + hex)
+      }
+    }
+
+    // Classifier → tier → type, one sample per branch. The two that are easy to
+    // get backwards are here on purpose: `package.json` is the Node hexagon
+    // (filename rules beat extension rules) and `.scss` is a CARD (the shell has
+    // no SCSS brand glyph), not a code square.
+    const SAMPLE = [
+      ['a.js', 'code', 'javascript'], ['package.json', 'code', 'node'], ['Dockerfile', 'code', 'docker'],
+      ['x.rs', 'code', 'rust'], ['app.component.ts', 'code', 'angular'],
+      ['notes.md', 'card', 'markdown'], ['report.pdf', 'card', 'pdf'], ['book.xlsx', 'card', 'excel'],
+      ['deck.pptx', 'card', 'ppt'], ['doc.docx', 'card', 'word'], ['photo.png', 'card', 'image'],
+      ['clip.mp4', 'card', 'video'], ['index.html', 'card', 'html'], ['style.scss', 'card', 'code'],
+      ['LICENSE', 'card', 'other'],
+    ]
+    const wrong = []
+    for (const [path, tier, type] of SAMPLE) {
+      const g = iconGlyph(path)
+      if (g.tier !== tier || g.type !== type) wrong.push(path + ' → ' + g.tier + '/' + g.type + ' (want ' + tier + '/' + type + ')')
+    }
+    if (wrong.length) failures.push('classifier drift: ' + wrong.join('; '))
+
+    // Every kind a file can get — `folder` is the directory rows' own glyph, never
+    // a file's kind — must open a colour rule in BOTH stylesheets.
+    const wantKinds = kinds.filter((k) => k !== 'folder')
+    const opensRule = (css, cls) => new RegExp('^\\s*\\.' + cls + '\\s*[,{]', 'm').test(css)
+    const panelCss = read('src/client/styles.js')
+    const pageCss = read('src/host/page.js')
+    const noPanel = wantKinds.filter((k) => !opensRule(panelCss, 'artifacts-tree-ico-' + k))
+    const noPage = wantKinds.filter((k) => !opensRule(pageCss, 'tree-ico-' + k))
+    if (noPanel.length) failures.push('the panel has no colour rule for ' + noPanel.join(', '))
+    if (noPage.length) failures.push('the popout page has no colour rule for ' + noPage.join(', '))
+    if (!opensRule(panelCss, 'artifacts-tree-ico-folder') || !opensRule(pageCss, 'tree-ico-folder')) {
+      failures.push('no colour rule for the folder glyph')
+    }
+
+    // The React half of the same description (FileTypeGlyph in src/client/icons.js).
+    // Nothing else executes it: the sidebar tree tests STUB the component and the
+    // browser suite only loads the popout page, so the branch that inlines ~59 KB
+    // of brand markup and stamps instance ids would otherwise ship unexercised —
+    // and an unexercised branch is exactly where the two renderers drift.
+    const ReactStub = {
+      // React flattens array children and drops null ones; the stub does the same
+      // so the assertions below read like the DOM (body, fold, then the mark
+      // group) instead of having to know which child was written as an array.
+      createElement: (type, props, ...children) => ({
+        type,
+        props: props || {},
+        children: children.flat().filter((c) => c !== null && c !== undefined && c !== false),
+      }),
+      useId: undefined, // the counter fallback; also proves the guard is optional
+    }
+    const iconMod = new Function('React',
+      read('src/shared/ext.js') + '\n' + read('src/shared/filetype.js') + '\n' + read('src/client/icons.js')
+        + '\nreturn { FileTypeGlyph, FolderClosedIcon, FolderOpenIcon }')(ReactStub)
+    const glyphFor = (p) => iconMod.FileTypeGlyph({ size: 16, path: p })
+    const brand = glyphFor('a.js')
+    const brandHtml = brand.props.dangerouslySetInnerHTML && brand.props.dangerouslySetInnerHTML.__html
+    if (brand.type !== 'svg' || brand.props.viewBox !== '0 0 20 20') failures.push('a code file did not draw the 20×20 brand square')
+    if (!brandHtml || brandHtml.includes(shared.CODE_ICON_ID_TOKEN)) failures.push('the brand markup still carries the raw id token')
+    if (brandHtml === glyphFor('a.js').props.dangerouslySetInnerHTML.__html) {
+      failures.push('two brand instances share one id — the second would borrow the first one\'s paint')
+    }
+    const cardOf = (p) => glyphFor(p).children || []
+    const markOf = (p) => cardOf(p)[2] || null
+    const cardCases = [
+      ['notes.md', 1], // the MD mark, scaled up
+      ['book.xlsx', 1], // the stroked spreadsheet grid
+      ['photo.png', 3], // the three filled shapes of the image mark
+      ['clip.mp4', 1], // the play triangle
+      ['style.scss', 3], // the card `code` kind's three chevrons
+    ]
+    for (const [p, marks] of cardCases) {
+      const svg = glyphFor(p)
+      if (svg.props.viewBox !== '0 0 28 28') failures.push(p + ' did not draw the 28×28 card')
+      const body = svg.children.slice(0, 2)
+      if (body.length !== 2 || body.some((el) => el.type !== 'path')) failures.push(p + ' did not draw the card body + fold')
+      const mark = markOf(p)
+      if (!mark || mark.type !== 'g' || mark.children.length !== marks) {
+        failures.push(p + ' drew the wrong number of mark paths (' + (mark ? mark.children.length : 'no mark') + ', want ' + marks + ')')
+      }
+    }
+    // The two fidelity rules a plausible-looking implementation gets wrong: the
+    // code chevrons and the spreadsheet grid are NOT transformed (the primitives
+    // leave those two at their authored size), and `other` has no mark at all.
+    for (const p of ['style.scss', 'book.xlsx']) {
+      if (markOf(p) && markOf(p).props.transform !== undefined) failures.push(p + ' is transformed, but the built-in leaves it untransformed')
+    }
+    if (!markOf('notes.md') || !markOf('notes.md').props.transform) failures.push('the MD mark lost its scale transform')
+    if (cardOf('LICENSE').length !== 2) failures.push('the `other` card drew a mark')
+    // The spreadsheet grid is a STROKED path with no fill of its own: filling it
+    // turns the grid into a solid rectangle.
+    const excelMark = markOf('book.xlsx') && markOf('book.xlsx').children[0]
+    if (!excelMark || !excelMark.props.stroke || excelMark.props.fill !== undefined) {
+      failures.push('the spreadsheet mark is not the built-in\'s stroked, unfilled grid')
+    }
+    if (!opensRule(panelCss, 'artifacts-tree-ico-' + iconGlyph('LICENSE').kind)) failures.push('the `other` kind has no colour')
+
+    // ── the directory glyph ────────────────────────────────────────────────
+    // A folder is not a file card: the built-in tree draws the product's own
+    // outline folder (FilesBody → IconFolderClose/OpenRegular) tinted
+    // label-tertiary, so the module carries that geometry too — generated, and
+    // compared here against the install itself. A hand copy would be the one
+    // artwork in this file that could rot without anything failing.
+    const closedParts = shared.folderGlyphParts(false)
+    const openParts = shared.folderGlyphParts(true)
+    if (closedParts.length !== 2) failures.push('the closed folder is ' + closedParts.length + ' paths, want 2 (outline + fold)')
+    if (openParts.length !== 3) failures.push('the open folder is ' + openParts.length + ' paths, want 3')
+    if (closedParts.some((p) => !p.stroke || p.fill)) failures.push('the closed folder is not stroke-only')
+    if (openParts.some((p) => p.fill !== 'currentColor')) failures.push('the open folder is not filled with currentColor')
+    if (openParts[0].opacity !== '0.16') failures.push('the open folder\'s front panel is not the translucent first path')
+    if (openParts.slice(1).some((p) => p.opacity)) failures.push('a solid path of the open folder is translucent')
+
+    const folderSvg = (open) => iconMod[open ? 'FolderOpenIcon' : 'FolderClosedIcon'](16)
+    for (const [open, paths] of [[false, 2], [true, 3]]) {
+      const svg = folderSvg(open)
+      if (svg.type !== 'svg' || svg.props.viewBox !== '0 0 16 16' || svg.props.fill !== 'none') {
+        failures.push('the ' + (open ? 'open' : 'closed') + ' folder did not draw a 16×16 fill:none svg')
+      }
+      if (svg.children.length !== paths) failures.push('the ' + (open ? 'open' : 'closed') + ' folder rendered ' + svg.children.length + ' paths, want ' + paths)
+    }
+    if (folderSvg(false).children.some((p) => !p.props.stroke)) failures.push('a rendered closed-folder path lost its stroke')
+    if (folderSvg(true).children[0].props.opacity !== '0.16') failures.push('the rendered open folder lost its translucent panel')
+
+    // Extracted from whatever DSH this machine has, exactly like the manifest
+    // guard resolves `inject`: no install present ⇒ skip rather than fail.
+    const primRoots = [join(dirname(process.execPath), 'node_modules')]
+    if (process.env.APPDATA) primRoots.push(join(process.env.APPDATA, 'npm', 'node_modules'))
+    const primIndex = primRoots
+      .map((r) => join(r, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-client-ui-primitives', 'lib', 'index.js'))
+      .find((p) => existsSync(p))
+    if (primIndex) {
+      const indexJs = readFileSync(primIndex, 'utf8')
+      const pathsOf = (fn) => {
+        const at = indexJs.indexOf('const ' + fn + ' = ')
+        if (at < 0) return null
+        const end = indexJs.indexOf('\n});', at)
+        return [...indexJs.slice(at, end).matchAll(/\bd:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\(.)/g, '$1'))
+      }
+      const installed = [...(pathsOf('FolderCloseArtwork') || []), ...(pathsOf('IconFolderOpenArtwork') || [])]
+      const mine = [...shared.FOLDER_CLOSE_D, ...shared.FOLDER_OPEN_D]
+      if (installed.length !== mine.length || installed.some((d, i) => d !== mine[i])) {
+        failures.push('the folder glyphs no longer match the installed primitives — rerun scripts/gen-filetype-icons.js')
+      }
+    }
+    ok('react glyph', 'brand 20×20 with unique ids, card 28×28, the untransformed marks, the stroked grid and the install\'s folder')
+
+    if (failures.length) bad('file-type icons', failures.join(' | '))
+    else {
+      ok('artwork table', types.length + ' brand glyphs, every key declared and every value markup')
+      ok('classifier', SAMPLE.length + ' sample paths resolve to the built-in tier and type')
+      ok('icon colours', wantKinds.length + ' card kinds + folder styled in both stylesheets')
+    }
+  } catch (e) {
+    bad('file-type icons', e && e.message ? e.message : String(e))
+  }
 }
 
 if (shared) {
@@ -1597,6 +1812,36 @@ const bootClient = (options) => {
       if (typeof entry.title !== 'function' || !entry.title()) throw new Error(want.id + '\'s guide entry has no title')
       if (typeof entry.description !== 'function' || !entry.description()) throw new Error(want.id + '\'s guide entry has no description')
       if (typeof entry.order !== 'number') throw new Error(want.id + '\'s guide entry has no order')
+      // The chooser's row PICTURE. The product ships one for its own 文件 entry
+      // (GuideArtworkFiles) and a tab without one is drawn with a grey placeholder
+      // — so "the entry exists" is not the same as "the entry looks like the
+      // product's". The icon is a React NODE (the guide paints it into a 26px
+      // slot), so the assertion walks the node the plugin built: it must be a
+      // 16/36-box svg carrying at least one drawing primitive. A registered icon
+      // whose artwork lost its path data renders an empty box, which is exactly
+      // the state this catches.
+      const ico = entry.icon
+      const isNode = ico && typeof ico === 'object' && typeof ico.type === 'string' && !Array.isArray(ico)
+      if (!isNode) throw new Error(want.id + '\'s guide entry has no icon node (the chooser would draw a placeholder)')
+      if (ico.type !== 'svg') throw new Error(want.id + '\'s guide icon is a ' + ico.type + ', not an svg')
+      const box = String((ico.props && ico.props.viewBox) || '')
+      if (!/^0 0 (16|36) (16|36)$/.test(box)) throw new Error(want.id + '\'s guide icon has no product-sized viewBox (got ' + box + ')')
+      // The geometry may sit one level down (the helper's children array).
+      const flatten = (nodes) => {
+        const out = []
+        for (const n of nodes) {
+          if (Array.isArray(n)) out.push(...flatten(n))
+          else if (n && typeof n === 'object') out.push(n)
+        }
+        return out
+      }
+      const shapes = flatten((ico.props && ico.props.children) || [])
+      const drawn = shapes.filter((n) => typeof n.type === 'string' && n.type !== 'svg')
+      const hasInk = drawn.length > 0 && drawn.every((n) => {
+        const p = n.props || {}
+        return typeof (p.d || p.points || p.cx || p.x) !== 'undefined'
+      })
+      if (!hasInk) throw new Error(want.id + '\'s guide icon draws nothing (no path geometry)')
     }
     // Distinct orders, or the guide's own ordering is arbitrary between them.
     const orders = tabs.map((t) => t.guide[0].order)
@@ -5795,7 +6040,9 @@ try {
     'artifacts-table-th', 'artifacts-table-sortbtn', 'artifacts-table-headtext', 'artifacts-table-td',
     'artifacts-table-empty', 'artifacts-media', 'artifacts-media-frame', 'artifacts-video', 'artifacts-audio',
     'artifacts-media-error', 'artifacts-doc-card', 'artifacts-doc-title', 'artifacts-doc-text',
-    'artifacts-doc-actions', 'artifacts-doc-btn', 'artifacts-tree-ico-media',
+    'artifacts-doc-actions', 'artifacts-doc-btn',
+    // The tree's per-kind icon colour classes are asserted from the module itself
+    // (every kind the classifier can return) — see "file-type icons" above.
     // The two entries on the NATIVE surface's shell chrome: the standing 弹出页
     // link in the left footer (styled by `.artifacts-foot-btn`, above) and the
     // per-tab menu row, which lives in the SHELL's menu portal and therefore has
@@ -5822,7 +6069,8 @@ try {
   const pageClasses = [
     'tableview', 'tablestatus', 'tablescroll', 'datatable', 'tableth', 'tablesortbtn', 'tableheadtext',
     'tabletd', 'tableempty', 'preview-media', 'preview-video', 'preview-audio', 'media-error',
-    'doccard', 'doctitle', 'doctext', 'docactions', 'docbtn', 'tree-ico-media',
+    'doccard', 'doctitle', 'doctext', 'docactions', 'docbtn',
+    // The popout page's per-kind icon classes: asserted from the module, above.
     // 编辑 (popout) — the toolbar riding the preview bar, the status line and the
     // CodeMirror mount.
     'edittools', 'editbtn', 'editstatus', 'editmount', 'editcm', 'edithint',

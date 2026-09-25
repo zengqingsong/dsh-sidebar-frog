@@ -548,6 +548,11 @@ async function setOpen(s, p, want) {
   const now = await expandedOf(s, p)
   if (now === null) throw new Error('no row for ' + p)
   if ((now === 'true') === want) return
+  // A context menu left open by an earlier test sits over the tree, so the click
+  // meant for the row would land on the menu — the same trap `isolate` exists for
+  // (see its note about the double-click bug this suite once mis-reported). Close
+  // it first, then re-measure, because closing a menu can re-render the tree.
+  await isolate()
   const at = await s.center(rowSel(p))
   assert(at, 'no row to click for ' + p)
   await s.click(at.x, at.y)
@@ -607,6 +612,71 @@ async function run(s, shots, host) {
       if (await menuOpen(s)) { await s.click(20, 400); await s.wait(80) }
     }
   }
+
+  // The two view chips carry a picture, and the picture is REAL GEOMETRY — not
+  // just an <svg> element. A chip whose path data went missing still has the
+  // element, the class and the right box, so counting elements proves nothing;
+  // getBBox() on the painted mark is what separates "an icon is there" from "an
+  // icon draws something". Both chips are asserted.
+  //
+  // Nothing here CLICKS a chip: that is what makes this a read-only test. An
+  // earlier version clicked 产物 to prove the icon survived a view switch instead
+  // of measuring what it wanted — and because that is the switch the DEFAULT-VIEW
+  // test asserts on, it turned one icon test into twenty unrelated failures. The
+  // geometry is therefore measured on a CLONE inserted into the document, which
+  // is layout-independent: on the 产物 view the live chip is off-screen
+  // (getBBox() legitimately returns an empty box) while the same cloned geometry
+  // still measures. The live sky is asserted too, so "the icon is still attached
+  // to the chip" is covered without switching anything.
+  await test('the 产物 / 文件树 chips draw an icon with real geometry', async () => {
+    const measured = await s.evaluate(`(() => {
+      const probe = (view) => {
+        const chip = document.querySelector('.tab[data-view="' + view + '"]')
+        const live = chip && chip.querySelector('.tab-ico > svg')
+        if (!live) return { attached: false }
+        // Stroke marks, measured where nothing can hide them: clone into a
+        // fixed-size host at the page origin, off the visible flow.
+        const host = document.createElement('div')
+        host.setAttribute('style', 'position:absolute;left:0;top:0;width:16px;height:16px;visibility:hidden')
+        const clone = live.cloneNode(true)
+        host.appendChild(clone)
+        document.body.appendChild(host)
+        const shapes = clone.querySelectorAll('path')
+        let ink = 0
+        for (const p of shapes) { const b = p.getBBox(); ink = Math.max(ink, b.width * b.height) }
+        host.remove()
+        return {
+          attached: true, paths: shapes.length, ink: ink,
+          w: Number(live.getAttribute('width')), h: Number(live.getAttribute('height')),
+          box: live.getAttribute('viewBox'),
+          // The product's own stroke-only marks: no fill, a 1px stroke.
+          fill: live.getAttribute('fill'), stroke: shapes[0] && shapes[0].getAttribute('stroke'),
+          label: (chip.textContent || '').trim(),
+        }
+      }
+      return { artifacts: probe('artifacts'), tree: probe('tree') }
+    })()`)
+    for (const [view, g] of Object.entries(measured)) {
+      assert(g.attached, 'the ' + view + ' chip has no icon at all')
+      assert(g.paths > 0, 'the ' + view + ' icon has no paths: ' + JSON.stringify(g))
+      assert(g.ink > 0, 'the ' + view + ' icon paints nothing (zero-area geometry): ' + JSON.stringify(g))
+      eq(g.box, '0 0 16 16', 'the ' + view + ' icon is not in the product’s 16-box')
+      eq(g.w, 14, 'the ' + view + ' icon is not painted at 14px')
+      eq(g.fill, 'none', 'the ' + view + ' icon is a filled mark, not the product’s stroke mark')
+      eq(g.stroke, 'currentColor', 'the ' + view + ' icon does not inherit the chip’s colour')
+      assert(g.label.indexOf('产物') >= 0 || g.label.indexOf('文件树') >= 0, 'the ' + view + ' chip lost its label: ' + g.label)
+    }
+    // The two chips must not wear the SAME picture — the two views are different
+    // things, and a copy-paste that left one icon on both is invisible in a
+    // per-chip assertion.
+    const shapesOf = async (view) => s.evaluate(`(() => {
+      const svg = document.querySelector('.tab[data-view="${view}"] .tab-ico > svg')
+      return svg ? [...svg.querySelectorAll('path')].map((p) => p.getAttribute('d')).join('|') : ''
+    })()`)
+    const aShapes = await shapesOf('artifacts')
+    const tShapes = await shapesOf('tree')
+    assert(aShapes && tShapes && aShapes !== tShapes, 'the two chips draw the identical icon')
+  })
 
   // The DEFAULT VIEW — asserted before any test clicks a tab, because a click is
   // exactly what would hide a wrong default. Both surfaces (this page and the
@@ -677,6 +747,99 @@ async function run(s, shots, host) {
     assert(got.includes(path('src')), 'missing src row: ' + JSON.stringify(got))
   })
 
+  await test('the top band is one 30px line, and the tabs sit in it left-aligned', async () => {
+    // Why this is measurable at all: the band's height is the product of a CSS
+    // variable, a flex rule and the content's own line box, and the failure mode
+    // is silent — a taller row simply eats the document. The three measured
+    // heights are rounded because a fractional device pixel is not the point.
+    const band = await s.evaluate(`(() => {
+      const el = (sel) => document.querySelector(sel)
+      const h = (sel) => { const n = el(sel); return n ? n.getBoundingClientRect() : null }
+      const header = h('header'), bar = h('#bar'), tabs = h('#tabs'), first = el('.tab')
+      // getComputedStyle takes an ELEMENT. 'h()' returns a DOMRect, so passing it
+      // here threw "parameter 1 is not of type 'Element'" on every run — the test
+      // was red regardless of the layout it meant to measure.
+      return {
+        header: header && Math.round(header.height), bar: bar && Math.round(bar.height),
+        tabs: tabs && Math.round(tabs.height), tabFont: first && getComputedStyle(first).fontSize,
+        tabFlex: first && getComputedStyle(first).flexGrow,
+        blank: first && first.textContent.trim(),
+        barPath: el('#bar .path') && el('#bar .path').textContent,
+        title: el('header h1') && el('header h1').textContent,
+        statusDot: getComputedStyle(el('header .status'), '::before').width,
+        overflowY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+      }
+    })()`)
+    eq(band.header, 30, 'header height')
+    eq(band.tabs, 30, 'tab strip height')
+    eq(band.bar, 30, 'the document bar shares the tab strip, so it is one line tall')
+    eq(band.tabFont, '13px', 'tab label size')
+    eq(band.tabFlex, '0', 'tabs must not stretch to fill the strip')
+    assert(band.title && band.title.length > 0, 'the title strip lost its label')
+    assert(band.statusDot && band.statusDot !== '0px', 'the status dot has no box: ' + band.statusDot)
+    assert(band.overflowY <= 0, 'the page scrolls vertically: ' + band.overflowY)
+  })
+
+  await test('the document bar and the tabs share one row, and never overlap', async () => {
+    // The merge that removed the second 30px strip. Three things can go wrong
+    // quietly — the bar is not anchored at the window's left edge (it would float
+    // over the preview at a stale width), the chips are not pushed clear of it
+    // (two labels intersect), or the bar is not in the row at all (it lands
+    // somewhere unrelated).
+    //
+    // The bar is a SIBLING of the chips inside '.toprow', not a child of '#tabs'.
+    // That is the whole fix: when it was an absolutely positioned child of the
+    // chips' box, the chips had to be pushed clear with a padding equal to the
+    // bar's width, measured on a row that was only as wide as the sidebar column
+    // — so the second chip fell off the screen. A static sibling cannot overflow
+    // its parent, so this asserts the arrangement that makes the geometry safe
+    // rather than the arrangement that happened to look right once.
+    await s.click((await s.center('.tab[data-view="tree"]')).x, (await s.center('.tab[data-view="tree"]')).y)
+    await s.waitFor('document.querySelectorAll("#treeBody [data-path]").length > 0', { label: 'root rows' })
+    await s.evaluate('document.querySelector("#treeBody [data-path]").click()')
+    await s.wait(250)
+    const g = await s.evaluate(`(() => {
+      const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left), top: Math.round(b.top), right: Math.round(b.right), bottom: Math.round(b.bottom), width: Math.round(b.width) } }
+      const tabs = document.querySelector('#tabs'), bar = document.querySelector('#bar')
+      const preview = document.querySelector('.preview')
+      const path = document.querySelector('#bar .path')
+      const labels = [...document.querySelectorAll('#tabs .tab')]
+      const row = document.querySelector('.toprow')
+      return {
+        parent: bar.parentElement && (bar.parentElement.className || bar.parentElement.id),
+        sameRow: !!row && bar.parentElement === row && tabs.parentElement === row,
+        barBeforeTabs: !!row && (row.children[0] === bar) && row.children[1] === tabs,
+        bar: r(bar), tabs: r(tabs), preview: r(preview), row: r(row),
+        pathText: path ? path.textContent : null,
+        labelLefts: labels.map((l) => Math.round(l.getBoundingClientRect().left)),
+        barVisible: bar.offsetWidth > 0 && bar.offsetHeight > 0,
+      }
+    })()`)
+    assert(g.sameRow && g.barBeforeTabs,
+      'the bar and the chips are not the two flex children of one row: parent=' + g.parent)
+    assert(g.barVisible, 'the bar has no box in the row')
+    // The bar starts at the ROW's left edge — the row spans the window, so this is
+    // the "anchored at the window's left edge" claim. (Comparing to the chips'
+    // own left edge would be comparing the bar to the thing that follows it.)
+    eq(g.bar.left, g.row.left, 'the bar must start at the row\'s left edge')
+    assert(g.row.left === 0, 'the row does not span the window (left=' + g.row.left + ')')
+    // The preview's right edge: the split is draggable, so this is the only
+    // assertion that proves the bar actually tracks the pane rather than a number
+    // written down somewhere.
+    assert(Math.abs(g.bar.right - g.preview.right) <= 6,
+      'the bar does not span the preview column: bar.right=' + g.bar.right + ' preview.right=' + g.preview.right)
+    assert(g.pathText && g.pathText.length > 0, 'the bar lost the open document\'s path')
+    // Every chip must be INSIDE the viewport and clear of the bar. This is the
+    // assertion the old padding bug slipped past: the chips were correct relative
+    // to the bar and still unclickable, because the second one sat at x≈1395 in a
+    // 1382px viewport.
+    const viewport = await s.evaluate('window.innerWidth')
+    for (const left of g.labelLefts) {
+      assert(left >= g.bar.right - 1, 'a tab label is drawn under the document bar: ' + left + ' < ' + g.bar.right)
+      assert(left < viewport, 'a tab chip is off screen at x=' + left + ' (viewport ' + viewport + ')')
+    }
+  })
+
   await test('right-click opens the menu at the pointer, on screen', async () => {
     const at = await rightClickRow(s, path('src'))
     const r = await menuRect(s)
@@ -720,7 +883,32 @@ async function run(s, shots, host) {
     if (!(await menuOpen(s))) await rightClickRow(s, path('src'))
     const labels = await menuLabels(s)
     assert(labels.includes('展开文件夹'), 'menu has no 展开文件夹 item: ' + JSON.stringify(labels))
+    const diagBefore = await s.evaluate(`(() => {
+      const row = document.querySelector(${JSON.stringify(rowSel(path('src')))})
+      const menu = document.querySelector('.tree-menu')
+      const b = menu && menu.getBoundingClientRect()
+      const item = [...document.querySelectorAll('.tree-menu-item')].find((x) => x.textContent.trim() === '展开文件夹')
+      const ib = item && item.getBoundingClientRect()
+      return JSON.stringify({
+        expanded: row && row.getAttribute('aria-expanded'),
+        rowBox: row && JSON.stringify(row.getBoundingClientRect()),
+        menu: b && JSON.stringify(b), item: ib && JSON.stringify(ib),
+        itemVisible: !!item && !!item.offsetWidth,
+        hitAtItemCenter: !!(item && (() => { const r = item.getBoundingClientRect(); const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return el && (el === item || item.contains(el)) })()),
+      })
+    })()`)
+    console.log('    MENU-DIAG before=' + diagBefore)
     await clickMenuItem(s, '展开文件夹')
+    await s.wait(400)
+    const diagAfter = await s.evaluate(`(() => {
+      const row = document.querySelector(${JSON.stringify(rowSel(path('src')))})
+      return JSON.stringify({
+        expanded: row && row.getAttribute('aria-expanded'),
+        menuStillOpen: !!document.querySelector('.tree-menu'),
+        childRow: !!document.querySelector(${JSON.stringify(rowSel(path('src', 'app.js')))}),
+      })
+    })()`)
+    console.log('    MENU-DIAG after=' + diagAfter)
     await s.waitFor(
       '(() => { const el = document.querySelector(' + JSON.stringify(rowSel(path('src'))) + '); return el && el.getAttribute("aria-expanded") === "true" })()',
       { label: 'the folder to expand', timeout: 4000 },
@@ -1420,6 +1608,11 @@ async function run(s, shots, host) {
     await s.waitFor('!!document.querySelector("#previewArea .markdown")', { label: 'the document', timeout: 4000 })
     const btn = await s.center('#previewFull')
     assert(btn, 'there is no 全屏 button in the preview bar')
+    // The width the bar must still have after the round trip. It is read BEFORE
+    // the click on purpose: entering fullscreen fires the browser's own 'resize',
+    // so a relayout has already run by the time fullscreen is on, and sampling the
+    // width then would record the damage instead of the baseline.
+    const barWidthBefore = await s.evaluate('document.getElementById("bar").style.width')
     await s.click(btn.x, btn.y)
     await s.waitFor('!!document.fullscreenElement || !!document.querySelector("#main.is-preview-full")', { label: 'the preview to fill the screen', timeout: 4000 })
     const mode = await s.evaluate('document.fullscreenElement ? "element" : "css"')
@@ -1431,6 +1624,21 @@ async function run(s, shots, host) {
     })()`)
     assert(box.w >= box.vw - 2 && box.h >= box.vh - 2, 'the preview does not fill the screen (' + mode + '): ' + JSON.stringify(box))
     assert(box.doc, 'the document left the screen when fullscreen started')
+    // The guard is measured WHERE IT ACTS, not only after the fact. The check at
+    // the bottom of this test passes even with the guard deleted, because the exit
+    // path re-measures — so a mutation that makes the guard write the window's
+    // width into the bar during fullscreen survived the whole suite. Entering
+    // fullscreen is what makes the preview cover the window, so the relayout after
+    // it is the one that would write that width; the browser fires 'resize' for
+    // it, and this fires one explicitly so the result does not depend on whether a
+    // headless window's viewport really changed size. Measured here, asserted
+    // below — after the Escape — so a failure cannot leave the page stuck in
+    // fullscreen for the next test.
+    const during = await s.evaluate(`(() => {
+      const bar = document.getElementById('bar')
+      window.dispatchEvent(new Event('resize'))
+      return { after: bar.style.width, vw: window.innerWidth }
+    })()`)
     // The same key that leaves fullscreen in a browser leaves it here in both
     // modes: element fullscreen is the browser's own Escape, the CSS mode is this
     // page's handler (and the test above cannot tell which one answered, so both
@@ -1438,6 +1646,25 @@ async function run(s, shots, host) {
     await s.key('Escape')
     await s.waitFor('!document.fullscreenElement && !document.querySelector("#main.is-preview-full")', { label: 'fullscreen to end', timeout: 4000 })
     eq(await s.evaluate('document.getElementById("previewFull").getAttribute("aria-pressed")'), 'false', 'the button still claims fullscreen after Escape')
+    // …and the bar's width survived the round trip. This part is deliberately kept
+    // even though it cannot fail on its own: the exit path re-measures, so a
+    // poisoned width is repaired before this ever looks. It is the user-visible
+    // outcome (bar and preview still aligned after Escape) and it is what the
+    // during-fullscreen check above protects the input to.
+    await s.wait(200)
+    const after = await s.evaluate(`(() => {
+      const r = (sel) => { const b = document.querySelector(sel).getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) } }
+      return { bar: r('#bar'), preview: r('#preview'), vw: window.innerWidth }
+    })()`)
+    assert(Math.abs(after.bar.right - after.preview.right) <= 6,
+      'the bar kept a fullscreen-sized width after escaping: bar=' + JSON.stringify(after.bar) + ' preview=' + JSON.stringify(after.preview))
+    assert(after.bar.width < after.vw - 20,
+      'the bar spans the whole window after escaping fullscreen: ' + JSON.stringify(after))
+    // The guard's own contract, asserted with the page back in its normal state.
+    eq(during.after, barWidthBefore,
+      'a relayout while fullscreen rewrote the bar width: ' + JSON.stringify(during) + ' (was ' + barWidthBefore + ')')
+    assert(during.after !== during.vw + 'px',
+      'the bar took the fullscreen window width: ' + JSON.stringify(during))
   })
 
   // The other half of that button: on an engine with NO Fullscreen API at all, the
@@ -1616,6 +1843,14 @@ async function main() {
     })
   } finally {
     if (session) {
+      // An unanswered native dialog blocks the renderer, so every later test that
+      // touches the page times out and the run reports a dozen unrelated failures
+      // under the wrong names. The session answers them (see cdp.js) and records
+      // them; this is where that becomes one honest failure.
+      if (session.dialogs.length) {
+        failures.push('a native dialog opened and was dismissed unanswered: '
+          + JSON.stringify(session.dialogs) + ' — the page called window.confirm/alert on its own')
+      }
       if (failures.length) {
         try { shots.push(await session.screenshot(join(tmpdir(), 'dsf-popout-failure.png'))) } catch (e) { /* gone */ }
       }

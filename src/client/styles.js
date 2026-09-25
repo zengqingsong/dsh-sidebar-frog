@@ -491,7 +491,13 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 /* File tabs (one per file you clicked): the same tab vocabulary, with the label
    inside a button so it can ellipsize and a ✕ beside it. */
 .artifacts-tab-file { display: inline-flex; align-items: center; gap: 2px; max-width: 190px; padding-right: 0; }
-.artifacts-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; line-height: 20px; cursor: pointer; }
+.artifacts-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; line-height: 20px; cursor: pointer; display: inline-flex; align-items: center; }
+/* The file-type icon inside a file tab. inline-flex, because the label is a
+   BUTTON: a plain inline box would drop the icon onto its own baseline and the
+   tab would grow taller than its neighbours. flex:none keeps the 13px artwork
+   at 13px while the name ellipsizes around it. */
+.artifacts-tab-ico { flex: none; display: inline-flex; align-items: center; justify-content: center; margin-right: 4px; vertical-align: -2px; }
+.artifacts-tab-ico > svg { display: block; }
 .artifacts-tab-label:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; border-radius: 2px; }
 .artifacts-tab-close { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; }
 .artifacts-tab-close:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
@@ -550,20 +556,27 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-tree-twisty.is-open svg { transform: rotate(90deg); }
 .artifacts-tree-twisty.is-file { visibility: hidden; }
 .artifacts-tree-ico { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
-/* Per-type icon colours (see fileIconKind in src/shared/ext.js). Mid-tone hues
-   that stay legible on both the light and the dark panel. */
-.artifacts-tree-ico-folder { color: #c99a4e; }
-.artifacts-tree-ico-code { color: #4f9cf9; }
-.artifacts-tree-ico-markup { color: #e07b39; }
-.artifacts-tree-ico-style { color: #46b8c8; }
-.artifacts-tree-ico-markdown { color: #6c9ef8; }
-.artifacts-tree-ico-data { color: #d4a72c; }
-.artifacts-tree-ico-image { color: #b180d7; }
-.artifacts-tree-ico-pdf { color: #e05252; }
-.artifacts-tree-ico-doc { color: #4f9cf9; }
-.artifacts-tree-ico-media { color: #e879a8; }
-.artifacts-tree-ico-shell { color: #6cbf58; }
-.artifacts-tree-ico-text { color: var(--dsw-alias-label-tertiary); }
+/* File-type colours, copied from the primitives' FileTypeIcon.module.css so the
+   plugin's tree tints a file exactly the way the shell's tree does. The kind
+   class publishes '--dsh-file-type-default-color', which the card's body path
+   fills with; the hex after each token is the fallback that keeps the popout
+   page — a standalone document with no shell theme layer — correct even before
+   its own tokens exist.
+   Folder is the exception, and deliberately so: directory rows draw the built-in
+   tree's outline folder (stroked with currentColor), which FilesBody tints
+   'var(--dsw-alias-label-tertiary)' — not FileTypeIcon's amber 'folder' card,
+   which is a different call site the tree never reaches. */
+.artifacts-tree-ico-code { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+.artifacts-tree-ico-html { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+.artifacts-tree-ico-markdown { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+.artifacts-tree-ico-excel { --dsh-file-type-default-color: var(--dsw-static-green-500, #22c55e); }
+.artifacts-tree-ico-folder { color: var(--dsw-alias-label-tertiary); }
+.artifacts-tree-ico-image { --dsh-file-type-default-color: rgb(139, 118, 246); }
+.artifacts-tree-ico-video { --dsh-file-type-default-color: rgb(139, 118, 246); }
+.artifacts-tree-ico-other { --dsh-file-type-default-color: var(--dsw-static-neutral-bluish-300, #cfd3d6); }
+.artifacts-tree-ico-pdf { --dsh-file-type-default-color: var(--dsw-static-red-600, #ec1313); }
+.artifacts-tree-ico-ppt { --dsh-file-type-default-color: var(--dsw-static-amber-500, #f59e0b); }
+.artifacts-tree-ico-word { --dsh-file-type-default-color: var(--dsw-static-deepseek-450, #5686fe); }
 /* Change letters: A = created by the agent, M = edited (IDE git decorations). */
 .artifacts-tree-status { flex: none; font-size: 11px; font-weight: 700; padding: 0 2px; }
 .artifacts-tree-status-add { color: #3fb950; }

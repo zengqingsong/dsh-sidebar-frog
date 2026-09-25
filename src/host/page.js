@@ -70,64 +70,116 @@ const page = String.raw`<!doctype html>
 <style>
   :root {
     color-scheme: light;
-    --p-bg: rgb(255, 255, 255);
-    --p-bg-layer-1: rgb(255, 255, 255);
+    /* ── The product's own design tokens ─────────────────────────────────────
+       This page is a standalone tab, so it cannot inherit the shell's theme; it
+       has to STATE the palette it wants to look like. These are the shell's
+       static ramps (dsh-client-ui-theme) at their light values, so the popout
+       reads as the same product as the window it was opened from. The alias
+       tokens below are then derived from them, which is why nothing here or in
+       the component rules is a hex literal any more.
+
+       Only the values this page actually paints with are declared, and the
+       file-type marks are among them: the plugin's icons use the same
+       --dsw-static-* colours as the built-in file tree, and on this page
+       nothing else would define them. */
+    --dsw-static-neutral-00: #fff;
+    --dsw-static-neutral-400: #a2a4a6;
+    --dsw-static-neutral-bluish-00: #fff;
+    --dsw-static-neutral-bluish-50: #f9fafb;
+    --dsw-static-neutral-bluish-100: #ebeef2;
+    --dsw-static-neutral-bluish-200: #e1e5ee;
+    --dsw-static-neutral-bluish-300: #cfd3d6;
+    --dsw-static-neutral-bluish-400: #adb2b8;
+    --dsw-static-neutral-bluish-600: #81858c;
+    --dsw-static-neutral-bluish-700: #61666b;
+    --dsw-static-neutral-bluish-1000: #0f1115;
+    --dsw-static-deepseek-450: #5686fe;
+    --dsw-static-deepseek-500: #4176e6;
+    --dsw-static-green-500: #22c55e;
+    --dsw-static-amber-400: #f7ad31;
+    --dsw-static-amber-500: #f59e0b;
+    --dsw-static-amber-600: #dd8629;
+    --dsw-static-red-600: #ec1313;
     /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
        onto this page own palette: one skin stylesheet then serves the panel,
-       the shell document tab and this page. */
-    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+       the shell document tab and this page.
+       These point at the STATIC ramp and not at --p-*, and that is deliberate:
+       the alias block is declared once, in the light block only, while --p-*
+       is redefined in the dark block. An alias pointing at --p-* would be
+       resolved against whichever --p-* won the cascade — fine today, one
+       cross-reference away from a dark-mode skin painting light colours. */
+    --dsw-alias-bg-base: var(--p-bg);
+    --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-00);
+    --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-50);
+    --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-00);
     --dsw-alias-border-l1: var(--p-border-l1);
     --dsw-alias-border-l2: var(--p-border-l2);
-    --dsw-alias-border-l3: var(--p-border-l2);
+    --dsw-alias-border-l3: var(--p-border-l3);
     --dsw-alias-label-primary: var(--p-text);
     --dsw-alias-label-secondary: var(--p-text-secondary);
-    --p-border-l1: rgba(0, 0, 0, 0.04);
-    --p-border-l2: rgba(0, 0, 0, 0.1);
-    --p-text: rgb(15, 17, 21);
-    --p-text-secondary: rgb(97, 102, 107);
-    --p-text-tertiary: rgb(129, 133, 140);
-    --p-text-caption: rgb(173, 178, 184);
-    --p-hover: rgba(38, 49, 72, 0.06);
-    --p-accent: rgb(65, 118, 230);
-    --p-success-fg: rgb(34, 197, 94);
-    --p-success-bg: rgb(230, 250, 237);
-    --p-warn-fg: rgb(221, 134, 41);
-    --p-warn-bg: rgb(254, 245, 231);
-    --p-error: rgb(236, 19, 19);
-    --p-code-bg: rgb(250, 250, 250);
-    --p-code-fg: rgb(97, 102, 107);
+    --dsw-alias-label-tertiary: var(--p-text-tertiary);
+    --dsw-alias-label-dimmed: var(--p-text-caption);
+    --dsw-alias-interactive-bg-hover: var(--p-hover);
+    --dsw-alias-state-business-primary: var(--p-accent);
+    --dsw-alias-state-success-primary: var(--dsw-static-green-500);
+    --dsw-alias-state-warn-label: var(--dsw-static-amber-600);
+    --dsw-alias-state-error-primary: var(--p-error);
+    /* --p-* is this page's own semantic layer, and it is a VIEW of the product
+       tokens rather than a second palette: each row states the DSH token it
+       stands for, with the value as the fallback for a host that serves this
+       page without any tokens at all. So a document opened here and the same
+       document in the shell's own tab resolve to identical colours. */
+    --p-bg: var(--dsw-static-neutral-bluish-00, #fff);
+    --p-bg-layer-1: var(--dsw-static-neutral-bluish-00, #fff);
+    --p-bg-layer-2: var(--dsw-static-neutral-bluish-50, #f9fafb);
+    --p-bg-layer-3: var(--dsw-static-neutral-bluish-00, #fff);
+    --p-border-l1: #0000000a;
+    --p-border-l2: #0000001a;
+    --p-border-l3: #0000001f;
+    --p-text: var(--dsw-static-neutral-bluish-1000, #0f1115);
+    --p-text-secondary: var(--dsw-static-neutral-bluish-700, #61666b);
+    --p-text-tertiary: var(--dsw-static-neutral-bluish-600, #81858c);
+    --p-text-caption: var(--dsw-static-neutral-bluish-400, #adb2b8);
+    --p-hover: #2631480f;
+    --p-accent: var(--dsw-static-deepseek-500, #4176e6);
+    --p-success-fg: var(--dsw-static-green-500, #22c55e);
+    --p-success-bg: #e6faed;
+    --p-warn-fg: var(--dsw-static-amber-600, #dd8629);
+    --p-warn-bg: #fef5e7;
+    --p-error: var(--dsw-static-red-600, #ec1313);
+    --p-code-bg: #fafafa;
+    --p-code-fg: var(--dsw-static-neutral-bluish-700, #61666b);
     --p-shadow: 0 4px 12px 0 rgba(0,0,0,0.02), 0 2px 8px 0 rgba(0,0,0,0.04);
   }
   /* Dark mode is signalled on <html> by the popout page itself and on <body>
      by the host shell, so both carriers must define the same variables. */
   :root[data-ds-dark-theme], body[data-ds-dark-theme] {
     color-scheme: dark;
-    --p-bg: rgb(21, 21, 23);
-    --p-bg-layer-1: rgb(35, 35, 36);
-    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
-       onto this page own palette: one skin stylesheet then serves the panel,
-       the shell document tab and this page. */
-    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
-    --dsw-alias-border-l1: var(--p-border-l1);
-    --dsw-alias-border-l2: var(--p-border-l2);
-    --dsw-alias-border-l3: var(--p-border-l2);
-    --dsw-alias-label-primary: var(--p-text);
-    --dsw-alias-label-secondary: var(--p-text-secondary);
-    --p-border-l1: rgba(255, 255, 255, 0.06);
-    --p-border-l2: rgba(255, 255, 255, 0.12);
-    --p-text: rgb(249, 250, 251);
-    --p-text-secondary: rgb(207, 211, 214);
-    --p-text-tertiary: rgb(173, 178, 184);
-    --p-text-caption: rgb(129, 133, 140);
-    --p-hover: rgba(255, 255, 255, 0.08);
-    --p-accent: rgb(103, 158, 254);
-    --p-success-fg: rgb(34, 197, 94);
-    --p-success-bg: rgb(35, 60, 44);
-    --p-warn-fg: rgb(221, 134, 41);
-    --p-warn-bg: rgb(39, 36, 31);
-    --p-error: rgb(242, 90, 90);
-    --p-code-bg: rgb(27, 27, 28);
-    --p-code-fg: rgb(207, 211, 214);
+    /* Only the marks' colours are re-stated here. The rest of the palette is
+       carried by the --p-* aliases below, because those must resolve to THIS
+       page's values: the aliases in the light block point at --p-*, and --p-*
+       points back at a static ramp, so a dark ramp declared here would have to
+       be declared again for every token the page reads. */
+    --dsw-static-deepseek-450: #7aaaff;
+    --dsw-static-deepseek-500: #7aaaff;
+    --dsw-static-red-600: #f25a5a;
+    --p-bg: #151517;
+    --p-bg-layer-1: #232324;
+    --p-bg-layer-2: #2c2c2e;
+    --p-bg-layer-3: #353638;
+    --p-border-l1: #ffffff0f;
+    --p-border-l2: #ffffff1f;
+    --p-border-l3: #ffffff29;
+    --p-text: #f9fafb;
+    --p-text-secondary: #cfd3d6;
+    --p-text-tertiary: #adb2b8;
+    --p-text-caption: #81858c;
+    --p-hover: #ffffff14;
+    --p-accent: #7aaaff;
+    --p-success-bg: #233c2c;
+    --p-warn-bg: #27241f;
+    --p-code-bg: #1b1b1c;
+    --p-code-fg: #cfd3d6;
     --p-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
   }
   * { box-sizing: border-box; }
@@ -136,9 +188,13 @@ const page = String.raw`<!doctype html>
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: var(--p-bg); color: var(--p-text);
     display: flex; flex-direction: column;
-    /* Same layout grid as the in-app panel: 30px rows, 32px strips, 40px head. */
-    --f-h-head: 40px;
-    --f-h-strip: 32px;
+    /* The page's own layout grid. Every strip is 30px so the top of the window
+       reads as one band: a title strip, then the preview's path strip and the
+       tab strip sit on the same line. 40px for a title that is just a label was
+       the single biggest consumer of vertical space in this tab, and on a
+       document on a second monitor that space belongs to the document. */
+    --f-h-head: 30px;
+    --f-h-strip: 30px;
     --f-h-row: 30px;
     --f-h-tree-row: 22px;
     --f-pad-x: 10px;
@@ -150,11 +206,23 @@ const page = String.raw`<!doctype html>
     --f-pane-min-list: min(280px, 38%);
     --f-pane-min-preview: min(300px, 42%);
   }
-  header { display: flex; align-items: center; gap: 10px; height: var(--f-h-head); padding: 0 16px; border-bottom: 1px solid var(--p-border-l2); background: var(--p-bg-layer-1); flex: none; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header { display: flex; align-items: center; gap: 8px; height: var(--f-h-head); padding: 0 var(--f-pad-x); border-bottom: 1px solid var(--p-border-l2); background: var(--p-bg-layer-1); flex: none; }
+  header h1 { font-size: 12px; margin: 0; font-weight: 600; color: var(--p-text-secondary); letter-spacing: .02em; }
   header .spacer { flex: 1; }
-  header .status { font-size: 12px; color: var(--p-success-fg); }
-  main { flex: 1; display: flex; min-height: 0; }
+  /* Liveness is a DOT first and a word second: it is polled every second, and a
+     word that flips between 实时/离线 next to the title reads as the title
+     itself changing. The word stays for state that needs reading (未认证). */
+  header .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--p-text-tertiary); }
+  header .status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--p-text-caption); }
+  header .status.is-live { color: var(--p-text-secondary); }
+  header .status.is-live::before { background: var(--p-success-fg); }
+  header .status.is-bad::before { background: var(--p-error); }
+  @keyframes page-pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
+  header .status.is-wait::before { animation: page-pulse 1.4s ease-in-out infinite; }
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  /* The two panes are a row of their own BELOW the strip — see the .tabs rule for
+     why the strip cannot live inside the sidebar column. */
+  .panes { flex: 1 1 auto; min-height: 0; display: flex; }
   /* Preview on the LEFT, list/file tree on the RIGHT — the same arrangement as
      the in-app sidebar panel, including the draggable divider between them. */
   .sidebar { flex: 1 1 0; min-width: var(--f-pane-min-list); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--p-border-l2); container-type: inline-size; }
@@ -183,17 +251,43 @@ const page = String.raw`<!doctype html>
   .mini-btn { border: none; background: transparent; color: var(--p-text-tertiary); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; min-width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
   .mini-btn:hover { background: var(--p-hover); color: var(--p-text); }
   .preview { flex: 0 1 auto; width: 80%; min-width: var(--f-pane-min-preview); display: flex; flex-direction: column; }
-  .preview .bar { display: flex; align-items: center; gap: 8px; height: var(--f-h-strip); padding: 0 var(--f-pad-x); border-bottom: 1px solid var(--p-border-l2); color: var(--p-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .preview .bar .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The top row: the document bar and the view chips, side by side, one 30px
+     line. The two facts that make this geometry honest, and that the previous
+     arrangement got wrong in a way no text assertion could see:
+       · this row spans the WINDOW, not the sidebar column, so 'left: 0' in
+         'layoutTabsRow' really is the window's left edge;
+       · '#bar' is a SIBLING of the chips, not an absolutely positioned box
+         inside them. Its width is the preview pane's width and the chips simply
+         follow it in the flex row — a static sibling cannot overflow its parent
+         the way a fixed-width absolute box can, which is what pushed 文件树 off
+         the screen (chip at x≈1395 in a 1382px viewport) and cascaded into
+         every coordinate-driven test in the browser suite. */
+  /* The separator is drawn with an INSET SHADOW rather than a border-bottom, and
+     that is a measurement requirement, not a style choice: a 1px border on a
+     30px 'border-box' row leaves 29px for its children, so the bar and the chips
+     measured 29px tall while the row measured 30 — one band, two heights, and the
+     suite's "one 30px line" assertion caught the odd pixel. An inset shadow takes
+     no space, so every box in the band is exactly 30px. */
+  .toprow { box-sizing: border-box; flex: none; display: flex; align-items: stretch; height: var(--f-h-strip); box-shadow: inset 0 -1px 0 var(--p-border-l2); background: var(--p-bg-layer-1); }
+  #bar { flex: none; width: var(--f-bar-w, 240px); box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 var(--f-pad-x); background: var(--p-bg-layer-1); color: var(--p-text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bar .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Collapsed preview: the pane is display:none, so the bar takes the FULL width
+     of the row and the chips move under it — 'flex-wrap' would be a second line,
+     which this design deliberately does not have. The bar keeps the document's
+     buttons (复制路径 / @引用 / 全屏查看), which must survive a collapsed preview. */
+  main.is-preview-collapsed #bar { flex: 1 1 auto; width: auto; }
+  main.is-preview-collapsed .tabs { flex: none; }
   .preview .area { flex: 1; min-height: 0; overflow: auto; position: relative; }
   /* ── 全屏查看 (fullscreen preview) ─────────────────────────────────────────
      Two ways in, one look. The Fullscreen API hands #preview the whole screen —
      which is what 全屏 means for a document on a second monitor, browser chrome
      and taskbar included — and the CSS mode fills this tab where the API is
      missing or refuses (an embedding frame, or a browser that did not see the
-     gesture). The BAR rides along in both, so the control that got you here is
-     also the way out; the browser owns Esc for its own fullscreen, and the key
-     handler below owns it for the CSS mode. */
+     gesture). Esc is the way out in both: the bar no longer rides along, because
+     merging it into .toprow moved it OUT of #preview — so in element fullscreen
+     it is not painted, and in the CSS mode the fixed #preview (z-index 60) covers
+     it. That is why the CSS mode needs the key handler below, and why nothing
+     depends on the 全屏 button being clickable while fullscreen is on. */
   /* The width is set INLINE by applySplit (the dragged or configured share of the
      split area), and an inline width beats a stylesheet one — so both fullscreen
      rules have to say !important or the preview would keep its column width while
@@ -205,7 +299,7 @@ const page = String.raw`<!doctype html>
     display: flex; position: fixed; top: 0; right: 0; bottom: 0; left: 0;
     z-index: 60; width: auto !important; background: var(--p-bg);
   }
-  .preview .bar .fs-btn.is-on { color: var(--p-text); background: var(--p-hover); }
+  #bar .fs-btn.is-on { color: var(--p-text); background: var(--p-hover); }
   /* Divider between the preview (left) and the list/file tree (right). Dragging
      it sizes the preview; the position is remembered across reloads. */
   .split { flex: none; width: 6px; align-self: stretch; position: relative; cursor: col-resize; touch-action: none; border-left: 1px solid var(--p-border-l2); background: transparent; }
@@ -352,11 +446,37 @@ const page = String.raw`<!doctype html>
   .diff-row.add .diff-sign, .diff-row.add .diff-text { color: var(--p-success-fg); }
   .diff-label { font-size: 11px; padding: 4px 12px; font-weight: 600; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--p-bg-layer-1); border: 1px solid var(--p-border-l2); color: var(--p-text); padding: 6px 14px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity .18s; pointer-events: none; box-shadow: var(--p-shadow); z-index: 10; }
-  .tabs { display: flex; align-items: stretch; height: var(--f-h-strip); border-bottom: 2px solid var(--p-bg); background: var(--p-bg-layer-1); flex: none; }
-  .tab { flex: 1; border: none; background: var(--p-hover); color: var(--p-text-tertiary); font: inherit; font-size: 12px; cursor: pointer; border-right: 1px solid var(--p-border-l1); }
-  .tab:last-child { border-right: none; }
-  .tab:hover { background: var(--p-hover); }
-  .tab.is-active { color: var(--p-text); background: transparent; }
+  /* Tabs in the product's own idiom: left-aligned labels over an underline that
+     marks the active one, not two equal halves filled with a hover tint. Two
+     half-width blocks read as buttons and pulled the eye to a control the user
+     changes once; a 13px label with a 2px rule is what the shell's own tab
+     strips look like.
+
+     The strip is one row that serves BOTH panes: '#bar' (the open document's
+     path and its copy / @引用 / 全屏 actions) is absolutely positioned inside
+     this same box, over the preview's column. That is what removed the old
+     second 30px strip — the path and the tabs used to sit on two rows because
+     they were children of two different panes.
+
+     '#bar' is a real element of its own rather than a child of '.tabs' because
+     'openPath' empties and refills it on every open ('bar.textContent = '''),
+     and a shared parent would mean that rebuild also rewrites the tabs.
+
+     The bar and the chips SHARE the row as flex siblings (see .toprow), so the
+     chips are pushed clear of the bar by the bar's own width — no reserved
+     padding, and therefore no way for the reservation to disagree with the box
+     it is reserved for. The split is draggable and its share is a stored
+     setting, so a percentage here would drift from the pane it is drawn over. */
+  .tabs { position: relative; display: flex; align-items: stretch; gap: 16px; height: var(--f-h-strip); flex: 1 1 auto; min-width: 0; padding: 0 var(--f-pad-x); border-bottom: 1px solid var(--p-border-l2); background: var(--p-bg-layer-1); }
+  .tab { position: relative; flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 1px; border: none; background: transparent; color: var(--p-text-tertiary); font: inherit; font-size: 13px; line-height: 28px; cursor: pointer; }
+  /* The chip's built-in-vocabulary mark (see tabIconFor). The 16-box artwork is
+     painted at 14px, and flex:none keeps it that size while the label sits
+     beside it. */
+  .tab-ico { flex: none; display: inline-flex; align-items: center; justify-content: center; }
+  .tab-ico > svg { display: block; }
+  .tab:hover { color: var(--p-text); }
+  .tab.is-active { color: var(--p-text); }
+  .tab.is-active::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--p-text); }
   /* The 文件树 tab disappears when the shared「文件树」setting is off, the same
      way the in-app panel drops the tab. */
   .tab.is-hidden { display: none; }
@@ -405,19 +525,26 @@ const page = String.raw`<!doctype html>
   .tree-twisty.is-open svg { transform: rotate(90deg); }
   .tree-twisty.is-file { visibility: hidden; }
   .tree-ico { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
-  /* Per-type icon colours (see fileIconKind in src/shared/ext.js). */
-  .tree-ico-folder { color: #c99a4e; }
-  .tree-ico-code { color: #4f9cf9; }
-  .tree-ico-markup { color: #e07b39; }
-  .tree-ico-style { color: #46b8c8; }
-  .tree-ico-markdown { color: #6c9ef8; }
-  .tree-ico-data { color: #d4a72c; }
-  .tree-ico-image { color: #b180d7; }
-  .tree-ico-pdf { color: #e05252; }
-  .tree-ico-doc { color: #4f9cf9; }
-  .tree-ico-media { color: #e879a8; }
-  .tree-ico-shell { color: #6cbf58; }
-  .tree-ico-text { color: var(--p-text-tertiary); }
+  /* File-type colours, copied from the primitives' FileTypeIcon.module.css so
+     this standalone page tints a file exactly the way the panel and the shell's
+     own tree do. The kind class publishes '--dsh-file-type-default-color',
+     which the card body fills with; the hex fallback is deliberate — this page
+     is a document of its own and must stay correct even where a shell token is
+     absent.
+     Folder is the exception: directory rows draw the built-in tree's outline
+     folder, which FilesBody tints 'var(--dsw-alias-label-tertiary)' — here that
+     is the page's own tertiary chrome colour, the same one the twisty uses. */
+  .tree-ico-folder { color: var(--p-text-tertiary); }
+  .tree-ico-code { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+  .tree-ico-html { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+  .tree-ico-markdown { --dsh-file-type-default-color: var(--dsw-static-deepseek-500, #4176e6); }
+  .tree-ico-excel { --dsh-file-type-default-color: var(--dsw-static-green-500, #22c55e); }
+  .tree-ico-image { --dsh-file-type-default-color: rgb(139, 118, 246); }
+  .tree-ico-video { --dsh-file-type-default-color: rgb(139, 118, 246); }
+  .tree-ico-other { --dsh-file-type-default-color: var(--dsw-static-neutral-bluish-300, #cfd3d6); }
+  .tree-ico-pdf { --dsh-file-type-default-color: var(--dsw-static-red-600, #ec1313); }
+  .tree-ico-ppt { --dsh-file-type-default-color: var(--dsw-static-amber-500, #f59e0b); }
+  .tree-ico-word { --dsh-file-type-default-color: var(--dsw-static-deepseek-450, #5686fe); }
   /* Change letters: A = created by the agent, M = edited. */
   .tree-status { flex: none; font-size: 11px; font-weight: 700; padding: 0 2px; }
   .tree-status-add { color: #3fb950; }
@@ -504,39 +631,43 @@ const page = String.raw`<!doctype html>
   <header>
     <h1>弹出式侧边栏</h1>
     <span class="spacer"></span>
-    <span class="status" id="status" role="status" aria-live="polite">连接中…</span>
+    <span class="status is-wait" id="status" role="status" aria-live="polite">连接中…</span>
   </header>
   <main id="main">
-    <div class="preview" id="preview">
+    <div class="toprow">
       <div class="bar" id="bar"><span class="path">选择一个文件预览</span></div>
-      <div class="area" id="previewArea"><div class="hint">点击右侧的文件预览内容 →</div></div>
-    </div>
-    <div class="split" id="split" role="separator" aria-orientation="vertical" aria-label="调整预览区宽度" title="左右拖动调整 预览区 与 列表/文件树 的分界">
-      <button class="split-btn" id="splitToggle" type="button" title="收起预览区（收到左侧）" aria-expanded="true"></button>
-    </div>
-    <div class="sidebar">
       <div class="tabs" id="tabs" role="tablist">
         <button class="tab is-active" data-view="artifacts" role="tab" aria-selected="true">产物</button>
         <button class="tab" data-view="tree" role="tab" aria-selected="false">文件树</button>
       </div>
-      <div class="list" id="list"></div>
-      <div class="tree" id="tree">
-        <div class="tree-head">
-          <span class="tree-root" id="treeRoot">…</span>
-          <span class="tree-tools">
-            <button class="tree-tool" id="treeNew" type="button" title="新建文件 / 文件夹"></button>
-            <button class="tree-tool" id="treeFilter" type="button"></button>
-            <button class="tree-tool" id="treeExpandAll" type="button"></button>
-            <button class="tree-tool" id="treeCollapseAll" type="button"></button>
-            <button class="tree-refresh" id="treeRefresh" title="刷新" type="button"></button>
-          </span>
+    </div>
+    <div class="panes">
+      <div class="preview" id="preview">
+        <div class="area" id="previewArea"><div class="hint">点击右侧的文件预览内容 →</div></div>
+      </div>
+      <div class="split" id="split" role="separator" aria-orientation="vertical" aria-label="调整预览区宽度" title="左右拖动调整 预览区 与 列表/文件树 的分界">
+        <button class="split-btn" id="splitToggle" type="button" title="收起预览区（收到左侧）" aria-expanded="true"></button>
+      </div>
+      <div class="sidebar">
+        <div class="list" id="list"></div>
+        <div class="tree" id="tree">
+          <div class="tree-head">
+            <span class="tree-root" id="treeRoot">…</span>
+            <span class="tree-tools">
+              <button class="tree-tool" id="treeNew" type="button" title="新建文件 / 文件夹"></button>
+              <button class="tree-tool" id="treeFilter" type="button"></button>
+              <button class="tree-tool" id="treeExpandAll" type="button"></button>
+              <button class="tree-tool" id="treeCollapseAll" type="button"></button>
+              <button class="tree-refresh" id="treeRefresh" title="刷新" type="button"></button>
+            </span>
+          </div>
+          <div class="tree-filter" id="treeFilterBar">
+            <span class="tree-filter-ico" id="treeFilterIcon"></span>
+            <input class="tree-filter-input" id="treeFilterInput" type="text" placeholder="按文件名过滤…" aria-label="按文件名过滤" />
+            <button class="tree-filter-clear" id="treeFilterClear" type="button"></button>
+          </div>
+          <div class="tree-body" id="treeBody"></div>
         </div>
-        <div class="tree-filter" id="treeFilterBar">
-          <span class="tree-filter-ico" id="treeFilterIcon"></span>
-          <input class="tree-filter-input" id="treeFilterInput" type="text" placeholder="按文件名过滤…" aria-label="按文件名过滤" />
-          <button class="tree-filter-clear" id="treeFilterClear" type="button"></button>
-        </div>
-        <div class="tree-body" id="treeBody"></div>
       </div>
     </div>
   </main>
@@ -635,12 +766,10 @@ const page = String.raw`<!doctype html>
     var _treeRootSeq = 0;       // guards a stale (retried) root read
 
 @@ext@@
+@@filetype@@
 @@office@@
 @@table@@
 
-    var FOLDER_CLOSE_D = 'M5.05582 0.518756L4.50669 0.86654L5.05582 0.518756ZM13 9.4837L13.65 9.4837L13.65 3.53962L13 3.53962L12.35 3.53962L12.35 9.4837L13 9.4837ZM11.3264 1.86603L11.3264 1.21603L6.52313 1.21603L6.52313 1.86603L6.52313 2.51603L11.3264 2.51603L11.3264 1.86603ZM5.58054 1.34727L6.12968 0.999489L5.60495 0.170972L5.05582 0.518756L4.50669 0.86654L5.03141 1.69506L5.58054 1.34727ZM4.11323 1.23058e-13L4.11323 -0.65L1.67359 -0.65L1.67359 5.00699e-14L1.67359 0.65L4.11323 0.65L4.11323 1.23058e-13ZM0 1.67359L-0.65 1.67359L-0.65 9.4837L0 9.4837L0.65 9.4837L0.65 1.67359L0 1.67359ZM11.3264 11.1573L11.3264 10.5073L1.67359 10.5073L1.67359 11.1573L1.67359 11.8073L11.3264 11.8073L11.3264 11.1573ZM0 9.4837L-0.65 9.4837C-0.65 10.767 0.390308 11.8073 1.67359 11.8073L1.67359 11.1573L1.67359 10.5073C1.10828 10.5073 0.65 10.049 0.65 9.4837L0 9.4837ZM1.67359 5.00699e-14L1.67359 -0.65C0.390307 -0.65 -0.65 0.390309 -0.65 1.67359L0 1.67359L0.65 1.67359C0.65 1.10828 1.10828 0.65 1.67359 0.65L1.67359 5.00699e-14ZM5.05582 0.518756L5.60495 0.170972C5.28121 -0.340193 4.71829 -0.65 4.11323 -0.65L4.11323 1.23058e-13L4.11323 0.65C4.27282 0.65 4.4213 0.731715 4.50669 0.86654L5.05582 0.518756ZM6.52313 1.86603L6.52313 1.21603C6.36354 1.21603 6.21507 1.13431 6.12968 0.999489L5.58054 1.34727L5.03141 1.69506C5.35515 2.20622 5.91808 2.51603 6.52313 2.51603L6.52313 1.86603ZM13 3.53962L13.65 3.53962C13.65 2.25634 12.6097 1.21603 11.3264 1.21603L11.3264 1.86603L11.3264 2.51603C11.8917 2.51603 12.35 2.97431 12.35 3.53962L13 3.53962ZM13 9.4837L12.35 9.4837C12.35 10.049 11.8917 10.5073 11.3264 10.5073L11.3264 11.1573L11.3264 11.8073C12.6097 11.8073 13.65 10.767 13.65 9.4837L13 9.4837Z';
-    var FOLDER_OPEN_D1 = 'M5.19629 1.57104C5.81144 1.5711 6.38623 1.8786 6.72754 2.39038L7.19922 3.09839C7.28454 3.22635 7.42824 3.30344 7.58203 3.30347H12.1699C13.5039 3.30348 14.5859 4.38548 14.5859 5.71948V6.62671C15.2694 7.02689 15.6605 7.85012 15.4385 8.68726L14.3848 12.658C14.1037 13.7164 13.1449 14.4527 12.0498 14.4529H2.91699C1.51651 14.4529 0.451662 13.2814 0.501954 11.9519V3.98706C0.501954 2.65305 1.58396 1.57104 2.91797 1.57104H5.19629ZM3.7793 7.75562C3.30994 7.75562 2.89883 8.07153 2.77832 8.52515L1.91602 11.7722C1.74167 12.4291 2.23734 13.073 2.91699 13.073H12.0498C12.5191 13.0728 12.9304 12.757 13.0508 12.3035L14.1045 8.33374C14.1819 8.04202 13.9619 7.756 13.6602 7.75562H3.7793ZM2.91797 2.9519C2.34625 2.9519 1.88281 3.41534 1.88281 3.98706V7.2937C2.33068 6.7269 3.02249 6.37476 3.7793 6.37476H13.2051V5.71948C13.2051 5.14777 12.7416 4.68434 12.1699 4.68433H7.58203C6.96675 4.6843 6.39209 4.37595 6.05078 3.86401L5.5791 3.15601C5.49379 3.02821 5.34995 2.95196 5.19629 2.9519H2.91797Z';
-    var FOLDER_OPEN_D2 = 'M13.6602 7.75525C13.9618 7.7556 14.1815 8.04179 14.1045 8.33337L13.0508 12.3031C12.9304 12.7567 12.5191 13.0725 12.0498 13.0726H2.91701C2.23744 13.0725 1.7417 12.4287 1.91603 11.7719L2.77834 8.52478C2.89898 8.07146 3.31018 7.75532 3.77931 7.75525H13.6602ZM5.1963 2.95154C5.34985 2.95159 5.49377 3.02803 5.57912 3.15564L6.0508 3.86365C6.39205 4.37553 6.96685 4.68385 7.58205 4.68396H12.1699C12.7416 4.68396 13.2049 5.14754 13.2051 5.71912V6.37439H3.77931C3.02267 6.37444 2.33067 6.72671 1.88283 7.29333V3.98669C1.88299 3.4152 2.34649 2.95168 2.91798 2.95154H5.1963Z';
     var CODE_D = 'M12.3368 1.53569L11.931 4.43172H14.8086V5.79673H11.7404L11.1962 9.67859H14.2839V11.0436H11.0056L10.4994 14.6529L9.14873 14.4643L9.62731 11.0436H5.75876L5.25252 14.6529L3.90186 14.4643L4.38043 11.0436H1.69141V9.67859H4.57104L5.11417 5.79673H2.21609V4.43172H5.30581L5.73724 1.34713L7.08995 1.53569L6.68414 4.43172H10.5527L10.9841 1.34713L12.3368 1.53569ZM5.94937 9.67859H9.81791L10.361 5.79673H6.49353L5.94937 9.67859Z';
     var REFRESH_D = 'M7.92136 0.349152C10.3744 0.349234 12.5564 1.5052 13.9557 3.29894L15.1281 2.12759C15.3303 1.92546 15.6767 2.06943 15.6767 2.35538V5.53923C15.6766 5.71626 15.5329 5.85976 15.3559 5.86002H12.171C11.8854 5.8597 11.7426 5.51465 11.9443 5.31249L12.9641 4.29056C11.8237 2.74305 9.98908 1.74106 7.92136 1.74097C4.46436 1.74097 1.66233 4.543 1.66233 8C1.66233 11.457 4.46436 14.259 7.92136 14.259C11.3782 14.2589 14.1804 11.4569 14.1804 8H15.5722C15.5722 12.2251 12.1465 15.6507 7.92136 15.6508C3.69614 15.6508 0.270508 12.2252 0.270508 8C0.270508 3.77478 3.69614 0.349152 7.92136 0.349152Z';
 
@@ -657,15 +786,79 @@ const page = String.raw`<!doctype html>
         if (spec.opacity) p.setAttribute('opacity', spec.opacity);
         if (spec.fillRule) p.setAttribute('fill-rule', spec.fillRule);
         if (spec.clipRule) p.setAttribute('clip-rule', spec.clipRule);
-        p.setAttribute('fill', 'currentColor');
+        // 'fill: null' means "inherit the svg's none" — that is how the stroked
+        // folder and the code chevrons stay unfilled without a black default.
+        if (spec.fill === null) p.setAttribute('fill', 'none');
+        else p.setAttribute('fill', spec.fill || 'currentColor');
+        if (spec.stroke) p.setAttribute('stroke', spec.stroke);
+        if (spec.strokeWidth) p.setAttribute('stroke-width', spec.strokeWidth);
         svg.appendChild(p);
       });
       return svg;
     }
-    function folderClosedIcon() { return svgIcon([{ d: FOLDER_CLOSE_D, transform: 'translate(1.5 2.429)' }]); }
-    function folderOpenIcon() { return svgIcon([{ d: FOLDER_OPEN_D1 }, { d: FOLDER_OPEN_D2, opacity: '0.2' }]); }
+    // The directory glyphs come from the SAME description the panel's tree uses
+    // (src/shared/filetype.js folderGlyphParts) — the built-in tree's outline
+    // folder, not the amber FileTypeIcon card.
+    //
+    // svgIcon's default fill is currentColor (that is what the filled icons need);
+    // a description carrying NO fill means "inherit the svg's none", which is
+    // exactly what the stroked folder paths are, so the absence is made explicit.
+    function folderSpec(part) {
+      return {
+        d: part.d,
+        fill: part.fill === undefined ? null : part.fill,
+        stroke: part.stroke,
+        strokeWidth: part.strokeWidth,
+        opacity: part.opacity,
+      };
+    }
+    function folderClosedIcon() {
+      return svgIcon(folderGlyphParts(false).map(folderSpec));
+    }
+    function folderOpenIcon() {
+      return svgIcon(folderGlyphParts(true).map(folderSpec));
+    }
     function fileCodeIcon() { return svgIcon([{ d: CODE_D, fillRule: 'evenodd', clipRule: 'evenodd' }]); }
     function refreshIcon(size) { return svgIcon([{ d: REFRESH_D }], size); }
+    // ── The tab strip's two pictures, in the product's own vocabulary ───────
+    // The popout's 产物 / 文件树 chips used to be bare words. They now carry the
+    // SAME artwork the built-in sidebar draws for these two ideas — 产物 is
+    // 'IconDeliverDoc' (the stack of pages the product puts on its own
+    // deliverables rows) and 文件树 is 'FolderCloseArtwork' (the outline folder
+    // the product's 文件 tab tints with '--dsw-alias-label-tertiary'). Both are
+    // 16×16 stroke-only marks at strokeWidth 1 with 'currentColor', which is why
+    // they are copied as paths rather than imported: the primitives package is
+    // the product's internal, and a tab that looked like nothing else in the
+    // shell would defeat the point of the icons.
+    var DELIVER_DOC_D1 = 'M6.15479 4.91687H9.84543';
+    var DELIVER_DOC_D2 = 'M11.8798 9.55347V2.71525C11.8798 2.37416 11.564 2.09766 11.1744 2.09766H4.82577C4.43618 2.09766 4.12036 2.37416 4.12036 2.71525V9.55347';
+    var DELIVER_DOC_D3 = 'M2.28735 13.8022V8.84792C2.28735 8.77514 2.36262 8.72673 2.42884 8.75693L13.2936 13.7112C13.3914 13.7558 13.3596 13.9022 13.2521 13.9022H2.38735C2.33213 13.9022 2.28735 13.8575 2.28735 13.8022Z';
+    var DELIVER_DOC_D4 = 'M7.46929 10.979L13.5783 8.7416C13.6435 8.7177 13.7126 8.76601 13.7126 8.83551L13.7125 13.8022C13.7125 13.8574 13.6678 13.9022 13.6125 13.9022H7.99999';
+    var DELIVER_DOC_D5 = 'M6.15479 7.2395H9.05644';
+    // The product's stroke-only 16-box icons: 1px stroke, round caps/joins, no
+    // fill — distinct from 'svgIcon', whose marks are FILLED geometry.
+    function strokeLines(paths, size) {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', size || 14);
+      svg.setAttribute('height', size || 14);
+      svg.setAttribute('viewBox', '0 0 16 16');
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('stroke-width', '1');
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+      svg.setAttribute('aria-hidden', 'true');
+      (paths || []).forEach(function (d) {
+        var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        p.setAttribute('d', d);
+        p.setAttribute('stroke', 'currentColor');
+        svg.appendChild(p);
+      });
+      return svg;
+    }
+    function tabIconFor(view, size) {
+      if (view === 'tree') return strokeLines(FOLDER_CLOSE_D, size);
+      return strokeLines([DELIVER_DOC_D1, DELIVER_DOC_D2, DELIVER_DOC_D3, DELIVER_DOC_D4, DELIVER_DOC_D5], size);
+    }
     // Rounded stroked chevron (down); the splitter handle rotates it via CSS.
     var CHEVRON_D = 'M1.6 3.6 L5 7 L8.4 3.6';
     // 全屏: four corners closing in, the usual mark for "fill the screen". Drawn
@@ -955,8 +1148,8 @@ const page = String.raw`<!doctype html>
         row.appendChild(guide);
       }
       row.appendChild(el('span', 'tree-twisty is-file'));
-      var ico = el('span', 'tree-ico ' + (c.kind === 'dir' ? 'tree-ico-folder' : 'tree-ico-text'));
-      ico.appendChild(c.kind === 'dir' ? folderClosedIcon() : treeFileIcon());
+      var ico = el('span', 'tree-ico ' + (c.kind === 'dir' ? 'tree-ico-folder' : 'tree-ico-' + iconGlyph(c.name || '').kind));
+      ico.appendChild(c.kind === 'dir' ? folderClosedIcon() : treeFileIcon(c.name || ''));
       row.appendChild(ico);
       var input = document.createElement('input');
       input.className = 'tree-create-input';
@@ -1824,6 +2017,9 @@ const page = String.raw`<!doctype html>
         btn.setAttribute('aria-pressed', on ? 'true' : 'false');
         btn.classList.toggle('is-on', on);
       }
+      // Coming back from fullscreen is the moment the preview's geometry is
+      // meaningful again; entering it is handled by layoutTabsRow's own guard.
+      if (!on && typeof layoutTabsRow === 'function') layoutTabsRow();
     }
     function enterFallbackFullscreen() {
       var main = document.getElementById('main');
@@ -1850,9 +2046,9 @@ const page = String.raw`<!doctype html>
       // collapsed preview is display:none, so fullscreen on it draws an empty
       // screen — and it is empty in BOTH modes (a request that succeeds leaves the
       // element fullscreen with nothing in it just as surely as the CSS mode does).
-      // The 全屏 button lives inside the collapsed preview, so this state cannot be
-      // reached through this page's own UI; a stored divider position or another
-      // tab's settings bridge can still put it there.
+      // The 全屏 button lives in #bar, which is in .toprow (outside #preview), so
+      // #preview can be collapsed while the button is still on screen and
+      // clickable; that is how this state is reached through this page's own UI.
       var main = document.getElementById('main');
       if (main && main.classList.contains('is-preview-collapsed')) setCollapsedSplit(false);
       try {
@@ -2321,22 +2517,51 @@ const page = String.raw`<!doctype html>
       return rows;
     }
 
-    var TREE_ICON_D = 'M9.4 1.6H4.7A1.2 1.2 0 0 0 3.5 2.8v10.4a1.2 1.2 0 0 0 1.2 1.2h6.6a1.2 1.2 0 0 0 1.2-1.2V5.4L9.4 1.6Z';
-    function treeFileIcon() {
+    // One file icon, described by src/shared/filetype.js — the SAME description
+    // the panel's React tree draws from. Two renderers, one classified answer:
+    // a hand-copied second set of 48 brand glyphs is exactly how the two windows
+    // would start disagreeing about what a file looks like.
+    var CODE_ICON_SEQ = 0;
+    function svgIconPart(part) {
+      var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', part.d);
+      // 'fill: null' in a description means "inherit from the <svg>" — that is
+      // how the stroked marks (the code chevrons, the spreadsheet grid) stay
+      // unfilled without a black default creeping in behind them.
+      if (part.fill) p.setAttribute('fill', part.fill);
+      if (part.fillOpacity) p.setAttribute('fill-opacity', part.fillOpacity);
+      if (part.fillRule) p.setAttribute('fill-rule', part.fillRule);
+      if (part.clipRule) p.setAttribute('clip-rule', part.clipRule);
+      if (part.stroke) p.setAttribute('stroke', part.stroke);
+      if (part.strokeWidth) p.setAttribute('stroke-width', part.strokeWidth);
+      return p;
+    }
+    function treeFileIcon(path) {
+      var glyph = iconGlyph(path);
       var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('width', 16); svg.setAttribute('height', 16);
-      svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('fill', 'none');
-      [
-        { d: TREE_ICON_D },
-        { d: 'M9.4 1.7v3.7h3.7' },
-      ].forEach(function (spec) {
-        var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        p.setAttribute('d', spec.d);
-        p.setAttribute('stroke', 'currentColor');
-        p.setAttribute('stroke-width', '1.2');
-        p.setAttribute('stroke-linejoin', 'round');
-        svg.appendChild(p);
-      });
+      svg.setAttribute('aria-hidden', 'true');
+      if (glyph.tier === 'code') {
+        svg.setAttribute('viewBox', '0 0 20 20');
+        // 31 of the 48 glyphs reference their own gradient/clip ids, so each
+        // instance stamps its own — two rows of the same brand would otherwise
+        // share the first one's paint.
+        CODE_ICON_SEQ += 1;
+        svg.innerHTML = glyph.art.split(CODE_ICON_ID_TOKEN).join('dsh-code-icon-p' + CODE_ICON_SEQ);
+        return svg;
+      }
+      svg.setAttribute('viewBox', '0 0 28 28');
+      svg.setAttribute('fill', 'none');
+      var body = glyph.parts.slice(0, 2);
+      var marks = glyph.parts.slice(2);
+      for (var i = 0; i < body.length; i += 1) svg.appendChild(svgIconPart(body[i]));
+      if (glyph.mark) {
+        var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        // Absent for 'code'/'excel', exactly as the built-in leaves them.
+        if (glyph.markTransform) g.setAttribute('transform', glyph.markTransform);
+        for (var j = 0; j < marks.length; j += 1) g.appendChild(svgIconPart(marks[j]));
+        svg.appendChild(g);
+      }
       return svg;
     }
     function strokeIcon(paths, size) {
@@ -2477,8 +2702,10 @@ const page = String.raw`<!doctype html>
         dom.appendChild(folder);
       } else {
         dom.appendChild(el('span', 'tree-twisty is-file'));
-        var ico = el('span', 'tree-ico tree-ico-' + fileIconKind(entry.path));
-        ico.appendChild(treeFileIcon());
+        // One classifier decides both the picture and the colour class, so the
+        // two can never disagree about what this file is.
+        var ico = el('span', 'tree-ico tree-ico-' + iconGlyph(entry.path).kind);
+        ico.appendChild(treeFileIcon(entry.path));
         dom.appendChild(ico);
       }
 
@@ -2935,6 +3162,22 @@ const page = String.raw`<!doctype html>
       }
     })();
 
+    // Paint the two view chips' icons (see tabIconFor). Done here rather than in
+    // the markup because the artwork is DOM-built like every other icon on this
+    // page — one icon system, one way to add a mark.
+    (function paintTabIcons() {
+      var chips = document.querySelectorAll('.tab');
+      for (var i = 0; i < chips.length; i += 1) {
+        var view = chips[i].getAttribute('data-view');
+        if (!view || chips[i].querySelector('.tab-ico')) continue;
+        var box = document.createElement('span');
+        box.className = 'tab-ico';
+        box.setAttribute('aria-hidden', 'true');
+        box.appendChild(tabIconFor(view, 14));
+        chips[i].insertBefore(box, chips[i].firstChild);
+      }
+    })();
+
     document.getElementById('tabs').addEventListener('click', function (ev) {
       var btn = ev.target && ev.target.closest ? ev.target.closest('.tab') : null;
       if (!btn) return;
@@ -2982,6 +3225,7 @@ const page = String.raw`<!doctype html>
       previewWidth = Math.max(b.min, Math.min(b.max, previewWidth));
       previewEl.style.width = Math.round(previewWidth) + 'px';
       syncSplitAria();
+      layoutTabsRow();
     }
 
     // Report the current preview width to assistive tech (role="separator").
@@ -3009,6 +3253,58 @@ const page = String.raw`<!doctype html>
         try { localStorage.removeItem(BRIDGE.previewWidth); } catch (e) { }
         applySplit();
       }
+    }
+    // ── One row for the path and the tabs ────────────────────────────────────
+    // The document's bar (path + 复制路径 / @引用 / 全屏查看) used to be a 30px strip
+    // of its own above the preview, so the window spent 104px of vertical space
+    // on chrome before a single line of the document was visible. It now shares
+    // one row with the view chips, which is one row less.
+    //
+    // The bar is a SIBLING of the chips, and this function owns only its WIDTH —
+    // it no longer moves the node anywhere. That the bar used to be moved INTO
+    // '#tabs' is worth recording, because the move is what broke the row: with
+    // '#bar' inside the chips' own box, the chips had to be pushed clear of it
+    // with a 'padding-left' of the bar's width, and on the popout's two-column
+    // layout that padding was applied inside the 279px sidebar column while the
+    // bar itself spanned the whole window — so the second chip landed at x≈1395
+    // in a 1382px viewport, off screen and unclickable, and the whole
+    // coordinate-driven browser suite fell over behind it.
+    //
+    // The width comes from the preview's own measured box, not from the stored
+    // percentage: the split is draggable, the share is restorable from settings,
+    // and the sidebar floors both clamp the result — three ways for a number
+    // written down here to disagree with the pane it is drawn over.
+    function layoutTabsRow() {
+      var row = document.querySelector('.toprow');
+      var tabs = document.getElementById('tabs');
+      var bar = document.getElementById('bar');
+      var preview = document.getElementById('preview');
+      if (!row || !tabs || !bar || !preview) return;
+      // The row's own left edge is the window's, because '#bar' and '#tabs' are
+      // its flex children and the row spans 'main' (see .toprow in the
+      // stylesheet) — so the measurement below is in window coordinates, which
+      // is the space 'left: 0' describes.
+      var rowBox = row.getBoundingClientRect();
+      if (bar.parentNode !== row) row.insertBefore(bar, tabs);
+      var main = document.getElementById('main');
+      var collapsed = main && main.classList.contains('is-preview-collapsed');
+      if (collapsed) {
+        // The bar takes the whole row; its measured width is not its measure any
+        // more, and 'flex: 1 1 auto' in the collapsed rule does that job.
+        bar.style.removeProperty('width');
+        return;
+      }
+      // In fullscreen the preview is 'position: fixed' over the whole viewport,
+      // so it would measure as the window and this would write a 100vw width
+      // that then survived the exit. Keep the width that was correct before
+      // entering; the exit path re-measures.
+      if (inElementFullscreen() || inFallbackFullscreen()) return;
+      var previewBox = preview.getBoundingClientRect();
+      if (!rowBox.width || !previewBox.width) return;
+      // The bar starts at the row's left edge, so its width is the preview's
+      // right edge in that frame.
+      var w = Math.round(previewBox.right - rowBox.left);
+      if (w > 0) bar.style.width = w + 'px';
     }
     (function initSplit() {
       var splitEl = document.getElementById('split');
@@ -3044,11 +3340,16 @@ const page = String.raw`<!doctype html>
           // Remember the drag for both halves (the sidebar reads the same key).
           storedWidth = Math.round(previewWidth);
           try { localStorage.setItem(BRIDGE.previewWidth, String(storedWidth)); } catch (e) { }
+          layoutTabsRow();
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
       });
-      window.addEventListener('resize', function () { if (!splitting) applySplit(); });
+      window.addEventListener('resize', function () { if (!splitting) applySplit(); else layoutTabsRow(); });
+      // The bar must be inside the strip before the first paint decides where the
+      // absolutely positioned element belongs, so this runs at init rather than
+      // on the first document open.
+      layoutTabsRow();
     })();
     var treeRefreshBtn = document.getElementById('treeRefresh');
     if (treeRefreshBtn) {
@@ -3096,14 +3397,17 @@ const page = String.raw`<!doctype html>
           render();
           // The tree shows the same A/M change letters, so it follows the poll.
           if (treeRoot) renderTree();
+          // The state is a class, not an inline colour: the dot, the label tone
+          // and the wait pulse all live in the stylesheet next to the header
+          // rules, so a theme change cannot leave a hard-coded green behind.
           var st = document.getElementById('status');
+          st.className = 'status is-live';
           st.textContent = '实时';
-          st.style.color = getComputedStyle(document.documentElement).getPropertyValue('--p-success-fg').trim() || '#34c55e';
         }).catch(function (err) {
           settle();
           var st = document.getElementById('status');
+          st.className = 'status is-bad';
           st.textContent = err && err.auth ? '未认证' : '离线';
-          st.style.color = getComputedStyle(document.documentElement).getPropertyValue('--p-error').trim() || '#ef4444';
         });
     }
     load();

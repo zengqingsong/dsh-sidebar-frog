@@ -62,6 +62,77 @@
     // src/client/usage.js, and the Git ids from src/client/git.js — both are
     // inlined into this same closure just below, and are only READ when
     // registration runs, long after they exist.
+    // ── The guide entry's picture ───────────────────────────────────────────
+    // Every entry in the column's chooser carries an `icon`, and the product's
+    // own 文件 entry uses `GuideArtworkFiles` — the amber folder-on-a-card, the
+    // SAME artwork, byte for byte (36×36 canvas; the guide sizes it to 26px and
+    // tints the slot `--dsw-alias-label-secondary`, which is why the palette is
+    // fixed here rather than `currentColor`).
+    //
+    // Copying it beats importing it: the primitives package is the product's
+    // internal, not an extension point a plugin may depend on, and the one thing
+    // that must NOT happen is our 文件树 chooser row looking unlike the 文件 one
+    // beside it. Same reasoning as the 48 code icons in src/shared/filetype.js.
+    //
+    // The other four entries borrow the product's own 16×16 stroke icons
+    // (`viewBox 0 0 16 16`, `strokeWidth: 1`, `currentColor`) so the whole
+    // chooser reads as one set instead of "one product icon and four strangers".
+    const guideArtworkSvg = (attrs, children) => React.createElement('svg', attrs, children)
+    const GuideArtworkFiles = () => guideArtworkSvg({
+      width: 36, height: 36, viewBox: '0 0 36 36', fill: 'none',
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    }, [
+      React.createElement('path', {
+        key: 'f1',
+        d: 'M10.7603 27.922H24.6817C26.3441 27.922 27.1753 27.922 27.8102 27.5984C28.3687 27.3139 28.8228 26.8598 29.1074 26.3012C29.4309 25.6663 29.4309 24.8351 29.4309 23.1727V15.4936',
+        stroke: '#FFCD78', strokeWidth: '1.97886',
+      }),
+      React.createElement('path', {
+        key: 'f2',
+        d: 'M13.1597 8.07812C13.4182 8.07818 13.6727 8.14336 13.8989 8.26855L16.7554 9.84961C16.9817 9.97485 17.2369 10.041 17.4956 10.041H26.106C26.9492 10.0412 27.6323 10.7251 27.6323 11.5684V24.5371C27.6323 25.3805 26.9483 26.0645 26.105 26.0645H8.09619C7.25281 26.0645 6.56884 25.3805 6.56885 24.5371V9.60449C6.56909 8.76133 7.25297 8.07812 8.09619 8.07812H13.1597ZM9.81592 14.5508V16.5293H24.3999V14.5508H9.81592Z',
+        fill: '#FFBC4D',
+      }),
+    ])
+    // The product's IconDeliverDoc: a stack of pages. 产物 is that idea exactly.
+    const GuideArtworkArtifacts = () => guideArtworkSvg({
+      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    }, [
+      React.createElement('path', { key: 'a1', d: 'M6.15479 4.91687H9.84543', stroke: 'currentColor' }),
+      React.createElement('path', { key: 'a2', d: 'M11.8798 9.55347V2.71525C11.8798 2.37416 11.564 2.09766 11.1744 2.09766H4.82577C4.43618 2.09766 4.12036 2.37416 4.12036 2.71525V9.55347', stroke: 'currentColor' }),
+      React.createElement('path', { key: 'a3', d: 'M2.28735 13.8022V8.84792C2.28735 8.77514 2.36262 8.72673 2.42884 8.75693L13.2936 13.7112C13.3914 13.7558 13.3596 13.9022 13.2521 13.9022H2.38735C2.33213 13.9022 2.28735 13.8575 2.28735 13.8022Z', stroke: 'currentColor' }),
+      React.createElement('path', { key: 'a4', d: 'M7.46929 10.979L13.5783 8.7416C13.6435 8.7177 13.7126 8.76601 13.7126 8.83551L13.7125 13.8022C13.7125 13.8574 13.6678 13.9022 13.6125 13.9022H7.99999', stroke: 'currentColor' }),
+      React.createElement('path', { key: 'a5', d: 'M6.15479 7.2395H9.05644', stroke: 'currentColor' }),
+    ])
+    // A play triangle for 任务 (the product paints its Jobs rows with a state
+    // dot, so the glyph — not the colour — carries the meaning).
+    const GuideArtworkJobs = () => guideArtworkSvg({
+      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    }, React.createElement('path', {
+      key: 'j1',
+      d: 'M5.5 3.4L12.2 8L5.5 12.6V3.4Z',
+      stroke: 'currentColor', strokeLinejoin: 'round',
+    }))
+    // A gauge for 用量: the arc plus the needle, the universal "how much".
+    const GuideArtworkUsage = () => guideArtworkSvg({
+      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    }, [
+      React.createElement('path', { key: 'u1', d: 'M2.4 12.2A6.4 6.4 0 0 1 13.6 12.2', stroke: 'currentColor', strokeLinecap: 'round' }),
+      React.createElement('path', { key: 'u2', d: 'M8 11.6L10.9 7.6', stroke: 'currentColor', strokeLinecap: 'round' }),
+    ])
+    // The two-node branch, for the read-only Git slice.
+    const GuideArtworkGit = () => guideArtworkSvg({
+      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    }, [
+      React.createElement('circle', { key: 'g1', cx: 4.6, cy: 3.6, r: 1.9, stroke: 'currentColor' }),
+      React.createElement('circle', { key: 'g2', cx: 11.4, cy: 8, r: 1.9, stroke: 'currentColor' }),
+      React.createElement('circle', { key: 'g3', cx: 4.6, cy: 12.4, r: 1.9, stroke: 'currentColor' }),
+      React.createElement('path', { key: 'g4', d: 'M4.6 5.5V10.5M6.5 3.9C8.4 4.2 9.6 5.5 9.7 7.4', stroke: 'currentColor', strokeLinecap: 'round' }),
+    ])
+
     const FROG_FILES_ID = 'dsh-sidebar-frog/files'
     // The kind this tree occupies. Deliberately NOT the product's `files`: that
     // name belongs to the built-in tree, which keeps it (see the block above).
@@ -73,22 +144,27 @@
         // 文件树, not 文件: the product's own tab is the 文件 one, and two chips
         // reading the same word would be indistinguishable on the strip.
         id: FROG_FILES_ID, kind: FROG_FILES_KIND, view: 'tree', title: '文件树', order: 10,
+        icon: GuideArtworkFiles,
         description: '本插件的文件树：@引用到输入框、右键菜单、新建/删除、按目录刷新与 A/M 改动字母。系统的「文件」标签是另一棵（自带实时监听）。',
       },
       {
         id: 'dsh-sidebar-frog/artifacts', kind: 'frog-artifacts', view: 'artifacts', title: '产物', order: 20,
+        icon: GuideArtworkArtifacts,
         description: '代理创建 / 编辑过的文件台账，带行级 diff 与撤销。',
       },
       {
         id: 'dsh-sidebar-frog/jobs', kind: 'frog-jobs', view: 'jobs', title: '任务', order: 30,
+        icon: GuideArtworkJobs,
         description: '会话里的后台任务：只读镜像系统自己的任务列表，不自建 runner。',
       },
       {
         id: USAGE_TAB_ID, kind: USAGE_TAB_KIND, view: 'usage', title: USAGE_TAB_TITLE, order: 40,
+        icon: GuideArtworkUsage,
         description: '上下文占用与累计 token 用量：直接读系统的会话投影，不另记一份账。',
       },
       {
         id: GIT_TAB_ID, kind: GIT_TAB_KIND, view: 'git', title: GIT_TAB_TITLE, order: 50,
+        icon: GuideArtworkGit,
         description: 'Git 只读切片：分支、ahead/behind、已改/未跟踪文件，以及某个文件与 HEAD 的行级差异。不含任何写操作。',
       },
     ]
@@ -149,7 +225,10 @@
       kind: spec.kind,
       priority: 'extension',
       title: () => spec.title,
-      guide: [{ order: spec.order, title: () => spec.title, description: () => spec.description }],
+      // The chooser's row picture. `guide[].icon` is a NODE the guide paints into
+      // a 26px slot, not a component it re-renders per language, so it is built
+      // once here — the same shape the product's own 文件 entry uses.
+      guide: [{ order: spec.order, title: () => spec.title, description: () => spec.description, icon: spec.icon ? spec.icon() : undefined }],
     })
 
     // Register every view as a tab of the column. Returns whether that is now the
