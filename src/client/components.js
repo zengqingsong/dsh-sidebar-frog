@@ -1046,16 +1046,36 @@ const SettingsSection = () => {
       // strip are the shell's); switching it off moves the panel back into its own
       // floating window.
       //
-      // It no longer means "take the product's 文件 tab over" — that tab is the
-      // product's and keeps its own tree, live watcher and auto-refresh. This
-      // plugin's tree is a separate 文件树 tab (see the `FROG_FILES_KIND` note in
-      // src/client/native.js), which is why the two never conflict.
+      // What it does NOT decide is which file trees are on that strip — that is
+      // the 「显示系统的文件树」 switch right below it, and the two are separate
+      // because they answer different questions: this one is "the floating window
+      // or the column", that one is "one tree or two".
       React.createElement(SettingsToggle, {
         label: '用系统右侧边栏承载面板',
-        desc: '把本插件的视图注册为系统右侧边栏的标签（展开/收起、全屏、拖宽、标签条由系统提供）。系统的「文件」标签不受影响，仍是系统自带的文件树（自带实时监听与自动刷新）；本插件自己的文件树是旁边的「文件树」标签，带 @引用到输入框、右键菜单、新建/删除与 A/M 改动字母。@引用同时出现在系统文档预览的工具栏上，因此用系统那棵树也能引用。关闭则退回本插件的浮动窗口。修改后需刷新页面生效。',
+        desc: '把本插件的视图注册为系统右侧边栏的标签（展开/收起、全屏、拖宽、标签条由系统提供）。本插件的文件树带 @引用到输入框、右键菜单、新建/删除与 A/M 改动字母；@引用同时出现在系统文档预览的工具栏上。关闭则退回本插件的浮动窗口。修改后需刷新页面生效。',
         value: settings.nativeFileTree,
         onToggle: (v) => set('nativeFileTree', v),
       }),
+      // One tree or two. Offered only on the column, because the product's 文件
+      // tab does not exist anywhere else — the floating panel has its own band.
+      //
+      // Default OFF is the deliberate half: the two trees drew the same workspace
+      // and only one of them carries @引用 / 右键菜单 / 新建删除, so showing both
+      // said the same thing twice. Off puts this plugin's tree in the 文件 tab
+      // (the position users already reach for) and there is exactly one file tree.
+      //
+      // The cost is stated rather than hidden: the product's live directory
+      // watcher lives inside its own body, so taking that tab over stops it. This
+      // plugin refreshes the directories its artifact data says changed, which
+      // covers the agent's edits; another editor's changes need a manual refresh.
+      // Turning this ON hands the watcher back and puts both trees on the strip.
+      // Read once at load, like the switch above.
+      frogNativeSurface ? React.createElement(SettingsToggle, {
+        label: '显示系统的文件树',
+        desc: '关闭（默认）：右侧边栏只有一棵文件树——本插件的树放在系统「文件」这个位置，开始页也只有一条文件树条目。开启：系统自己的「文件」标签回到它的树（自带实时目录监听与自动刷新），本插件的树是旁边的「文件树」标签，两棵都在。关闭系统那棵树会一并停用系统的实时监听，改由本插件在产物变化时刷新相应目录；另一个编辑器改动的文件需手动刷新。修改后需刷新页面生效。',
+        value: settings.systemFileTree,
+        onToggle: (v) => set('systemFileTree', v),
+      }) : null,
       // The renderer this plugin LENDS to the shell's own document preview. It is
       // a switch rather than a silent takeover because the built-in renderer has
       // chrome ours does not (code copy buttons, footnotes): the trade is math /

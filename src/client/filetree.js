@@ -395,6 +395,55 @@ const FileTree = (props) => {
     return text.slice(0, at)
   }
 
+  // ── Freshness without the product's live watcher ───────────────────────────
+  // When this tree takes the product's 文件 tab over (`systemFileTree` off — see
+  // src/shared/settings.js) the product's own body is not mounted, and its live
+  // per-directory watcher lives INSIDE that body. Nothing pushes changes at us
+  // any more. What we do have is the artifact list: the paths the agent created
+  // or edited, re-polled every couple of seconds. Diffing that set covers the case
+  // that actually happens here — a file appears, a file is gone — and it re-reads
+  // ONLY the levels whose contents changed, so it is not a workspace-wide poll.
+  //
+  // It deliberately does not try to be a watcher: a file changed by another editor
+  // still needs the manual refresh. Turning 「显示系统的文件树」on hands the
+  // product's watcher back and this becomes a cheap no-op — the same entries come
+  // back, so nothing in the tree moves.
+  const artifactPaths = (Array.isArray(props.items) ? props.items : [])
+    .map((it) => (it && typeof it.path === 'string' ? it.path : ''))
+    .filter(Boolean)
+  const artifactKey = artifactPaths.join('\n')
+  const lastArtifactPaths = React.useRef(null)
+  React.useEffect(() => {
+    const previous = lastArtifactPaths.current
+    lastArtifactPaths.current = artifactPaths
+    // The first run records the baseline only: the tree has just mounted and reads
+    // its levels on demand, so there is nothing to refresh yet.
+    if (previous === null) return
+    const had = new Set(previous)
+    const has = new Set(artifactPaths)
+    const changed = []
+    for (const p of artifactPaths) if (!had.has(p)) changed.push(p)
+    for (const p of previous) if (!has.has(p)) changed.push(p)
+    if (!changed.length) return
+    const dirs = new Set()
+    let rootStale = false
+    for (const p of changed) {
+      const parent = parentDirOf(p)
+      // The same distinction 新建 and 删除 have to make: a top-level entry's level
+      // IS tree.root, which `loadRoot` re-reads; anything deeper is refreshDir's.
+      if (parent && parent !== rootPath && pathRelativeTo(parent, rootPath) !== '') dirs.add(parent)
+      else rootStale = true
+    }
+    if (rootStale) loadRoot(false)
+    for (const dir of dirs) {
+      // Only a level this tree has ALREADY read. refreshDir marks a path EXPANDED
+      // as a side effect, and expanding folders the user had collapsed — to
+      // announce a change somewhere inside them — is not a refresh, it is a
+      // hijack of their layout.
+      if (treeRef.current.children[dir]) refreshDir(dir)
+    }
+  }, [artifactKey])
+
   // The directory a 新建 should land in, for the row the person aimed at: a
   // folder takes the entry INSIDE itself, a file takes its own directory (a
   // sibling), and no target at all means the workspace root. One rule for the

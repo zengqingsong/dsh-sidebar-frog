@@ -603,6 +603,17 @@ if (shared) {
     if (clamped.minPanelWidth !== 60) throw new Error('minPanelWidth was not clamped to its range: ' + clamped.minPanelWidth)
     if (clamped.previewHeight !== DEFAULT_SETTINGS.previewHeight) throw new Error('a non-numeric previewHeight did not fall back')
     if (clamped.showFileTree !== false) throw new Error('showFileTree was not coerced to a boolean')
+    // The one default that is a PRODUCT DECISION rather than a preference: with
+    // 「显示系统的文件树」off, the column shows exactly ONE file tree. Pinned here
+    // because flipping it changes what every user sees after an upgrade, and the
+    // rest of this suite would still pass either way (both arrangements are
+    // guarded) — so nothing else would notice.
+    if (DEFAULT_SETTINGS.systemFileTree !== false) {
+      throw new Error('「显示系统的文件树」must default to off: on is the two-file-trees arrangement this setting exists to remove')
+    }
+    if (parseSettings('{"systemFileTree":1}').systemFileTree !== true) {
+      throw new Error('systemFileTree was not coerced to a boolean')
+    }
     if ('nonsense' in clamped) throw new Error('an unknown key survived normalisation')
     // What the sidebar writes is what the popout reads.
     const roundTrip = parseSettings(serializeSettings(normalizeSettings({ previewHeight: 42 })))
@@ -1775,14 +1786,29 @@ const bootClient = (options) => {
   }
 }
 
+// ── The column's tab set, in BOTH arrangements of 「显示系统的文件树」 ────────
+// The pair IS the feature, so both are driven here. Off (the default) this
+// plugin's tree TAKES the product's `files` kind over, which is what leaves the
+// column holding exactly one file tree; on, nothing claims `files`, the product
+// keeps its own tab and its live directory watcher, and this plugin's tree is a
+// second tab beside it. Driving only one of the two is how the previous
+// refactor's guard ended up asserting the opposite of what shipped.
 {
+  const MODES = [
+    { label: 'one tree (systemFileTree off)', settings: { systemFileTree: false }, filesKind: 'files', takeover: true },
+    { label: 'two trees (systemFileTree on)', settings: { systemFileTree: true }, filesKind: 'frog-files', takeover: false },
+  ]
+  for (const mode of MODES) {
   try {
-    const { registered, tabs, registrations, injectedSeats } = bootClient({ sidebarRight: true })
+    const { registered, tabs, registrations, injectedSeats } = bootClient({
+      sidebarRight: true,
+      storage: { [shared.BRIDGE.settings]: shared.serializeSettings(shared.normalizeSettings(mode.settings)) },
+    })
     // Every VIEW is its own system tab, so the assertion is against the exact set
     // the plugin is supposed to occupy — not against a count that goes stale the
     // moment a view is added or removed.
     const WANT = [
-      { id: 'dsh-sidebar-frog/files', kind: 'frog-files' },
+      { id: 'dsh-sidebar-frog/files', kind: mode.filesKind },
       { id: 'dsh-sidebar-frog/artifacts', kind: 'frog-artifacts' },
       { id: 'dsh-sidebar-frog/jobs', kind: 'frog-jobs' },
       { id: 'dsh-sidebar-frog/usage', kind: 'frog-usage' },
@@ -1809,22 +1835,52 @@ const bootClient = (options) => {
         throw new Error(want.id + ' must contribute exactly one guide entry (got ' + ((def.guide || []).length) + ')')
       }
       const entry = def.guide[0]
+      if (typeof entry.id !== 'string' || !entry.id) {
+        throw new Error(want.id + '\'s guide entry has no id — the registry keys its capsules and its entry slot by it')
+      }
+      if (new Set(def.guide.map((e) => e.id)).size !== def.guide.length) {
+        throw new Error(want.id + ' has duplicate guide entry ids (' + JSON.stringify(def.guide.map((e) => e.id)) + ')')
+      }
       if (typeof entry.title !== 'function' || !entry.title()) throw new Error(want.id + '\'s guide entry has no title')
       if (typeof entry.description !== 'function' || !entry.description()) throw new Error(want.id + '\'s guide entry has no description')
       if (typeof entry.order !== 'number') throw new Error(want.id + '\'s guide entry has no order')
-      // The chooser's row PICTURE. The product ships one for its own 文件 entry
-      // (GuideArtworkFiles) and a tab without one is drawn with a grey placeholder
-      // — so "the entry exists" is not the same as "the entry looks like the
-      // product's". The icon is a React NODE (the guide paints it into a 26px
-      // slot), so the assertion walks the node the plugin built: it must be a
-      // 16/36-box svg carrying at least one drawing primitive. A registered icon
-      // whose artwork lost its path data renders an empty box, which is exactly
-      // the state this catches.
-      const ico = entry.icon
-      const isNode = ico && typeof ico === 'object' && typeof ico.type === 'string' && !Array.isArray(ico)
-      if (!isNode) throw new Error(want.id + '\'s guide entry has no icon node (the chooser would draw a placeholder)')
-      if (ico.type !== 'svg') throw new Error(want.id + '\'s guide icon is a ' + ico.type + ', not an svg')
-      const box = String((ico.props && ico.props.viewBox) || '')
+      // The chooser's row PICTURE, and the contract here is easy to get backwards.
+      // `SidebarRightGuideEntry.icon` is `ComponentType<IconProps>` — a COMPONENT
+      // the guide renders as `<Icon size={26} className={…} />`, exactly like the
+      // product's own CompassGlyph / CubeGlyph / GuideArtworkFiles. Handing it an
+      // element NODE instead makes React reject the element type, and because that
+      // throws inside the guide's own render the ENTIRE chooser comes out empty:
+      // the Start page lists nothing, while the tab strip still looks fine. So this
+      // calls the icon the way the guide does and inspects what comes back.
+      //
+      // This guard used to assert the opposite — that `entry.icon` was a node with
+      // `type === 'svg'` — which is how the bug got past a green suite: the guard
+      // encoded the wrong contract instead of the product's. Anything here that
+      // cannot be observed by calling the icon as a component is a claim, not a test.
+      const Icon = entry.icon
+      if (typeof Icon !== 'function') {
+        throw new Error(want.id + '\'s guide icon must be a component (ComponentType<IconProps>), got '
+          + (Icon === null ? 'null' : typeof Icon) + ' — an element node takes the whole chooser down')
+      }
+      let rendered
+      try {
+        rendered = Icon({ size: 26, className: 'frog-guide-probe' })
+      } catch (e) {
+        // A component that throws while rendering is a broken row in the chooser,
+        // not a mysterious crash: say which icon and why.
+        throw new Error(want.id + '\'s guide icon threw while it was rendered: ' + (e && e.message ? e.message : e))
+      }
+      if (!rendered || rendered.type !== 'svg') {
+        throw new Error(want.id + '\'s guide icon does not render an svg (got ' + (rendered && rendered.type) + ')')
+      }
+      if (rendered.props.width !== 26 || rendered.props.height !== 26) {
+        throw new Error(want.id + '\'s guide icon ignores the size the guide hands it (got '
+          + rendered.props.width + '×' + rendered.props.height + ', want 26×26)')
+      }
+      if (rendered.props.className !== 'frog-guide-probe') {
+        throw new Error(want.id + '\'s guide icon drops the className the slot places it with')
+      }
+      const box = String(rendered.props.viewBox || '')
       if (!/^0 0 (16|36) (16|36)$/.test(box)) throw new Error(want.id + '\'s guide icon has no product-sized viewBox (got ' + box + ')')
       // The geometry may sit one level down (the helper's children array).
       const flatten = (nodes) => {
@@ -1835,7 +1891,7 @@ const bootClient = (options) => {
         }
         return out
       }
-      const shapes = flatten((ico.props && ico.props.children) || [])
+      const shapes = flatten(rendered.props.children || [])
       const drawn = shapes.filter((n) => typeof n.type === 'string' && n.type !== 'svg')
       const hasInk = drawn.length > 0 && drawn.every((n) => {
         const p = n.props || {}
@@ -1846,18 +1902,41 @@ const bootClient = (options) => {
     // Distinct orders, or the guide's own ordering is arbitrary between them.
     const orders = tabs.map((t) => t.guide[0].order)
     if (new Set(orders).size !== orders.length) throw new Error('two views share a guide order: ' + JSON.stringify(orders))
-    // The tree must NOT sit on the product's own `files` kind any more. Taking it
-    // over is legal (the extension band outranks the builtin) but it is exactly the
-    // regression this refactor removed: while this plugin holds that kind the
-    // product's own body never mounts, and with it the built-in tree's live
-    // directory watcher and auto-refresh silently stop working. The product's tree
-    // is the product's; this plugin's is its own kind beside it.
-    const files = tabs.find((t) => t.id === 'dsh-sidebar-frog/files')
-    if (files.kind === 'files') {
-      throw new Error('the tree is occupying the product\'s `files` kind again — that suppresses the built-in tree and its watcher')
-    }
-    if (tabs.some((t) => t.kind === 'files')) {
-      throw new Error('a tab type claims the product\'s `files` kind again: ' + JSON.stringify(tabs.filter((t) => t.kind === 'files').map((t) => t.id)))
+    // The `files` kind, which is the whole point of the setting — and the two
+    // halves state opposite requirements, so each mode asserts its own.
+    const filesDef = tabs.find((t) => t.id === 'dsh-sidebar-frog/files')
+    const claimsFiles = tabs.filter((t) => t.kind === 'files')
+    if (mode.takeover) {
+      // Exactly one claim, and it is ours: the extension band over the product's
+      // builtin. Two claims on one kind is a wiring mistake the registry throws on.
+      if (claimsFiles.length !== 1 || claimsFiles[0].id !== 'dsh-sidebar-frog/files') {
+        throw new Error('with 「显示系统的文件树」off the tree must be the ONE type claiming kind files (got '
+          + JSON.stringify(claimsFiles.map((t) => t.id)) + ')')
+      }
+      if (filesDef.priority !== 'extension') {
+        throw new Error('the takeover must declare the extension band — the builtin band cannot shadow a builtin (got '
+          + JSON.stringify(filesDef.priority) + ')')
+      }
+      if (typeof filesDef.title !== 'function' || filesDef.title() !== '文件') {
+        throw new Error('the takeover tab must keep the product\'s own name (got ' + JSON.stringify(filesDef.title && filesDef.title()) + ')')
+      }
+      // The entry reuses the product's own id and command id, so ⌘/Ctrl+P keeps
+      // opening this tab and the rest of the chooser does not shift around it.
+      if (filesDef.guide[0].id !== 'workspace') {
+        throw new Error('the takeover entry must keep the product\'s entry id "workspace" (got ' + JSON.stringify(filesDef.guide[0].id) + ')')
+      }
+      if (filesDef.guide[0].commandId !== 'workspace.files') {
+        throw new Error('the takeover entry must keep the product\'s commandId, or the 文件 shortcut stops working (got '
+          + JSON.stringify(filesDef.guide[0].commandId) + ')')
+      }
+      // A retired 文件树 tab — one saved by a session before the setting was
+      // switched — must still have a body, or the seat draws its "nothing can
+      // view this" notice in a tab that used to work.
+      const legacyTree = registrations.find((r) => r.def.name === 'sidebar.right.pane.tab' && r.def.key === 'frog-files')
+      if (!legacyTree) throw new Error('a restored 文件树 tab has no body in takeover mode — it would come back blank')
+    } else if (claimsFiles.length) {
+      throw new Error('a tab type claims the product\'s files kind while 「显示系统的文件树」is on: '
+        + JSON.stringify(claimsFiles.map((t) => t.id)) + ' — that suppresses the built-in tree and its watcher')
     }
     // Every type has a body, keyed by its OWN id — the seat looks a body up by
     // `entryKey`, which is the definition's id, never the kind.
@@ -1874,9 +1953,10 @@ const bootClient = (options) => {
       throw new Error('the floating panel is still registered next to the native tabs — that is the duplicate sidebar toggle')
     }
     if (!registered.includes('dsh-sidebar-frog')) throw new Error('the settings section disappeared')
-    ok('native tabs', `one system tab per view (${gotIds.length}), each with its own guide entry and its own keyed body`)
+    ok('native tabs — ' + mode.label, `one system tab per view (${gotIds.length}), each with its own guide entry and its own keyed body`)
   } catch (e) {
-    bad('native tabs', e && e.message ? e.message : String(e))
+    bad('native tabs — ' + mode.label, e && e.message ? e.message : String(e))
+  }
   }
 }
 
@@ -1970,10 +2050,15 @@ const footKid = (stack, id) => {
     const railLabels = (rail.props.children || []).filter((c) => c && c.type === 'span')
     if (railLabels.length) throw new Error('the rail button still draws a label — it is a 36px round icon there')
     wide.props.onClick()
-    if (String(boot.openedTabs) !== 'frog-files') {
-      throw new Error('the footer button opened ' + JSON.stringify(boot.openedTabs) + ', not the 文件树 page')
+    // The kind the tree's type is ACTUALLY registered under — `files` in takeover
+    // mode, `frog-files` otherwise — read back from the registry. Hard-coding it is
+    // how the button could point at a kind nothing draws while this guard stayed
+    // green.
+    const treeKind = (boot.tabs.find((t) => t.id === 'dsh-sidebar-frog/files') || {}).kind
+    if (String(boot.openedTabs) !== treeKind) {
+      throw new Error('the footer button opened ' + JSON.stringify(boot.openedTabs) + ', not the tree page (' + JSON.stringify(treeKind) + ')')
     }
-    ok('column entry point', 'a standing 文件树 button in the left sidebar\'s foot opens the column\'s 文件树 page (present in every state, hero screen included)')
+    ok('column entry point', 'a standing 文件树 button in the left sidebar\'s foot opens the column\'s tree page (present in every state, hero screen included)')
   } catch (e) {
     bad('column entry point', e && e.message ? e.message : String(e))
   }
@@ -2199,8 +2284,13 @@ const footKid = (stack, id) => {
     if (typeof item.def.order !== 'number') throw new Error('the per-tab 弹出 item has no order')
     if (typeof item.component !== 'function') throw new Error('the per-tab 弹出 item is not a component')
     // Answered for THIS plugin's tabs — current kinds and every retired name a
-    // restored tab can still carry — and for nothing else.
-    const ours = ['frog-files', 'frog-artifacts', 'frog-jobs', 'frog-usage', 'frog-git', 'frog', 'frog-browser']
+    // restored tab can still carry — and for nothing else. The tree's kind is read
+    // from the registry instead of written down: it is `files` when this plugin has
+    // taken the product's tab over and `frog-files` when it has not, and a constant
+    // here is how the guard would pass while the menu pointed at a tab nothing
+    // draws.
+    const treeKind = (boot.tabs.find((t) => t.id === 'dsh-sidebar-frog/files') || {}).kind
+    const ours = ['frog-files', 'frog-artifacts', 'frog-jobs', 'frog-usage', 'frog-git', 'frog', 'frog-browser', treeKind]
     for (const kind of ours) {
       const rendered = item.component({ tab: { kind, id: 't1' }, dismiss: () => {} })
       if (!rendered || rendered.type !== 'a') {
@@ -2220,10 +2310,12 @@ const footKid = (stack, id) => {
     item.component({ tab: { kind: 'frog-files', id: 't1' }, dismiss: () => { dismissed += 1 } }).props.onClick()
     if (dismissed !== 1) throw new Error('the per-tab 弹出 item did not dismiss the menu it acted from (' + dismissed + ' dismissals)')
     // Somebody else's tab: the product's chooser, another plugin's panel — and the
-    // PRODUCT's own `files` tab, which stopped being ours in round 4. Offering this
-    // plugin's popout page on the built-in file tree would be exactly the kind of
-    // cross-plugin button this guard exists to prevent.
+    // PRODUCT's own `files` tab whenever the product is still the one drawing it.
+    // While this plugin holds that kind the tab IS ours and the item above is
+    // expected on it, so the list is filtered by what the registry registered
+    // rather than by a constant that would be wrong in one of the two modes.
     for (const kind of ['guide', 'files', 'files-other-plugin', 'frog-unknown']) {
+      if (kind === treeKind) continue
       const foreign = item.component({ tab: { kind, id: 't2' }, dismiss: () => {} })
       if (foreign !== null && foreign !== undefined) {
         throw new Error('the per-tab 弹出 item appears on a foreign ' + JSON.stringify(kind) + ' tab — it would offer this plugin\'s page from somebody else\'s panel')
@@ -2301,10 +2393,14 @@ const footKid = (stack, id) => {
 {
   try {
     const blank = bootClient({ sidebarRight: true, blankSession: true })
-    if (String(blank.openedTabs) !== 'frog-files') {
-      throw new Error('a blank session with an empty column opened ' + JSON.stringify(blank.openedTabs) + ' — the shell\'s own first page is the chooser, so the tree would not be there')
+    // Whichever kind the tree ended up registered under: the default page must be
+    // the TREE, and naming a kind nothing draws would seed the column with the
+    // seat's "nothing can view this" notice.
+    const blankTreeKind = (blank.tabs.find((t) => t.id === 'dsh-sidebar-frog/files') || {}).kind
+    if (String(blank.openedTabs) !== blankTreeKind) {
+      throw new Error('a blank session with an empty column opened ' + JSON.stringify(blank.openedTabs) + ', want the tree page (' + JSON.stringify(blankTreeKind) + ') — the shell\'s own first page is the chooser, so the tree would not be there')
     }
-    if (blank.column.activeTab !== 'frog-files') throw new Error('the open did not land in the column')
+    if (blank.column.activeTab !== blankTreeKind) throw new Error('the open did not land in the column')
     if (!blank.sessionSubs().length) throw new Error('no session subscription was installed, so a session switch could never be served')
 
     const used = bootClient({ sidebarRight: true })
@@ -6182,9 +6278,22 @@ try {
     if (defaultDesc.indexOf('右侧边栏') < 0) {
       throw new Error('the native 「默认展开」 copy does not say what it does there: ' + JSON.stringify(defaultDesc))
     }
+    // The switch the takeover needs, on the surface where it means something.
+    // Without this row the one-tree arrangement is decided in native.js and
+    // reachable only by hand-editing localStorage — the feature ships, the control
+    // does not, which is the failure the "unreachable setting" guard below exists
+    // for and cannot catch on its own (it only asks whether the UI READS the key).
+    if (!nativeForm.labels.some((t) => t === '显示系统的文件树')) {
+      throw new Error('the native surface does not offer 「显示系统的文件树」 — the one-tree arrangement would be unreachable (labels ' + JSON.stringify(nativeForm.labels) + ')')
+    }
     const floatingForm = await settingsCopy({})
     if (!floatingForm.labels.some((t) => t === '文件树')) {
       throw new Error('the floating panel lost its 「文件树」 preference — that is the only surface it configures (labels ' + JSON.stringify(floatingForm.labels) + ')')
+    }
+    // …and the other direction: the product's 文件 tab does not exist on the
+    // floating surface, so a 「显示系统的文件树」 row there could not do anything.
+    if (floatingForm.labels.some((t) => t === '显示系统的文件树')) {
+      throw new Error('the floating panel offers 「显示系统的文件树」, but there is no product 文件 tab on that surface — a switch that cannot do anything')
     }
     // The in-app copy is documentation too, and it is the only documentation a
     // user reads without opening the repo: it claimed a 65% default long after

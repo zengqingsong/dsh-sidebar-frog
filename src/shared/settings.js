@@ -19,12 +19,39 @@ var DEFAULT_SETTINGS = {
   // shell's own right column, so 展开 / 收起 / 全屏 / 拖宽 / 分栏 and the tab strip
   // are the shell's. Off: the panel falls back to its own floating window.
   //
-  // It does NOT govern the product's built-in 文件 tab any more. That tab used to
-  // be taken over (the tree registered into the product's "files" kind at the
-  // extension band); it is now this plugin's OWN kind ("frog-files"), so the
-  // product's tree keeps its tab, its live directory watcher and its auto-refresh
-  // in every case. Read once at load (see src/client/native.js).
+  // Read once at load (see src/client/native.js), together with systemFileTree
+  // below: the pair decides which KINDS the column gets, and swapping kinds under
+  // a live column means tearing one registration down while building another.
   nativeFileTree: true,
+  // Whether the column shows the PRODUCT's own file tree as well as this
+  // plugin's. Off (the default) means exactly ONE file tree: this plugin's, in
+  // the 文件 tab users already know, because the two trees side by side said the
+  // same thing twice and only one of them has @引用 / 右键菜单 / 新建删除.
+  //
+  // "Hiding a tab" is not something the product offers — there is no unregister,
+  // no filter and no "hidden" flag on a tab record. The one lever is the
+  // registry's documented band rule: a kind may carry one builtin and one
+  // extension, the extension is the one in force, and the builtin resumes when it
+  // unregisters. So this setting registers an extension over the product's files
+  // kind, which is what takes its entry off the chooser and its body off screen.
+  //
+  // The product's files type is a pure PAGE type (no patterns, no canOpen, no
+  // resource addresses — checked against the installed package), so shadowing it
+  // takes nothing else with it: opening a file from the conversation still routes
+  // exactly as before.
+  //
+  // The real cost is that the product's live per-directory watcher lives INSIDE
+  // its body, so a takeover stops it. This plugin's tree therefore refreshes the
+  // directories its own data says changed (see the artifact-path effect in
+  // src/client/filetree.js), which covers the agent's edits; a file changed by
+  // another editor arrives on the next manual refresh instead of instantly.
+  // Switching this ON hands the watcher back and puts both trees on the strip.
+  // Read once at load; requires a page refresh (see src/client/native.js).
+  //
+  // NOTE: no backticks anywhere in this file. It is spliced into the popout
+  // page's String.raw template, so one backtick ends the literal and takes the
+  // whole embedded script with it (scripts/check.js fails on it by name).
+  systemFileTree: false,
   // Lend this plugin's Markdown renderer (offline MathJax / Mermaid / JSXGraph)
   // to the SHELL's own document preview: registered in the "extension" band it
   // wins over the product's built-in Markdown over there, so the same .md file

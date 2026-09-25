@@ -1309,6 +1309,80 @@ export const runSidebarTree = async () => {
     })
   }
 
+  // ── a changed artifact set re-reads only the level that changed ──────────
+  // With 「显示系统的文件树」off this tree sits in the product's 文件 tab, whose own
+  // body — and the live directory watcher inside it — is not mounted. The tree
+  // keeps itself honest from the artifact list it already receives: a path that
+  // appears or disappears re-reads its own parent level. This drives that, and
+  // pins the two ways it can go wrong: doing nothing (a file the agent just wrote
+  // never shows up) and hijacking the layout (expanding a folder the user had
+  // collapsed, or fetching a level the tree never read).
+  {
+    const asked = []
+    const refreshHost = {
+      call: (method, args) => {
+        if (method !== 'artifacts.listDir') return Promise.resolve({ ok: false, error: 'unknown ' + method })
+        const path = (args && args.path) || ROOT
+        asked.push(path)
+        return Promise.resolve({ ok: true, path, entries: FS[path] || [] })
+      },
+    }
+    const sync = mountSidebar({}, { host: refreshHost })
+    launch.push(sync)
+    await sync.flush(80)
+    sync.clickRow('D:/ws/src', 1)   // a level has to be LOADED before it can be refreshed
+    await sync.flush(60)
+    asked.length = 0
+
+    sync.renderer.setProps({ items: [{ path: 'D:/ws/src/new.js', kind: 'create' }] })
+    await sync.flush(140)
+    await check('sidebar: a new artifact re-reads its own level', () => {
+      if (asked.indexOf('D:/ws/src') < 0) {
+        throw new Error('the level holding the new file was never re-read (asked: ' + JSON.stringify(asked) + ')')
+      }
+      return 're-read ' + JSON.stringify([...new Set(asked)])
+    })
+
+    asked.length = 0
+    const openBefore = sync.open().join('|')
+    sync.renderer.setProps({
+      items: [
+        { path: 'D:/ws/src/new.js', kind: 'create' },
+        { path: 'D:/ws/docs/gone.md', kind: 'modify' },
+      ],
+    })
+    await sync.flush(140)
+    await check('sidebar: the refresh never expands or reads a level it was not showing', () => {
+      if (sync.open().join('|') !== openBefore) {
+        throw new Error('the expansion changed under the user: ' + openBefore + ' -> ' + sync.open().join('|'))
+      }
+      if (asked.indexOf('D:/ws/docs') >= 0) {
+        throw new Error('a level the tree had never read was fetched: ' + JSON.stringify(asked))
+      }
+      return 'open levels unchanged: ' + (openBefore || '(root only)')
+    })
+
+    // A file at the TOP level belongs to the root level, which the tree lists from
+    // `tree.root` rather than from its `children` map — the same distinction
+    // 新建 and 删除 have to make. Missing it means "a new file at the workspace
+    // root never appears", which is the most common case of all.
+    asked.length = 0
+    sync.renderer.setProps({
+      items: [
+        { path: 'D:/ws/src/new.js', kind: 'create' },
+        { path: 'D:/ws/docs/gone.md', kind: 'modify' },
+        { path: 'D:/ws/NEW.md', kind: 'create' },
+      ],
+    })
+    await sync.flush(140)
+    await check('sidebar: a top-level artifact re-reads the root level', () => {
+      if (asked.indexOf(ROOT) < 0) {
+        throw new Error('the root level was never re-read (asked: ' + JSON.stringify(asked) + ')')
+      }
+      return 'root re-read: ' + JSON.stringify([...new Set(asked)])
+    })
+  }
+
   // A tree that throws inside an effect keeps rendering while silently dropping
   // the behaviour — the exact shape of "expand/collapse does nothing". Every
   // mount in this suite must come out clean.

@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = '3e643622'
+          const BUILD = 'f15f5ace'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -313,12 +313,39 @@ window.__ModuleLoader__.load({
       // shell's own right column, so 展开 / 收起 / 全屏 / 拖宽 / 分栏 and the tab strip
       // are the shell's. Off: the panel falls back to its own floating window.
       //
-      // It does NOT govern the product's built-in 文件 tab any more. That tab used to
-      // be taken over (the tree registered into the product's "files" kind at the
-      // extension band); it is now this plugin's OWN kind ("frog-files"), so the
-      // product's tree keeps its tab, its live directory watcher and its auto-refresh
-      // in every case. Read once at load (see src/client/native.js).
+      // Read once at load (see src/client/native.js), together with systemFileTree
+      // below: the pair decides which KINDS the column gets, and swapping kinds under
+      // a live column means tearing one registration down while building another.
       nativeFileTree: true,
+      // Whether the column shows the PRODUCT's own file tree as well as this
+      // plugin's. Off (the default) means exactly ONE file tree: this plugin's, in
+      // the 文件 tab users already know, because the two trees side by side said the
+      // same thing twice and only one of them has @引用 / 右键菜单 / 新建删除.
+      //
+      // "Hiding a tab" is not something the product offers — there is no unregister,
+      // no filter and no "hidden" flag on a tab record. The one lever is the
+      // registry's documented band rule: a kind may carry one builtin and one
+      // extension, the extension is the one in force, and the builtin resumes when it
+      // unregisters. So this setting registers an extension over the product's files
+      // kind, which is what takes its entry off the chooser and its body off screen.
+      //
+      // The product's files type is a pure PAGE type (no patterns, no canOpen, no
+      // resource addresses — checked against the installed package), so shadowing it
+      // takes nothing else with it: opening a file from the conversation still routes
+      // exactly as before.
+      //
+      // The real cost is that the product's live per-directory watcher lives INSIDE
+      // its body, so a takeover stops it. This plugin's tree therefore refreshes the
+      // directories its own data says changed (see the artifact-path effect in
+      // src/client/filetree.js), which covers the agent's edits; a file changed by
+      // another editor arrives on the next manual refresh instead of instantly.
+      // Switching this ON hands the watcher back and puts both trees on the strip.
+      // Read once at load; requires a page refresh (see src/client/native.js).
+      //
+      // NOTE: no backticks anywhere in this file. It is spliced into the popout
+      // page's String.raw template, so one backtick ends the literal and takes the
+      // whole embedded script with it (scripts/check.js fails on it by name).
+      systemFileTree: false,
       // Lend this plugin's Markdown renderer (offline MathJax / Mermaid / JSXGraph)
       // to the SHELL's own document preview: registered in the "extension" band it
       // wins over the product's built-in Markdown over there, so the same .md file
@@ -6890,6 +6917,55 @@ const FileTree = (props) => {
     return text.slice(0, at)
   }
 
+  // ── Freshness without the product's live watcher ───────────────────────────
+  // When this tree takes the product's 文件 tab over (`systemFileTree` off — see
+  // src/shared/settings.js) the product's own body is not mounted, and its live
+  // per-directory watcher lives INSIDE that body. Nothing pushes changes at us
+  // any more. What we do have is the artifact list: the paths the agent created
+  // or edited, re-polled every couple of seconds. Diffing that set covers the case
+  // that actually happens here — a file appears, a file is gone — and it re-reads
+  // ONLY the levels whose contents changed, so it is not a workspace-wide poll.
+  //
+  // It deliberately does not try to be a watcher: a file changed by another editor
+  // still needs the manual refresh. Turning 「显示系统的文件树」on hands the
+  // product's watcher back and this becomes a cheap no-op — the same entries come
+  // back, so nothing in the tree moves.
+  const artifactPaths = (Array.isArray(props.items) ? props.items : [])
+    .map((it) => (it && typeof it.path === 'string' ? it.path : ''))
+    .filter(Boolean)
+  const artifactKey = artifactPaths.join('\n')
+  const lastArtifactPaths = React.useRef(null)
+  React.useEffect(() => {
+    const previous = lastArtifactPaths.current
+    lastArtifactPaths.current = artifactPaths
+    // The first run records the baseline only: the tree has just mounted and reads
+    // its levels on demand, so there is nothing to refresh yet.
+    if (previous === null) return
+    const had = new Set(previous)
+    const has = new Set(artifactPaths)
+    const changed = []
+    for (const p of artifactPaths) if (!had.has(p)) changed.push(p)
+    for (const p of previous) if (!has.has(p)) changed.push(p)
+    if (!changed.length) return
+    const dirs = new Set()
+    let rootStale = false
+    for (const p of changed) {
+      const parent = parentDirOf(p)
+      // The same distinction 新建 and 删除 have to make: a top-level entry's level
+      // IS tree.root, which `loadRoot` re-reads; anything deeper is refreshDir's.
+      if (parent && parent !== rootPath && pathRelativeTo(parent, rootPath) !== '') dirs.add(parent)
+      else rootStale = true
+    }
+    if (rootStale) loadRoot(false)
+    for (const dir of dirs) {
+      // Only a level this tree has ALREADY read. refreshDir marks a path EXPANDED
+      // as a side effect, and expanding folders the user had collapsed — to
+      // announce a change somewhere inside them — is not a refresh, it is a
+      // hijack of their layout.
+      if (treeRef.current.children[dir]) refreshDir(dir)
+    }
+  }, [artifactKey])
+
   // The directory a 新建 should land in, for the row the person aimed at: a
   // folder takes the entry INSIDE itself, a file takes its own directory (a
   // sibling), and no target at all means the workspace root. One rule for the
@@ -9264,16 +9340,36 @@ const SettingsSection = () => {
       // strip are the shell's); switching it off moves the panel back into its own
       // floating window.
       //
-      // It no longer means "take the product's 文件 tab over" — that tab is the
-      // product's and keeps its own tree, live watcher and auto-refresh. This
-      // plugin's tree is a separate 文件树 tab (see the `FROG_FILES_KIND` note in
-      // src/client/native.js), which is why the two never conflict.
+      // What it does NOT decide is which file trees are on that strip — that is
+      // the 「显示系统的文件树」 switch right below it, and the two are separate
+      // because they answer different questions: this one is "the floating window
+      // or the column", that one is "one tree or two".
       React.createElement(SettingsToggle, {
         label: '用系统右侧边栏承载面板',
-        desc: '把本插件的视图注册为系统右侧边栏的标签（展开/收起、全屏、拖宽、标签条由系统提供）。系统的「文件」标签不受影响，仍是系统自带的文件树（自带实时监听与自动刷新）；本插件自己的文件树是旁边的「文件树」标签，带 @引用到输入框、右键菜单、新建/删除与 A/M 改动字母。@引用同时出现在系统文档预览的工具栏上，因此用系统那棵树也能引用。关闭则退回本插件的浮动窗口。修改后需刷新页面生效。',
+        desc: '把本插件的视图注册为系统右侧边栏的标签（展开/收起、全屏、拖宽、标签条由系统提供）。本插件的文件树带 @引用到输入框、右键菜单、新建/删除与 A/M 改动字母；@引用同时出现在系统文档预览的工具栏上。关闭则退回本插件的浮动窗口。修改后需刷新页面生效。',
         value: settings.nativeFileTree,
         onToggle: (v) => set('nativeFileTree', v),
       }),
+      // One tree or two. Offered only on the column, because the product's 文件
+      // tab does not exist anywhere else — the floating panel has its own band.
+      //
+      // Default OFF is the deliberate half: the two trees drew the same workspace
+      // and only one of them carries @引用 / 右键菜单 / 新建删除, so showing both
+      // said the same thing twice. Off puts this plugin's tree in the 文件 tab
+      // (the position users already reach for) and there is exactly one file tree.
+      //
+      // The cost is stated rather than hidden: the product's live directory
+      // watcher lives inside its own body, so taking that tab over stops it. This
+      // plugin refreshes the directories its artifact data says changed, which
+      // covers the agent's edits; another editor's changes need a manual refresh.
+      // Turning this ON hands the watcher back and puts both trees on the strip.
+      // Read once at load, like the switch above.
+      frogNativeSurface ? React.createElement(SettingsToggle, {
+        label: '显示系统的文件树',
+        desc: '关闭（默认）：右侧边栏只有一棵文件树——本插件的树放在系统「文件」这个位置，开始页也只有一条文件树条目。开启：系统自己的「文件」标签回到它的树（自带实时目录监听与自动刷新），本插件的树是旁边的「文件树」标签，两棵都在。关闭系统那棵树会一并停用系统的实时监听，改由本插件在产物变化时刷新相应目录；另一个编辑器改动的文件需手动刷新。修改后需刷新页面生效。',
+        value: settings.systemFileTree,
+        onToggle: (v) => set('systemFileTree', v),
+      }) : null,
       // The renderer this plugin LENDS to the shell's own document preview. It is
       // a switch rather than a silent takeover because the built-in renderer has
       // chrome ours does not (code copy buttons, footnotes): the trade is math /
@@ -9957,27 +10053,40 @@ const SettingsSection = () => {
     // and the tab menu are all the shell's, and each body draws its view and
     // nothing else.
     //
-    // ── Why the tree is its OWN kind, and no longer the product's `files` ────
-    // This row used to take the product's `files` kind over (the extension band
-    // outranks its `builtin`, so the column's 文件 tab became this tree). That is
-    // no longer what happens, for a reason the product itself created: 0.1.7's
-    // built-in tree grew a live per-directory WATCHER (`workspaceFiles.changes`,
-    // auto-refresh, `data-files-auto-refresh`) that only runs while the product's
-    // own body is the one mounted. A takeover keeps that body off screen, so it
-    // silently suppressed the capability — the tree stopped noticing the files
-    // the agent wrote.
+    // ── Which kind this tree occupies is a SETTING, not a constant ───────────
+    // Two trees on one strip is what the column used to get: the product's 文件
+    // (its own tree, with a live per-directory watcher) and this plugin's 文件树
+    // beside it. They draw the same workspace and only one of them carries
+    // @引用 / 右键菜单 / 新建删除, so the pair reads as the same thing said twice.
     //
-    // So the two get separate kinds and BOTH are on the strip: the product's
-    // `files` stays exactly as it ships (watcher and all), and this tree is its
-    // own tab beside it. Nothing is taken from the product, so nothing has to be
-    // handed back — `nativeFileTree` now only chooses the column over the
-    // floating panel, and the built-in tree is never touched either way.
+    // The registry's band rule is the only lever the product offers over a
+    // builtin tab — a kind may carry one `builtin` and one `extension`, the
+    // extension is the one in force, and the builtin resumes when it unregisters
+    // — so the two arrangements are:
+    //
+    //   · `systemFileTree` OFF (default): this plugin registers an `extension`
+    //     over the product's `files` kind. The column holds ONE file tree, in the
+    //     tab users already know, with every capability this plugin has. What it
+    //     costs is inside the product's body: 0.1.7's tree grew a live watcher
+    //     (`workspaceFiles.changes`, `data-files-auto-refresh`) that only runs
+    //     while ITS body is mounted, so a takeover stops it. That is why the tree
+    //     refreshes the directories its own artifact data says changed (see the
+    //     artifact-path effect in src/client/filetree.js) instead of leaving the
+    //     user to notice a stale row.
+    //   · `systemFileTree` ON: nothing is registered for `files`, so the product
+    //     keeps its tab, its watcher and its auto-refresh exactly as it ships,
+    //     and this plugin's tree is its own 文件树 tab beside it. Nothing is taken
+    //     from the product, so nothing has to be handed back.
+    //
+    // Both settings are read ONCE at registration and recorded in `frogTreeKind`
+    // (below), because the footer button, the tab menu and the default page must
+    // all name the kind that was actually registered.
     //
     // What the product's tree still does not have is the two capabilities this
     // one does — its bundle has no `contextmenu` and no reference action at all.
-    // The reference half is no longer a reason to take the tree over: `@引用`
-    // never depended on this tree in the first place, it writes through the
-    // shell's own `conversation.input.for(...).setDraft` (see quoteToComposer in
+    // The reference half is not a reason to take the tree over: `@引用` never
+    // depended on this tree, it writes through the shell's own
+    // `conversation.input.for(...).setDraft` (see quoteToComposer in
     // src/client/core.js). So it is offered on the PRODUCT's flow too, as a
     // document action in the product's own preview header — see
     // installDocumentActions below. The right-click menu, 新建 / 删除 and the
@@ -10012,9 +10121,13 @@ const SettingsSection = () => {
     // (`viewBox 0 0 16 16`, `strokeWidth: 1`, `currentColor`) so the whole
     // chooser reads as one set instead of "one product icon and four strangers".
     const guideArtworkSvg = (attrs, children) => React.createElement('svg', attrs, children)
-    const GuideArtworkFiles = () => guideArtworkSvg({
-      width: 36, height: 36, viewBox: '0 0 36 36', fill: 'none',
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    // `IconProps`: `{ size, className }`. The guide renders a guide entry's icon as
+    // `<Icon size={26} className={…} />`, so an artwork that ignores its props
+    // draws at the wrong size — or, if it is not a component at all, takes the
+    // whole chooser down (see the registration below).
+    const GuideArtworkFiles = ({ size = 36, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 36 36', fill: 'none',
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', {
         key: 'f1',
@@ -10028,9 +10141,9 @@ const SettingsSection = () => {
       }),
     ])
     // The product's IconDeliverDoc: a stack of pages. 产物 is that idea exactly.
-    const GuideArtworkArtifacts = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkArtifacts = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', { key: 'a1', d: 'M6.15479 4.91687H9.84543', stroke: 'currentColor' }),
       React.createElement('path', { key: 'a2', d: 'M11.8798 9.55347V2.71525C11.8798 2.37416 11.564 2.09766 11.1744 2.09766H4.82577C4.43618 2.09766 4.12036 2.37416 4.12036 2.71525V9.55347', stroke: 'currentColor' }),
@@ -10040,26 +10153,26 @@ const SettingsSection = () => {
     ])
     // A play triangle for 任务 (the product paints its Jobs rows with a state
     // dot, so the glyph — not the colour — carries the meaning).
-    const GuideArtworkJobs = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkJobs = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, React.createElement('path', {
       key: 'j1',
       d: 'M5.5 3.4L12.2 8L5.5 12.6V3.4Z',
       stroke: 'currentColor', strokeLinejoin: 'round',
     }))
     // A gauge for 用量: the arc plus the needle, the universal "how much".
-    const GuideArtworkUsage = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkUsage = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', { key: 'u1', d: 'M2.4 12.2A6.4 6.4 0 0 1 13.6 12.2', stroke: 'currentColor', strokeLinecap: 'round' }),
       React.createElement('path', { key: 'u2', d: 'M8 11.6L10.9 7.6', stroke: 'currentColor', strokeLinecap: 'round' }),
     ])
     // The two-node branch, for the read-only Git slice.
-    const GuideArtworkGit = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkGit = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('circle', { key: 'g1', cx: 4.6, cy: 3.6, r: 1.9, stroke: 'currentColor' }),
       React.createElement('circle', { key: 'g2', cx: 11.4, cy: 8, r: 1.9, stroke: 'currentColor' }),
@@ -10068,11 +10181,32 @@ const SettingsSection = () => {
     ])
 
     const FROG_FILES_ID = 'dsh-sidebar-frog/files'
-    // The kind this tree occupies. Deliberately NOT the product's `files`: that
-    // name belongs to the built-in tree, which keeps it (see the block above).
-    // Spelled once, because the tab definition below, the footer entry point and
-    // the 「加载时展开」default all open the SAME page by it.
+    // The kind this tree occupies WHEN the product's own tree is also on the
+    // strip. Spelled once, because the tab definition below, the footer entry
+    // point and the 「加载时展开」default all open the SAME page by it.
     const FROG_FILES_KIND = 'frog-files'
+    // The product's own file-tree kind (`@deepseek-ai/dsh-client-ui-sidebar-files`
+    // registers it in the `builtin` band). Named here because one setting decides
+    // whether this plugin shadows it — see `frogTreeKind`.
+    const SYSTEM_FILES_KIND = 'files'
+    // The title the takeover tab wears. The product's own word for the tab it
+    // drew, kept: the tab in that slot is still "the file tree", and renaming it
+    // would be a second change on top of the one the user asked for.
+    const SYSTEM_FILES_TITLE = '文件'
+
+    // ── The one recorded decision: which kind OUR tree page occupies ─────────
+    // `systemFileTree` decides it, read ONCE at registration (registerNativeTab)
+    // and recorded here so the footer button, the tab's own popout menu item and
+    // the 「加载时展开」default all name the SAME kind the types were registered
+    // under. Re-reading the store in each of those would let a settings change
+    // between registration and a click name a kind nothing answers for — and the
+    // click would go nowhere, which is the failure this codebase refuses to ship.
+    //
+    //   · `systemFileTree` on  → the product's 文件 tab keeps its own tree
+    //     (watcher and all) and this plugin's tree is the 文件树 tab beside it;
+    //   · `systemFileTree` off → this plugin's tree takes the `files` kind over,
+    //     so the column holds exactly one file tree, in the tab users know.
+    let frogTreeKind = FROG_FILES_KIND
     const FROG_TABS = [
       {
         // 文件树, not 文件: the product's own tab is the 文件 one, and two chips
@@ -10159,10 +10293,58 @@ const SettingsSection = () => {
       kind: spec.kind,
       priority: 'extension',
       title: () => spec.title,
-      // The chooser's row picture. `guide[].icon` is a NODE the guide paints into
-      // a 26px slot, not a component it re-renders per language, so it is built
-      // once here — the same shape the product's own 文件 entry uses.
-      guide: [{ order: spec.order, title: () => spec.title, description: () => spec.description, icon: spec.icon ? spec.icon() : undefined }],
+      // The chooser's row picture goes in as a COMPONENT, not as an element.
+      // `SidebarRightGuideEntry.icon` is typed `ComponentType<IconProps>`, and the
+      // guide body renders it as `<Icon size={26} className={…} />` — the same
+      // shape the product's own CompassGlyph / CubeGlyph / GuideArtworkFiles have.
+      // Calling `spec.icon()` here (as this did) hands React an element OBJECT as
+      // the element type; React rejects it, the throw lands inside the guide's own
+      // render, and because that is the fallback for the whole body the Start page
+      // comes out completely empty — while the tab strip, which is built from the
+      // definitions rather than from the guide, still looks perfectly normal.
+      //
+      // `id` is the entry's own identity: the registry rejects duplicates within a
+      // definition, and the guide passes it to the entry slot. The product's own
+      // entries carry one ("workspace", "new"); `spec.view` is ours, and is unique
+      // per definition by construction.
+      guide: [{
+        id: spec.view,
+        order: spec.order,
+        title: () => spec.title,
+        description: () => spec.description,
+        icon: spec.icon,
+      }],
+    })
+
+    // ── The takeover definition: this plugin's tree in the PRODUCT's 文件 tab ──
+    // `kind: 'files'` at the `extension` band outranks the product's `builtin`
+    // registration, and the registry's own contract says what that means: the
+    // extension is the one in force for claims, `get`, the chooser page, and the
+    // body and title the seat dispatches — and the builtin resumes when this
+    // unregisters. So this one definition is the whole mechanism by which the
+    // column ends up with a single file tree.
+    //
+    // Two details are deliberate:
+    //   · the body registers under THIS `id` (the seat looks a body up by the id
+    //     of the type in force, never by the kind), so the key below is
+    //     FROG_FILES_ID and not 'files';
+    //   · the guide entry reuses the product's own entry `id` ("workspace"), its
+    //     `order` (10) and its `commandId` ("workspace.files"), so the ⌘/Ctrl+P
+    //     shortcut keeps opening this tab and the rest of the chooser does not
+    //     shift around it.
+    const systemFilesDefinition = () => ({
+      id: FROG_FILES_ID,
+      kind: SYSTEM_FILES_KIND,
+      priority: 'extension',
+      title: () => SYSTEM_FILES_TITLE,
+      guide: [{
+        id: 'workspace',
+        order: 10,
+        commandId: 'workspace.files',
+        title: () => SYSTEM_FILES_TITLE,
+        description: () => '本插件的文件树放在系统「文件」这个位置：@引用到输入框、右键菜单、新建/删除、按目录刷新与 A/M 改动字母。系统的实时目录监听随它自己的页面一起停用，改由本插件在产物变化时刷新相应目录；另一个编辑器改动的文件，需要手动刷新一次。想两棵树都在，把「显示系统的文件树」打开。',
+        icon: GuideArtworkFiles,
+      }],
     })
 
     // Register every view as a tab of the column. Returns whether that is now the
@@ -10187,7 +10369,17 @@ const SettingsSection = () => {
     const registerNativeTab = (slots, renderView) => {
       const tabs = sidebarTabs()
       if (!tabs) return false
-      if (!settingsStore.get().nativeFileTree) return false
+      const chosen = settingsStore.get()
+      if (!chosen.nativeFileTree) return false
+      // Which file tree the column gets, decided ONCE here and recorded for the
+      // footer, the tab menu and the default page to agree with (see
+      // `frogTreeKind`). Both settings are read at this one point on purpose: the
+      // pair is what the registration below is built from.
+      const takeover = !chosen.systemFileTree
+      frogTreeKind = takeover ? SYSTEM_FILES_KIND : FROG_FILES_KIND
+      // In takeover mode the tree's own kind is not registered at all — that is
+      // what removes the SECOND tree, and the whole point of the setting.
+      const specs = FROG_TABS.filter((spec) => !(takeover && spec.kind === FROG_FILES_KIND))
       const dropTypes = []
       const rollback = () => {
         for (const drop of dropTypes) {
@@ -10204,7 +10396,8 @@ const SettingsSection = () => {
         // Bound to the fiber ON PURPOSE: the type registrations are exactly what
         // leaked across a hot swap before, and a leaked type is what made the
         // next apply collide and drop to the floating window.
-        for (const spec of FROG_TABS) dropTypes.push(bindLifecycle(() => tabs.register(frogTabDefinition(spec))))
+        if (takeover) dropTypes.push(bindLifecycle(() => tabs.register(systemFilesDefinition())))
+        for (const spec of specs) dropTypes.push(bindLifecycle(() => tabs.register(frogTabDefinition(spec))))
       } catch (e) {
         rollback()
         return false
@@ -10215,7 +10408,19 @@ const SettingsSection = () => {
         // two seats): each `yield` hands the framework that registration's
         // disposer.
         slots.inject('sidebar.right.pane.tab', function* registerFrogBodies() {
-          for (const spec of FROG_TABS) {
+          if (takeover) {
+            // The tree, under the id of the type in force for kind `files` — the
+            // seat dispatches by THAT, not by the kind …
+            yield slots.register({ name: 'sidebar.right.pane.tab', key: FROG_FILES_ID }, renderView('tree'))
+            // … and under the RETIRED kind as well. A session whose saved layout
+            // holds a 文件树 tab opened before this setting was switched finds no
+            // definition for `frog-files` (nothing registers that kind in this
+            // mode), and the seat then dispatches by the bare `tab.kind`. Without
+            // this registration that tab renders the seat's "nothing can view
+            // this" notice — a restored tab must never come back blank.
+            yield slots.register({ name: 'sidebar.right.pane.tab', key: FROG_FILES_KIND }, renderView('tree'))
+          }
+          for (const spec of specs) {
             yield slots.register({ name: 'sidebar.right.pane.tab', key: spec.id }, renderView(spec.view))
           }
           for (const legacy of FROG_LEGACY_TAB_KEYS) {
@@ -10327,7 +10532,10 @@ const SettingsSection = () => {
       const sidebar = shellSidebar()
       if (!sidebar) return false
       try {
-        sidebar.openTab(FROG_FILES_KIND)
+        // `frogTreeKind`, not a constant: the kind this tree is registered under
+        // is whichever one the surface decision picked (see `frogTreeKind`), and
+        // opening anything else would ask the column for a page nothing draws.
+        sidebar.openTab(frogTreeKind)
         return true
       } catch (e) { return false }
     }
@@ -10574,7 +10782,11 @@ const SettingsSection = () => {
       const tab = props && props.tab
       const dismiss = props && props.dismiss
       if (!tab) return null
-      if (FROG_TAB_KINDS.has(tab.kind)) {
+      // Our own views — plus the product's `files` kind when THIS PLUGIN is the
+      // one drawing it. In takeover mode that tab is ours, so it gets our menu
+      // item; while the product draws it, it must not: a foreign tab must not
+      // grow a button that opens this plugin's page.
+      if (FROG_TAB_KINDS.has(tab.kind) || tab.kind === frogTreeKind) {
         return React.createElement('a', {
           className: 'artifacts-menuitem',
           href: popoutHrefFor(currentSessionId()),

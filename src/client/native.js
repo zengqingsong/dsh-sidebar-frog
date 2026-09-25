@@ -23,27 +23,40 @@
     // and the tab menu are all the shell's, and each body draws its view and
     // nothing else.
     //
-    // ── Why the tree is its OWN kind, and no longer the product's `files` ────
-    // This row used to take the product's `files` kind over (the extension band
-    // outranks its `builtin`, so the column's 文件 tab became this tree). That is
-    // no longer what happens, for a reason the product itself created: 0.1.7's
-    // built-in tree grew a live per-directory WATCHER (`workspaceFiles.changes`,
-    // auto-refresh, `data-files-auto-refresh`) that only runs while the product's
-    // own body is the one mounted. A takeover keeps that body off screen, so it
-    // silently suppressed the capability — the tree stopped noticing the files
-    // the agent wrote.
+    // ── Which kind this tree occupies is a SETTING, not a constant ───────────
+    // Two trees on one strip is what the column used to get: the product's 文件
+    // (its own tree, with a live per-directory watcher) and this plugin's 文件树
+    // beside it. They draw the same workspace and only one of them carries
+    // @引用 / 右键菜单 / 新建删除, so the pair reads as the same thing said twice.
     //
-    // So the two get separate kinds and BOTH are on the strip: the product's
-    // `files` stays exactly as it ships (watcher and all), and this tree is its
-    // own tab beside it. Nothing is taken from the product, so nothing has to be
-    // handed back — `nativeFileTree` now only chooses the column over the
-    // floating panel, and the built-in tree is never touched either way.
+    // The registry's band rule is the only lever the product offers over a
+    // builtin tab — a kind may carry one `builtin` and one `extension`, the
+    // extension is the one in force, and the builtin resumes when it unregisters
+    // — so the two arrangements are:
+    //
+    //   · `systemFileTree` OFF (default): this plugin registers an `extension`
+    //     over the product's `files` kind. The column holds ONE file tree, in the
+    //     tab users already know, with every capability this plugin has. What it
+    //     costs is inside the product's body: 0.1.7's tree grew a live watcher
+    //     (`workspaceFiles.changes`, `data-files-auto-refresh`) that only runs
+    //     while ITS body is mounted, so a takeover stops it. That is why the tree
+    //     refreshes the directories its own artifact data says changed (see the
+    //     artifact-path effect in src/client/filetree.js) instead of leaving the
+    //     user to notice a stale row.
+    //   · `systemFileTree` ON: nothing is registered for `files`, so the product
+    //     keeps its tab, its watcher and its auto-refresh exactly as it ships,
+    //     and this plugin's tree is its own 文件树 tab beside it. Nothing is taken
+    //     from the product, so nothing has to be handed back.
+    //
+    // Both settings are read ONCE at registration and recorded in `frogTreeKind`
+    // (below), because the footer button, the tab menu and the default page must
+    // all name the kind that was actually registered.
     //
     // What the product's tree still does not have is the two capabilities this
     // one does — its bundle has no `contextmenu` and no reference action at all.
-    // The reference half is no longer a reason to take the tree over: `@引用`
-    // never depended on this tree in the first place, it writes through the
-    // shell's own `conversation.input.for(...).setDraft` (see quoteToComposer in
+    // The reference half is not a reason to take the tree over: `@引用` never
+    // depended on this tree, it writes through the shell's own
+    // `conversation.input.for(...).setDraft` (see quoteToComposer in
     // src/client/core.js). So it is offered on the PRODUCT's flow too, as a
     // document action in the product's own preview header — see
     // installDocumentActions below. The right-click menu, 新建 / 删除 and the
@@ -78,9 +91,13 @@
     // (`viewBox 0 0 16 16`, `strokeWidth: 1`, `currentColor`) so the whole
     // chooser reads as one set instead of "one product icon and four strangers".
     const guideArtworkSvg = (attrs, children) => React.createElement('svg', attrs, children)
-    const GuideArtworkFiles = () => guideArtworkSvg({
-      width: 36, height: 36, viewBox: '0 0 36 36', fill: 'none',
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    // `IconProps`: `{ size, className }`. The guide renders a guide entry's icon as
+    // `<Icon size={26} className={…} />`, so an artwork that ignores its props
+    // draws at the wrong size — or, if it is not a component at all, takes the
+    // whole chooser down (see the registration below).
+    const GuideArtworkFiles = ({ size = 36, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 36 36', fill: 'none',
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', {
         key: 'f1',
@@ -94,9 +111,9 @@
       }),
     ])
     // The product's IconDeliverDoc: a stack of pages. 产物 is that idea exactly.
-    const GuideArtworkArtifacts = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkArtifacts = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', { key: 'a1', d: 'M6.15479 4.91687H9.84543', stroke: 'currentColor' }),
       React.createElement('path', { key: 'a2', d: 'M11.8798 9.55347V2.71525C11.8798 2.37416 11.564 2.09766 11.1744 2.09766H4.82577C4.43618 2.09766 4.12036 2.37416 4.12036 2.71525V9.55347', stroke: 'currentColor' }),
@@ -106,26 +123,26 @@
     ])
     // A play triangle for 任务 (the product paints its Jobs rows with a state
     // dot, so the glyph — not the colour — carries the meaning).
-    const GuideArtworkJobs = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkJobs = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, React.createElement('path', {
       key: 'j1',
       d: 'M5.5 3.4L12.2 8L5.5 12.6V3.4Z',
       stroke: 'currentColor', strokeLinejoin: 'round',
     }))
     // A gauge for 用量: the arc plus the needle, the universal "how much".
-    const GuideArtworkUsage = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkUsage = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('path', { key: 'u1', d: 'M2.4 12.2A6.4 6.4 0 0 1 13.6 12.2', stroke: 'currentColor', strokeLinecap: 'round' }),
       React.createElement('path', { key: 'u2', d: 'M8 11.6L10.9 7.6', stroke: 'currentColor', strokeLinecap: 'round' }),
     ])
     // The two-node branch, for the read-only Git slice.
-    const GuideArtworkGit = () => guideArtworkSvg({
-      width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
-      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true,
+    const GuideArtworkGit = ({ size = 16, className } = {}) => guideArtworkSvg({
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none', strokeWidth: 1,
+      xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': true, className,
     }, [
       React.createElement('circle', { key: 'g1', cx: 4.6, cy: 3.6, r: 1.9, stroke: 'currentColor' }),
       React.createElement('circle', { key: 'g2', cx: 11.4, cy: 8, r: 1.9, stroke: 'currentColor' }),
@@ -134,11 +151,32 @@
     ])
 
     const FROG_FILES_ID = 'dsh-sidebar-frog/files'
-    // The kind this tree occupies. Deliberately NOT the product's `files`: that
-    // name belongs to the built-in tree, which keeps it (see the block above).
-    // Spelled once, because the tab definition below, the footer entry point and
-    // the 「加载时展开」default all open the SAME page by it.
+    // The kind this tree occupies WHEN the product's own tree is also on the
+    // strip. Spelled once, because the tab definition below, the footer entry
+    // point and the 「加载时展开」default all open the SAME page by it.
     const FROG_FILES_KIND = 'frog-files'
+    // The product's own file-tree kind (`@deepseek-ai/dsh-client-ui-sidebar-files`
+    // registers it in the `builtin` band). Named here because one setting decides
+    // whether this plugin shadows it — see `frogTreeKind`.
+    const SYSTEM_FILES_KIND = 'files'
+    // The title the takeover tab wears. The product's own word for the tab it
+    // drew, kept: the tab in that slot is still "the file tree", and renaming it
+    // would be a second change on top of the one the user asked for.
+    const SYSTEM_FILES_TITLE = '文件'
+
+    // ── The one recorded decision: which kind OUR tree page occupies ─────────
+    // `systemFileTree` decides it, read ONCE at registration (registerNativeTab)
+    // and recorded here so the footer button, the tab's own popout menu item and
+    // the 「加载时展开」default all name the SAME kind the types were registered
+    // under. Re-reading the store in each of those would let a settings change
+    // between registration and a click name a kind nothing answers for — and the
+    // click would go nowhere, which is the failure this codebase refuses to ship.
+    //
+    //   · `systemFileTree` on  → the product's 文件 tab keeps its own tree
+    //     (watcher and all) and this plugin's tree is the 文件树 tab beside it;
+    //   · `systemFileTree` off → this plugin's tree takes the `files` kind over,
+    //     so the column holds exactly one file tree, in the tab users know.
+    let frogTreeKind = FROG_FILES_KIND
     const FROG_TABS = [
       {
         // 文件树, not 文件: the product's own tab is the 文件 one, and two chips
@@ -225,10 +263,58 @@
       kind: spec.kind,
       priority: 'extension',
       title: () => spec.title,
-      // The chooser's row picture. `guide[].icon` is a NODE the guide paints into
-      // a 26px slot, not a component it re-renders per language, so it is built
-      // once here — the same shape the product's own 文件 entry uses.
-      guide: [{ order: spec.order, title: () => spec.title, description: () => spec.description, icon: spec.icon ? spec.icon() : undefined }],
+      // The chooser's row picture goes in as a COMPONENT, not as an element.
+      // `SidebarRightGuideEntry.icon` is typed `ComponentType<IconProps>`, and the
+      // guide body renders it as `<Icon size={26} className={…} />` — the same
+      // shape the product's own CompassGlyph / CubeGlyph / GuideArtworkFiles have.
+      // Calling `spec.icon()` here (as this did) hands React an element OBJECT as
+      // the element type; React rejects it, the throw lands inside the guide's own
+      // render, and because that is the fallback for the whole body the Start page
+      // comes out completely empty — while the tab strip, which is built from the
+      // definitions rather than from the guide, still looks perfectly normal.
+      //
+      // `id` is the entry's own identity: the registry rejects duplicates within a
+      // definition, and the guide passes it to the entry slot. The product's own
+      // entries carry one ("workspace", "new"); `spec.view` is ours, and is unique
+      // per definition by construction.
+      guide: [{
+        id: spec.view,
+        order: spec.order,
+        title: () => spec.title,
+        description: () => spec.description,
+        icon: spec.icon,
+      }],
+    })
+
+    // ── The takeover definition: this plugin's tree in the PRODUCT's 文件 tab ──
+    // `kind: 'files'` at the `extension` band outranks the product's `builtin`
+    // registration, and the registry's own contract says what that means: the
+    // extension is the one in force for claims, `get`, the chooser page, and the
+    // body and title the seat dispatches — and the builtin resumes when this
+    // unregisters. So this one definition is the whole mechanism by which the
+    // column ends up with a single file tree.
+    //
+    // Two details are deliberate:
+    //   · the body registers under THIS `id` (the seat looks a body up by the id
+    //     of the type in force, never by the kind), so the key below is
+    //     FROG_FILES_ID and not 'files';
+    //   · the guide entry reuses the product's own entry `id` ("workspace"), its
+    //     `order` (10) and its `commandId` ("workspace.files"), so the ⌘/Ctrl+P
+    //     shortcut keeps opening this tab and the rest of the chooser does not
+    //     shift around it.
+    const systemFilesDefinition = () => ({
+      id: FROG_FILES_ID,
+      kind: SYSTEM_FILES_KIND,
+      priority: 'extension',
+      title: () => SYSTEM_FILES_TITLE,
+      guide: [{
+        id: 'workspace',
+        order: 10,
+        commandId: 'workspace.files',
+        title: () => SYSTEM_FILES_TITLE,
+        description: () => '本插件的文件树放在系统「文件」这个位置：@引用到输入框、右键菜单、新建/删除、按目录刷新与 A/M 改动字母。系统的实时目录监听随它自己的页面一起停用，改由本插件在产物变化时刷新相应目录；另一个编辑器改动的文件，需要手动刷新一次。想两棵树都在，把「显示系统的文件树」打开。',
+        icon: GuideArtworkFiles,
+      }],
     })
 
     // Register every view as a tab of the column. Returns whether that is now the
@@ -253,7 +339,17 @@
     const registerNativeTab = (slots, renderView) => {
       const tabs = sidebarTabs()
       if (!tabs) return false
-      if (!settingsStore.get().nativeFileTree) return false
+      const chosen = settingsStore.get()
+      if (!chosen.nativeFileTree) return false
+      // Which file tree the column gets, decided ONCE here and recorded for the
+      // footer, the tab menu and the default page to agree with (see
+      // `frogTreeKind`). Both settings are read at this one point on purpose: the
+      // pair is what the registration below is built from.
+      const takeover = !chosen.systemFileTree
+      frogTreeKind = takeover ? SYSTEM_FILES_KIND : FROG_FILES_KIND
+      // In takeover mode the tree's own kind is not registered at all — that is
+      // what removes the SECOND tree, and the whole point of the setting.
+      const specs = FROG_TABS.filter((spec) => !(takeover && spec.kind === FROG_FILES_KIND))
       const dropTypes = []
       const rollback = () => {
         for (const drop of dropTypes) {
@@ -270,7 +366,8 @@
         // Bound to the fiber ON PURPOSE: the type registrations are exactly what
         // leaked across a hot swap before, and a leaked type is what made the
         // next apply collide and drop to the floating window.
-        for (const spec of FROG_TABS) dropTypes.push(bindLifecycle(() => tabs.register(frogTabDefinition(spec))))
+        if (takeover) dropTypes.push(bindLifecycle(() => tabs.register(systemFilesDefinition())))
+        for (const spec of specs) dropTypes.push(bindLifecycle(() => tabs.register(frogTabDefinition(spec))))
       } catch (e) {
         rollback()
         return false
@@ -281,7 +378,19 @@
         // two seats): each `yield` hands the framework that registration's
         // disposer.
         slots.inject('sidebar.right.pane.tab', function* registerFrogBodies() {
-          for (const spec of FROG_TABS) {
+          if (takeover) {
+            // The tree, under the id of the type in force for kind `files` — the
+            // seat dispatches by THAT, not by the kind …
+            yield slots.register({ name: 'sidebar.right.pane.tab', key: FROG_FILES_ID }, renderView('tree'))
+            // … and under the RETIRED kind as well. A session whose saved layout
+            // holds a 文件树 tab opened before this setting was switched finds no
+            // definition for `frog-files` (nothing registers that kind in this
+            // mode), and the seat then dispatches by the bare `tab.kind`. Without
+            // this registration that tab renders the seat's "nothing can view
+            // this" notice — a restored tab must never come back blank.
+            yield slots.register({ name: 'sidebar.right.pane.tab', key: FROG_FILES_KIND }, renderView('tree'))
+          }
+          for (const spec of specs) {
             yield slots.register({ name: 'sidebar.right.pane.tab', key: spec.id }, renderView(spec.view))
           }
           for (const legacy of FROG_LEGACY_TAB_KEYS) {
@@ -393,7 +502,10 @@
       const sidebar = shellSidebar()
       if (!sidebar) return false
       try {
-        sidebar.openTab(FROG_FILES_KIND)
+        // `frogTreeKind`, not a constant: the kind this tree is registered under
+        // is whichever one the surface decision picked (see `frogTreeKind`), and
+        // opening anything else would ask the column for a page nothing draws.
+        sidebar.openTab(frogTreeKind)
         return true
       } catch (e) { return false }
     }
@@ -640,7 +752,11 @@
       const tab = props && props.tab
       const dismiss = props && props.dismiss
       if (!tab) return null
-      if (FROG_TAB_KINDS.has(tab.kind)) {
+      // Our own views — plus the product's `files` kind when THIS PLUGIN is the
+      // one drawing it. In takeover mode that tab is ours, so it gets our menu
+      // item; while the product draws it, it must not: a foreign tab must not
+      // grow a button that opens this plugin's page.
+      if (FROG_TAB_KINDS.has(tab.kind) || tab.kind === frogTreeKind) {
         return React.createElement('a', {
           className: 'artifacts-menuitem',
           href: popoutHrefFor(currentSessionId()),
