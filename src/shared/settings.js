@@ -10,6 +10,16 @@
 // storage key itself lives in src/shared/bridge.js.
 var DEFAULT_SETTINGS = {
   autoRefresh: true,   // poll the artifact list while the panel is open
+  // Whether the FILE TREE follows that poll. Off (the default) is deliberate:
+  // every artifact change used to re-read a directory (a row spinner, a flash)
+  // and repaint the whole panel, which during an active session read as "the
+  // tree keeps refreshing by itself" and cost more than it was worth. Off, the
+  // tree reads a directory only when the user asks (the toolbar 刷新 button, F5,
+  // the per-folder 「仅刷新此目录」), when this plugin created or deleted
+  // something, or when the workspace changed — and the refresh button reloads
+  // the ledger too, so a manual refresh is complete. On restores the follow
+  // (quietly: a background re-read shows no spinner and no flash).
+  treeAutoRefresh: false,
   defaultPanelWidth: 26, // panel width on load / before any drag, as % of window width
   minPanelWidth: 20,   // minimum panel width as % of window width
   showFileTree: true,  // show the 文件树 (file tree) tab

@@ -59,15 +59,19 @@ export const runPopoutTree = async (html) => {
   const check = async (label, fn) => {
     try { results.push({ label, detail: await fn() }) } catch (e) { results.push({ label, error: e && e.message ? e.message : String(e) }) }
   }
+  // The ledger the /data route answers with. It starts EMPTY (the selection test
+  // below depends on that) and is mutated by the poll tests at the end.
+  let ledger = []
   const page = bootPage(html, {
     storage: { 'dsh-sidebar-frog:session': 's1' },
     extra: `
       function __treeExpanded() {
         return Object.keys(treeExpanded).filter(function (k) { return treeExpanded[k]; });
-      }`,
-    expose: ['setView', '__treeExpanded'],
+      }
+      function __setTreeAuto(v) { SETTINGS.treeAutoRefresh = v; }`,
+    expose: ['setView', '__treeExpanded', 'load', '__setTreeAuto'],
     routes: {
-      '/dsh-sidebar-frog/data': () => ({ ok: true, artifacts: [] }),
+      '/dsh-sidebar-frog/data': () => ({ ok: true, artifacts: ledger }),
       '/dsh-sidebar-frog/listdir': (u) => {
         const m = /[?&]path=([^&]*)/.exec(u)
         const path = m ? unquote(m[1]) : ROOT
@@ -266,6 +270,77 @@ export const runPopoutTree = async (html) => {
     if (page.document.body.querySelector('.tree-menu')) throw new Error('the menu stayed open')
     return 'collapsed and closed'
   })
+
+  // ── the 2 s poll repaints only what changed, and the tree only on request ──
+  // The poll used to call render() AND renderTree() on every heartbeat, and
+  // renderTree() rebuilds every row — so the whole tree was torn down and
+  // rebuilt every two seconds whether or not anything had happened. Node
+  // IDENTITY is the observable here: a rebuilt row (or list row) is a different
+  // object, so "the same node is still there" means nothing was repainted.
+  // Three rules are pinned, in order:
+  //   · an unchanged ledger repaints NOTHING;
+  //   · a changed ledger repaints the LEDGER LIST, and NOT the tree, because
+  //     「文件树自动刷新」is off by default — the tree is a manual read;
+  //   · with the setting on, a changed ledger DOES repaint the tree.
+  {
+    // A ROOT-level row: the earlier scenarios left every folder collapsed, so a
+    // nested path would not be on screen at all. The row's node is what
+    // renderTree() rebuilds, which is the whole observable here.
+    ledger = [{ path: 'D:/ws/README.md', kind: 'edit', at: 1 }]
+    page.api.setView('tree')
+    await page.api.load()
+    await tick(90)
+    const treeBody = page.document.getElementById('treeBody')
+    const rowOf = (p) => treeBody.querySelectorAll('.tree-row').find((el) => el.getAttribute('data-path') === p)
+    const listItem = () => page.document.getElementById('list').querySelectorAll('.item')[0]
+
+    const rowBefore = rowOf('D:/ws/README.md')
+    const listBefore = listItem()
+    await page.api.load()
+    await tick(60)
+    await check('popout: an unchanged ledger poll repaints nothing', () => {
+      if (!rowBefore) throw new Error('the fixture tree row never rendered')
+      if (!listBefore) throw new Error('the fixture ledger row never rendered')
+      if (rowOf('D:/ws/README.md') !== rowBefore) throw new Error('the tree was rebuilt from an unchanged ledger')
+      if (listItem() !== listBefore) throw new Error('the ledger list was rebuilt from an unchanged ledger')
+      return 'tree and list identities preserved'
+    })
+
+    const rowBefore2 = rowOf('D:/ws/README.md')
+    const listBefore2 = listItem()
+    ledger = ledger.concat([{ path: 'D:/ws/docs/new.md', kind: 'create', at: 2 }])
+    await page.api.load()
+    await tick(60)
+    await check('popout: a changed ledger repaints the list, not the tree (auto off)', () => {
+      if (listItem() === listBefore2) throw new Error('a changed ledger did not repaint the ledger list')
+      if (rowOf('D:/ws/README.md') !== rowBefore2) throw new Error('the tree followed the ledger although 「文件树自动刷新」is off')
+      return 'list repainted, tree untouched'
+    })
+
+    page.api.__setTreeAuto(true)
+    const rowBefore3 = rowOf('D:/ws/README.md')
+    ledger = ledger.concat([{ path: 'D:/ws/docs/on.md', kind: 'create', at: 3 }])
+    await page.api.load()
+    await tick(60)
+    await check('popout: with 「文件树自动刷新」on the tree follows the ledger', () => {
+      if (rowOf('D:/ws/README.md') === rowBefore3) throw new Error('the tree did not follow a changed ledger with the setting on')
+      return 'tree repainted'
+    })
+
+    // The popout's own 刷新 button is the manual way back, and it must read both
+    // halves: the directories (loadTreeRoot) and the artifact ledger the A/M
+    // letters come from. A button that reads only the tree leaves every letter
+    // stale — the same rule as the sidebar's manualRefresh.
+    page.api.__setTreeAuto(false)
+    const dataCalls = () => page.calls.filter((c) => c.indexOf('/dsh-sidebar-frog/data') === 0).length
+    const before = dataCalls()
+    page.els('treeRefresh').click()
+    await tick(80)
+    await check('popout: the manual 刷新 re-reads the ledger too', () => {
+      if (dataCalls() <= before) throw new Error('the 刷新 button did not reload the artifact ledger')
+      return 'ledger re-read'
+    })
+  }
 
   page.stop()
   return results
@@ -519,7 +594,13 @@ const mountSidebar = (store, options) => {
     addEventListener: () => {},
     removeEventListener: () => {},
   }
-  const r = createRenderer(() => null, { items: [], onOpen: () => {}, selectedPath: null, pinnedPath: null })
+  // `opts.props` lets a scenario turn on 「文件树自动刷新」 (the `autoRefresh` prop)
+  // or hand the tree a manual-refresh callback; the default is the SHIPPING one —
+  // automatic follow OFF — because that is what every user gets.
+  const r = createRenderer(() => null, Object.assign(
+    { items: [], onOpen: () => {}, selectedPath: null, pinnedPath: null },
+    opts.props || {},
+  ))
   // The tree portals its context menu to <body> (a `position: fixed` menu left
   // inside the panel is measured from the panel, not the viewport — see
   // src/client/filetree.js). This stub records the portal the way React would
@@ -1327,7 +1408,7 @@ export const runSidebarTree = async () => {
         return Promise.resolve({ ok: true, path, entries: FS[path] || [] })
       },
     }
-    const sync = mountSidebar({}, { host: refreshHost })
+    const sync = mountSidebar({}, { host: refreshHost, props: { autoRefresh: true } })
     launch.push(sync)
     await sync.flush(80)
     sync.clickRow('D:/ws/src', 1)   // a level has to be LOADED before it can be refreshed
@@ -1380,6 +1461,53 @@ export const runSidebarTree = async () => {
         throw new Error('the root level was never re-read (asked: ' + JSON.stringify(asked) + ')')
       }
       return 'root re-read: ' + JSON.stringify([...new Set(asked)])
+    })
+  }
+
+  // ── 「文件树自动刷新」off (the DEFAULT): the poll reads no directory ────────
+  // This is the arrangement that ships. The failure it guards against is exactly
+  // the reported one: a "manual" mode that still followed the ledger, so the tree
+  // kept re-reading directories and repainting itself during an active session.
+  {
+    const asked = []
+    const manualHost = {
+      call: (method, args) => {
+        if (method !== 'artifacts.listDir') return Promise.resolve({ ok: false, error: 'unknown ' + method })
+        const path = (args && args.path) || ROOT
+        asked.push(path)
+        return Promise.resolve({ ok: true, path, entries: FS[path] || [] })
+      },
+    }
+    let reloads = 0
+    const manual = mountSidebar({}, {
+      host: manualHost,
+      props: { onRefresh: () => { reloads += 1 } },
+    })
+    launch.push(manual)
+    await manual.flush(80)
+    manual.clickRow('D:/ws/src', 1)   // a level the tree HAS read — the tempting one
+    await manual.flush(60)
+    asked.length = 0
+
+    manual.renderer.setProps({ items: [{ path: 'D:/ws/src/new.js', kind: 'create' }] })
+    await manual.flush(140)
+    await check('sidebar: with 「文件树自动刷新」off a changed ledger reads no directory', () => {
+      if (asked.length) throw new Error('the tree followed the ledger although the setting is off (asked: ' + JSON.stringify(asked) + ')')
+      return 'no directory read'
+    })
+
+    // …and the toolbar refresh is the way back, reading BOTH halves: the expanded
+    // directories AND the artifact ledger the change letters come from. A manual
+    // refresh that re-read only the directories would leave every A/M letter
+    // stale the moment 「自动刷新」is off.
+    manual.clickTool('刷新已展开的目录并重读产物台账（F5）· Shift+点击：整棵树重新加载')
+    await manual.flush(160)
+    await check('sidebar: the manual refresh re-reads the directory AND the ledger', () => {
+      if (asked.indexOf('D:/ws/src') < 0) {
+        throw new Error('the manual refresh did not re-read the expanded level (asked: ' + JSON.stringify(asked) + ')')
+      }
+      if (reloads < 1) throw new Error('the manual refresh did not reload the artifact ledger')
+      return 'directory + ledger'
     })
   }
 

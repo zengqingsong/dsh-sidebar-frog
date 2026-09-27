@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = 'f15f5ace'
+          const BUILD = 'cb6a7e45'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -304,6 +304,16 @@ window.__ModuleLoader__.load({
     // storage key itself lives in src/shared/bridge.js.
     var DEFAULT_SETTINGS = {
       autoRefresh: true,   // poll the artifact list while the panel is open
+      // Whether the FILE TREE follows that poll. Off (the default) is deliberate:
+      // every artifact change used to re-read a directory (a row spinner, a flash)
+      // and repaint the whole panel, which during an active session read as "the
+      // tree keeps refreshing by itself" and cost more than it was worth. Off, the
+      // tree reads a directory only when the user asks (the toolbar 刷新 button, F5,
+      // the per-folder 「仅刷新此目录」), when this plugin created or deleted
+      // something, or when the workspace changed — and the refresh button reloads
+      // the ledger too, so a manual refresh is complete. On restores the follow
+      // (quietly: a background re-read shows no spinner and no flash).
+      treeAutoRefresh: false,
       defaultPanelWidth: 26, // panel width on load / before any drag, as % of window width
       minPanelWidth: 20,   // minimum panel width as % of window width
       showFileTree: true,  // show the 文件树 (file tree) tab
@@ -6608,6 +6618,11 @@ const FileTree = (props) => {
   const [creating, setCreating] = React.useState(null)   // { parent, kind, name, error, busy }
 
   const rootTimer = React.useRef(null)
+  // In-flight guard for the QUIET (automatic) directory reads, kept out of the
+  // rendered `busy` map on purpose: `busy` spins a row's refresh button and
+  // pins its action buttons open, and an automatic read must move nothing the
+  // user can see. This only answers "is a read for this level already running".
+  const autoBusy = React.useRef({})
   const copyTimer = React.useRef(null)
   const flashTimer = React.useRef(null)
   const searchTimer = React.useRef(null)
@@ -6681,11 +6696,16 @@ const FileTree = (props) => {
   // Reload the workspace root level. `hard` throws every cached level and the
   // expansion state away (workspace switch); the default keeps both, so
   // refreshing never collapses the tree under the user.
-  const loadRoot = (hard) => {
+  //
+  // `quiet` is the automatic (artifact-driven) read: it must not animate the
+  // toolbar (no `loading` spinner) and must not paint a transient failure over
+  // rows the user is reading. A manual refresh leaves it off, so the spinner is
+  // true feedback for a gesture rather than a heartbeat.
+  const loadRoot = (hard, quiet) => {
     clearTimeout(rootTimer.current)
     apply((prev) => (hard
       ? { root: null, loading: true, error: null, children: {}, expanded: {}, busy: {} }
-      : { ...prev, loading: true }))
+      : (quiet ? prev : { ...prev, loading: true })))
     // A freshly switched-to workspace may not be resolvable on the host for a
     // beat (its session is still loading/persisting). Retry briefly.
     const attempt = (tries) => {
@@ -6696,8 +6716,9 @@ const FileTree = (props) => {
         }
         apply((prev) => {
           // A failed refresh keeps the rows already on screen and only reports
-          // the reason — a transient error must not blank the whole tree.
-          if (res.error) return { ...prev, loading: false, error: res.error }
+          // the reason — a transient error must not blank the whole tree. A
+          // QUIET read reports nothing at all: it was never asked for.
+          if (res.error) return quiet ? prev : { ...prev, loading: false, error: res.error }
           const children = { ...prev.children }
           const expanded = { ...prev.expanded }
           pruneMissing(children, expanded, prev.root && prev.root.entries, res.entries)
@@ -6754,7 +6775,30 @@ const FileTree = (props) => {
 
   // Re-read ONE directory. Rows already loaded stay visible while the request
   // is in flight (the row spins); nothing else in the tree is touched.
-  const refreshDir = (path) => {
+  //
+  // `quiet` is the automatic (artifact-driven) read, and it shares none of the
+  // manual path's visible side effects: no `busy` (which spins the row's own
+  // refresh button and pins its action buttons open), no `refreshing`, no
+  // flash, and above all no `expanded[path] = true` — announcing a change
+  // somewhere is not a reason to open a folder the user had collapsed. A failed
+  // quiet read reports nothing: an error row the user never asked for is noise.
+  const refreshDir = (path, quiet) => {
+    if (quiet) {
+      if (autoBusy.current[path]) return
+      autoBusy.current[path] = true
+      fetchDir(path).then((res) => {
+        delete autoBusy.current[path]
+        if (res.error) return
+        apply((prev) => {
+          const node = prev.children[path] || {}
+          const children = { ...prev.children, [path]: { entries: res.entries } }
+          const expanded = { ...prev.expanded }
+          pruneMissing(children, expanded, node.entries, res.entries)
+          return { ...prev, children, expanded }
+        })
+      })
+      return
+    }
     if (treeRef.current.busy[path]) return
     apply((prev) => {
       const node = prev.children[path] || {}
@@ -6843,6 +6887,21 @@ const FileTree = (props) => {
     dirs.slice(0, 60).forEach((p) => refreshDir(p))
   }
 
+  // The one MANUAL refresh — the toolbar button, its Shift form and F5. A gesture
+  // that says "read the workspace again" must read both halves the tree draws
+  // from: the directories below, and the artifact ledger the A/M letters come
+  // from. With 「文件树自动刷新」off the ledger would otherwise hold whatever it
+  // held when the panel mounted, so a file the agent wrote would get its row but
+  // no change letter — a manual refresh that leaves half the view stale is not a
+  // manual refresh. `props.onRefresh` is the parent's ledger read; when no parent
+  // supplies one (the tree is mounted bare, as the test harness does), the
+  // directory read still happens.
+  const manualRefresh = (hard) => {
+    if (typeof props.onRefresh === 'function') props.onRefresh()
+    if (hard) loadRoot(true)
+    else refreshExpanded()
+  }
+
   // ── helpers ─────────────────────────────────────────────────────────────
   const rootPath = tree.root && tree.root.path ? tree.root.path : ''
 
@@ -6922,18 +6981,26 @@ const FileTree = (props) => {
   // src/shared/settings.js) the product's own body is not mounted, and its live
   // per-directory watcher lives INSIDE that body. Nothing pushes changes at us
   // any more. What we do have is the artifact list: the paths the agent created
-  // or edited, re-polled every couple of seconds. Diffing that set covers the case
-  // that actually happens here — a file appears, a file is gone — and it re-reads
-  // ONLY the levels whose contents changed, so it is not a workspace-wide poll.
+  // or edited, re-polled every couple of seconds.
   //
-  // It deliberately does not try to be a watcher: a file changed by another editor
-  // still needs the manual refresh. Turning 「显示系统的文件树」on hands the
-  // product's watcher back and this becomes a cheap no-op — the same entries come
-  // back, so nothing in the tree moves.
+  // Following that list is now a SETTING (「文件树自动刷新」, off by default),
+  // because it was the single most expensive thing this panel did: every path
+  // that appeared or vanished re-read a directory and repainted the panel, which
+  // during any active session read as "the tree keeps refreshing by itself".
+  // With the setting off, the tree is read only when the user asks (the toolbar
+  // 刷新 button — which also reloads the ledger —, F5, 「仅刷新此目录」), when
+  // this plugin created or deleted something, or when the workspace changed.
+  // That is a complete manual arrangement, and it is what the switch is FOR.
+  //
+  // Even when it IS on the read is `quiet`: it re-reads ONLY the levels whose
+  // contents changed, and it moves nothing the user can see (see the `quiet`
+  // branches of loadRoot / refreshDir). Turning 「显示系统的文件树」on hands the
+  // product's watcher back and this becomes a cheap no-op anyway.
   const artifactPaths = (Array.isArray(props.items) ? props.items : [])
     .map((it) => (it && typeof it.path === 'string' ? it.path : ''))
     .filter(Boolean)
   const artifactKey = artifactPaths.join('\n')
+  const autoFollow = props.autoRefresh === true
   const lastArtifactPaths = React.useRef(null)
   React.useEffect(() => {
     const previous = lastArtifactPaths.current
@@ -6941,6 +7008,10 @@ const FileTree = (props) => {
     // The first run records the baseline only: the tree has just mounted and reads
     // its levels on demand, so there is nothing to refresh yet.
     if (previous === null) return
+    // Manual mode. The baseline above is still advanced, so switching the setting
+    // on later compares against what the ledger holds AT THAT MOMENT rather than
+    // replaying every change that happened while it was off.
+    if (!autoFollow) return
     const had = new Set(previous)
     const has = new Set(artifactPaths)
     const changed = []
@@ -6956,15 +7027,14 @@ const FileTree = (props) => {
       if (parent && parent !== rootPath && pathRelativeTo(parent, rootPath) !== '') dirs.add(parent)
       else rootStale = true
     }
-    if (rootStale) loadRoot(false)
+    if (rootStale) loadRoot(false, true)
     for (const dir of dirs) {
-      // Only a level this tree has ALREADY read. refreshDir marks a path EXPANDED
-      // as a side effect, and expanding folders the user had collapsed — to
-      // announce a change somewhere inside them — is not a refresh, it is a
-      // hijack of their layout.
-      if (treeRef.current.children[dir]) refreshDir(dir)
+      // Only a level this tree has ALREADY read. A quiet refreshDir does not
+      // expand anything (see its `quiet` branch), and a level the tree never
+      // read is not worth opening behind the user's back to announce a change.
+      if (treeRef.current.children[dir]) refreshDir(dir, true)
     }
-  }, [artifactKey])
+  }, [artifactKey, autoFollow])
 
   // The directory a 新建 should land in, for the row the person aimed at: a
   // folder takes the entry INSIDE itself, a file takes its own directory (a
@@ -7284,7 +7354,7 @@ const FileTree = (props) => {
       openEntry(cur.entry, false)
       return
     }
-    if (key === 'F5') { ev.preventDefault(); refreshExpanded(); return }
+    if (key === 'F5') { ev.preventDefault(); manualRefresh(false); return }
     if (key === 'Escape') {
       if (menu) { setMenu(null); return }
       if (query) { setQueryText(''); return }
@@ -7778,9 +7848,9 @@ const FileTree = (props) => {
         React.createElement('button', {
           type: 'button',
           className: 'artifacts-tree-refresh' + (tree.loading ? ' is-busy' : ''),
-          title: '刷新已展开的目录（F5）· Shift+点击：整棵树重新加载',
+          title: '刷新已展开的目录并重读产物台账（F5）· Shift+点击：整棵树重新加载',
           'aria-label': '刷新',
-          onClick: (e) => (e.shiftKey ? loadRoot(true) : refreshExpanded()),
+          onClick: (e) => manualRefresh(!!e.shiftKey),
         }, RefreshIcon(14)),
       ),
     ),
@@ -8477,7 +8547,14 @@ const ArtifactsContent = (props) => {
   // poll that returns the identical list does not wake a `git status`, which on a
   // large repository is the most expensive thing this panel could ask for.
   const [artifactTick, setArtifactTick] = React.useState(0)
-  const ledgerSig = React.useRef('')
+  // null, not '': the FIRST answer must count as a change even when it is the
+  // empty list (''), or a panel whose ledger is empty would never paint at all.
+  const ledgerSig = React.useRef(null)
+  // The manual refresh the file tree asks for (its toolbar 刷新 button and F5):
+  // a stable handle on the CURRENT loader, which lives inside an effect keyed by
+  // `active` and `settings.autoRefresh` and is therefore not reachable from the
+  // tree's own props. See `manualRefresh` in src/client/filetree.js.
+  const reloadLedger = React.useRef(null)
   // Files opened as TABS inside this panel. Clicking a file (in the artifact list
   // or the tree) adds it here and switches to it; the tab then owns the panel's
   // FULL width. That is the point: a sidebar is too narrow to show a preview
@@ -8547,28 +8624,34 @@ const ArtifactsContent = (props) => {
   React.useEffect(() => {
     if (!active) return
     let alive = true
-    const load = () => {
-      host.call('artifacts.list').then((res) => {
-        if (!alive) return
-        const next = res && Array.isArray(res.artifacts) ? res.artifacts : []
+    const load = () => host.call('artifacts.list').then((res) => {
+      if (!alive) return
+      const next = res && Array.isArray(res.artifacts) ? res.artifacts : []
+      // The host states its own build in the same answer, so the settings panel
+      // can name which half is stale after a rebuild (see hostBuildStore).
+      if (res && typeof res.build === 'string') hostBuildStore.set(res.build)
+      // ONE signature decides both the state write and the tick the Git view
+      // follows. This used to call setItems(next) on EVERY poll, and next is a
+      // fresh array even when its contents are identical — so a 2 s heartbeat
+      // re-rendered the whole panel (tree included, once 「文件树自动刷新」is on)
+      // while nothing had changed. That is the "the tree keeps refreshing" report
+      // this guards against: a poll that returns the identical ledger now writes
+      // no state at all, and React bails out of the render.
+      const sig = next.map((a) => a.path + '@' + a.at + '#' + ((a.history && a.history.length) || 0)).join('|')
+      if (sig !== ledgerSig.current) {
+        ledgerSig.current = sig
         setItems(next)
-        setError(null)
-        // The host states its own build in the same answer, so the settings panel
-        // can name which half is stale after a rebuild (see hostBuildStore).
-        if (res && typeof res.build === 'string') hostBuildStore.set(res.build)
-        const sig = next.map((a) => a.path + '@' + a.at + '#' + ((a.history && a.history.length) || 0)).join('|')
-        if (sig !== ledgerSig.current) {
-          ledgerSig.current = sig
-          setArtifactTick((n) => n + 1)
-        }
-      }).catch((e) => {
-        if (alive) setError(e && e.message ? String(e.message) : String(e))
-      })
-    }
+        setArtifactTick((n) => n + 1)
+      }
+      setError(null)
+    }).catch((e) => {
+      if (alive) setError(e && e.message ? String(e.message) : String(e))
+    })
+    reloadLedger.current = load
     load()
     let dispose
     if (settings.autoRefresh) dispose = ctx.interval(load, 2000)
-    return () => { alive = false; if (dispose) dispose() }
+    return () => { alive = false; reloadLedger.current = null; if (dispose) dispose() }
   }, [active, settings.autoRefresh])
 
   // Publish the current session id to localStorage so the standalone
@@ -9101,6 +9184,13 @@ const ArtifactsContent = (props) => {
           pinnedPath: null,
           // The artifact records double as the explorer's change letters (A/M).
           items: items,
+          // 「文件树自动刷新」: whether the tree follows the artifact poll, or is
+          // read only by its own manual refresh (see the artifact-path effect in
+          // src/client/filetree.js). The ledger's own poll is 「自动刷新」.
+          autoRefresh: settings.treeAutoRefresh,
+          // The manual refresh's other half: the tree re-reads its directories,
+          // this reloads the ledger those A/M letters come from.
+          onRefresh: () => { const fn = reloadLedger.current; return fn ? fn() : undefined },
           // The seat's own session, so every directory read is fenced to THIS
           // tab's workspace (see seatSessionId in src/client/filetree.js).
           sessionId: seatSessionId,
@@ -9323,6 +9413,18 @@ const SettingsSection = () => {
         desc: '开启后侧边栏展开时将即时同步并更新产物列表',
         value: settings.autoRefresh,
         onToggle: (v) => set('autoRefresh', v),
+      }),
+      // The tree's OWN follow, separate from the ledger's poll above because the
+      // two answer different questions: 「自动刷新」 is "does the 产物 ledger keep
+      // up", this is "does the file tree re-read directories by itself". It was
+      // the expensive half — every artifact change re-read a directory and
+      // repainted the panel — so it is off by default and the tree is read by its
+      // own 刷新 / F5 / 右键「仅刷新此目录」, by 新建/删除, and on a workspace switch.
+      React.createElement(SettingsToggle, {
+        label: '文件树自动刷新',
+        desc: '开启后文件树会跟随产物变化自动重读相应目录（后台刷新，不显示转圈）。关闭（默认）：文件树只在手动刷新（工具条刷新 / F5 / 右键「仅刷新此目录」，工具条刷新同时重读产物台账）、新建或删除、以及切换工作区时读取目录，会话进行中不再自动刷新。',
+        value: settings.treeAutoRefresh,
+        onToggle: (v) => set('treeAutoRefresh', v),
       }),
       // Floating-only, like the width preferences above and for the same reason:
       // it switches THIS panel's band between its views. On the native surface

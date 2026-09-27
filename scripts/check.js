@@ -614,6 +614,18 @@ if (shared) {
     if (parseSettings('{"systemFileTree":1}').systemFileTree !== true) {
       throw new Error('systemFileTree was not coerced to a boolean')
     }
+    // The tree's own follow switch, off by default. It is the second product
+    // decision pinned here: ON re-reads a directory (and repaints the whole
+    // panel) on every artifact change, which is the "the tree keeps refreshing
+    // by itself" report this setting exists to answer — so flipping the default
+    // silently puts that back for every user, and nothing else in this file
+    // would notice (both arrangements are guarded).
+    if (DEFAULT_SETTINGS.treeAutoRefresh !== false) {
+      throw new Error('「文件树自动刷新」must default to off: on is the always-refreshing tree this setting exists to stop')
+    }
+    if (parseSettings('{"treeAutoRefresh":1}').treeAutoRefresh !== true) {
+      throw new Error('treeAutoRefresh was not coerced to a boolean')
+    }
     if ('nonsense' in clamped) throw new Error('an unknown key survived normalisation')
     // What the sidebar writes is what the popout reads.
     const roundTrip = parseSettings(serializeSettings(normalizeSettings({ previewHeight: 42 })))
@@ -1474,6 +1486,10 @@ const bootClient = (options) => {
   // unless the stub provides the service (opts.sidebarRight).
   const tabs = []
   const listeners = {}
+  // Every callback the client half handed to `ctx.interval` (in this bundle only
+  // the artifact poll uses it). Captured rather than dropped so a guard can drive
+  // a poll tick and assert what it repainted — see the ledger-poll test below.
+  const clientIntervals = []
   const store = Object.assign({}, opts.storage)
   const draft = { value: opts.draft || '' }
   // The sessions-list subscribers the plugin installed for its default page, so a
@@ -1686,7 +1702,7 @@ const bootClient = (options) => {
       }
       return undefined
     },
-    interval: () => () => {},
+    interval: (fn) => { clientIntervals.push(fn); return () => {} },
     on: () => {},
     // Faithful to cordis: `effect(cb)` runs cb NOW and keeps its disposer for the
     // fiber. Everything the client half registers outside of one is recorded as
@@ -1745,6 +1761,9 @@ const bootClient = (options) => {
     // The options this boot was built with, so a harness can model the SEAT
     // faithfully (which session it belongs to, above all).
     opts,
+    // The `ctx.interval` callbacks this boot installed, in order (the artifact
+    // poll). A guard drives one to assert what a poll tick repaints.
+    clientIntervals,
     sessionSubs: () => sessionSubs.slice(),
     listeners,
     store,
@@ -3890,7 +3909,7 @@ const mountPanel = async (override) => {
     await flush()
     return el
   }
-  return { r, boot, styleProps, styleTags, intervals, flush, mount }
+  return { r, boot, styleProps, styleTags, intervals, clientIntervals: boot.clientIntervals, flush, mount }
 }
 
 // The tab id each view's body is registered under. The seat looks a body up by
@@ -6217,9 +6236,66 @@ try {
     if (!inside || typeof inside.type !== 'function' || typeof inside.props.onOpen !== 'function' || !('selectedPath' in inside.props)) {
       throw new Error('the visible pane of the column\'s 文件 tab is not the file tree')
     }
-    ok('native tree tab', 'the column\'s 文件 tab draws the tree even with the floating panel\'s 「文件树」 view switched off')
+    // The tree must be handed the SWITCH, not a literal: with the default off it
+    // must receive `autoRefresh: false`, which is what stops the artifact poll
+    // from re-reading directories behind the user's back. A hard-coded `true`
+    // here would make 「文件树自动刷新」a switch that changes nothing (the fake
+    // switch this section exists to refuse), and it is the reported bug.
+    if (inside.props.autoRefresh !== false) {
+      throw new Error('the tree was handed autoRefresh=' + JSON.stringify(inside.props.autoRefresh) + ' although 「文件树自动刷新」defaults to off')
+    }
+    // …and the manual half must be wired, or the 刷新 button re-reads directories
+    // while the A/M letters stay as stale as they were.
+    if (typeof inside.props.onRefresh !== 'function') {
+      throw new Error('the tree got no onRefresh, so its manual 刷新 button cannot reload the ledger')
+    }
+    ok('native tree tab', 'the column\'s 文件 tab draws the tree, follows it only when 「文件树自动刷新」is on, and its manual 刷新 reloads the ledger')
   } catch (e) {
     bad('native tree tab', e && e.message ? e.message : String(e))
+  }
+
+  // ── the artifact poll must repaint nothing when nothing changed ────────────
+  // Reported from the running app: 「系统总是频繁的自动刷新文件树」. The panel's 2 s
+  // poll called setItems(next) unconditionally, and the new value is a FRESH
+  // array even when its contents are identical — so the whole panel (tree
+  // included, once 「文件树自动刷新」is on) re-rendered on a heartbeat that had
+  // learned nothing. This drives the real mount and the real poll callback: an
+  // identical answer must leave the component un-dirtied, a changed one must not.
+  // isDirty rather than element identity, because the harness's own flush()
+  // always re-renders once — see scripts/minireact.js.
+  try {
+    const articles = [{ path: 'D:/ws/a.md', kind: 'create', at: 1, history: [] }]
+    const mounted = await mountPanel({
+      sidebarRight: true,
+      fetch: (url) => {
+        const u = String(url)
+        if (u.indexOf('/dsh-sidebar-frog/data') === 0) {
+          return Promise.resolve({ status: 200, json: () => Promise.resolve({ artifacts: articles }) })
+        }
+        return Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true, entries: [] }) })
+      },
+    })
+    const reg = mounted.boot.registrations.find((r) => r.def.name === 'sidebar.right.pane.tab')
+    if (!reg) throw new Error('no panel content was registered to mount')
+    await mounted.mount(reg)
+    if (mounted.clientIntervals.length !== 1) {
+      throw new Error('expected exactly one ctx.interval (the artifact poll), got ' + mounted.clientIntervals.length)
+    }
+    const poll = mounted.clientIntervals[0]
+    poll()
+    await settle(6)
+    if (mounted.r.isDirty()) {
+      throw new Error('an identical poll wrote state, so the whole panel (tree included) re-rendered')
+    }
+    // …and the other direction: a genuinely changed ledger MUST repaint, or the
+    // fix would have traded a busy poll for a frozen panel.
+    articles.push({ path: 'D:/ws/b.md', kind: 'create', at: 2, history: [] })
+    poll()
+    await settle(6)
+    if (!mounted.r.isDirty()) throw new Error('a changed ledger did not repaint the panel')
+    ok('ledger poll (rendered)', 'an identical 2 s answer writes no state; a changed one repaints — the tree is no longer re-rendered by the heartbeat')
+  } catch (e) {
+    bad('ledger poll (rendered)', e && e.message ? e.message : String(e))
   }
 
   // Settings must offer only what the CURRENT surface can honour: 展开 / 宽度 are
@@ -6294,6 +6370,16 @@ try {
     // floating surface, so a 「显示系统的文件树」 row there could not do anything.
     if (floatingForm.labels.some((t) => t === '显示系统的文件树')) {
       throw new Error('the floating panel offers 「显示系统的文件树」, but there is no product 文件 tab on that surface — a switch that cannot do anything')
+    }
+    // 「文件树自动刷新」is the opposite case: BOTH surfaces draw a file tree, so
+    // the switch is meaningful in both and the row must exist in both. Without it
+    // the tree's follow would be decided by a default nobody can change — the
+    // unreachable-setting failure above, made worse because the default is the
+    // one the user is complaining about.
+    for (const [name, form] of [['native', nativeForm], ['floating', floatingForm]]) {
+      if (!form.labels.some((t) => t === '文件树自动刷新')) {
+        throw new Error('the ' + name + ' settings do not offer 「文件树自动刷新」 (labels ' + JSON.stringify(form.labels) + ')')
+      }
     }
     // The in-app copy is documentation too, and it is the only documentation a
     // user reads without opening the repo: it claimed a 65% default long after

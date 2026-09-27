@@ -183,7 +183,14 @@ const ArtifactsContent = (props) => {
   // poll that returns the identical list does not wake a `git status`, which on a
   // large repository is the most expensive thing this panel could ask for.
   const [artifactTick, setArtifactTick] = React.useState(0)
-  const ledgerSig = React.useRef('')
+  // null, not '': the FIRST answer must count as a change even when it is the
+  // empty list (''), or a panel whose ledger is empty would never paint at all.
+  const ledgerSig = React.useRef(null)
+  // The manual refresh the file tree asks for (its toolbar 刷新 button and F5):
+  // a stable handle on the CURRENT loader, which lives inside an effect keyed by
+  // `active` and `settings.autoRefresh` and is therefore not reachable from the
+  // tree's own props. See `manualRefresh` in src/client/filetree.js.
+  const reloadLedger = React.useRef(null)
   // Files opened as TABS inside this panel. Clicking a file (in the artifact list
   // or the tree) adds it here and switches to it; the tab then owns the panel's
   // FULL width. That is the point: a sidebar is too narrow to show a preview
@@ -253,28 +260,34 @@ const ArtifactsContent = (props) => {
   React.useEffect(() => {
     if (!active) return
     let alive = true
-    const load = () => {
-      host.call('artifacts.list').then((res) => {
-        if (!alive) return
-        const next = res && Array.isArray(res.artifacts) ? res.artifacts : []
+    const load = () => host.call('artifacts.list').then((res) => {
+      if (!alive) return
+      const next = res && Array.isArray(res.artifacts) ? res.artifacts : []
+      // The host states its own build in the same answer, so the settings panel
+      // can name which half is stale after a rebuild (see hostBuildStore).
+      if (res && typeof res.build === 'string') hostBuildStore.set(res.build)
+      // ONE signature decides both the state write and the tick the Git view
+      // follows. This used to call setItems(next) on EVERY poll, and next is a
+      // fresh array even when its contents are identical — so a 2 s heartbeat
+      // re-rendered the whole panel (tree included, once 「文件树自动刷新」is on)
+      // while nothing had changed. That is the "the tree keeps refreshing" report
+      // this guards against: a poll that returns the identical ledger now writes
+      // no state at all, and React bails out of the render.
+      const sig = next.map((a) => a.path + '@' + a.at + '#' + ((a.history && a.history.length) || 0)).join('|')
+      if (sig !== ledgerSig.current) {
+        ledgerSig.current = sig
         setItems(next)
-        setError(null)
-        // The host states its own build in the same answer, so the settings panel
-        // can name which half is stale after a rebuild (see hostBuildStore).
-        if (res && typeof res.build === 'string') hostBuildStore.set(res.build)
-        const sig = next.map((a) => a.path + '@' + a.at + '#' + ((a.history && a.history.length) || 0)).join('|')
-        if (sig !== ledgerSig.current) {
-          ledgerSig.current = sig
-          setArtifactTick((n) => n + 1)
-        }
-      }).catch((e) => {
-        if (alive) setError(e && e.message ? String(e.message) : String(e))
-      })
-    }
+        setArtifactTick((n) => n + 1)
+      }
+      setError(null)
+    }).catch((e) => {
+      if (alive) setError(e && e.message ? String(e.message) : String(e))
+    })
+    reloadLedger.current = load
     load()
     let dispose
     if (settings.autoRefresh) dispose = ctx.interval(load, 2000)
-    return () => { alive = false; if (dispose) dispose() }
+    return () => { alive = false; reloadLedger.current = null; if (dispose) dispose() }
   }, [active, settings.autoRefresh])
 
   // Publish the current session id to localStorage so the standalone
@@ -807,6 +820,13 @@ const ArtifactsContent = (props) => {
           pinnedPath: null,
           // The artifact records double as the explorer's change letters (A/M).
           items: items,
+          // 「文件树自动刷新」: whether the tree follows the artifact poll, or is
+          // read only by its own manual refresh (see the artifact-path effect in
+          // src/client/filetree.js). The ledger's own poll is 「自动刷新」.
+          autoRefresh: settings.treeAutoRefresh,
+          // The manual refresh's other half: the tree re-reads its directories,
+          // this reloads the ledger those A/M letters come from.
+          onRefresh: () => { const fn = reloadLedger.current; return fn ? fn() : undefined },
           // The seat's own session, so every directory read is fenced to THIS
           // tab's workspace (see seatSessionId in src/client/filetree.js).
           sessionId: seatSessionId,
@@ -1029,6 +1049,18 @@ const SettingsSection = () => {
         desc: '开启后侧边栏展开时将即时同步并更新产物列表',
         value: settings.autoRefresh,
         onToggle: (v) => set('autoRefresh', v),
+      }),
+      // The tree's OWN follow, separate from the ledger's poll above because the
+      // two answer different questions: 「自动刷新」 is "does the 产物 ledger keep
+      // up", this is "does the file tree re-read directories by itself". It was
+      // the expensive half — every artifact change re-read a directory and
+      // repainted the panel — so it is off by default and the tree is read by its
+      // own 刷新 / F5 / 右键「仅刷新此目录」, by 新建/删除, and on a workspace switch.
+      React.createElement(SettingsToggle, {
+        label: '文件树自动刷新',
+        desc: '开启后文件树会跟随产物变化自动重读相应目录（后台刷新，不显示转圈）。关闭（默认）：文件树只在手动刷新（工具条刷新 / F5 / 右键「仅刷新此目录」，工具条刷新同时重读产物台账）、新建或删除、以及切换工作区时读取目录，会话进行中不再自动刷新。',
+        value: settings.treeAutoRefresh,
+        onToggle: (v) => set('treeAutoRefresh', v),
       }),
       // Floating-only, like the width preferences above and for the same reason:
       // it switches THIS panel's band between its views. On the native surface

@@ -104,6 +104,10 @@ export const createRenderer = (Component, props) => {
     flush,
     errors,
     hooks,
+    // Whether a state write is outstanding. A poll that returns the identical
+    // ledger must leave this false: it is the observable that "nothing was
+    // repainted" really means, since `flush()` always re-renders once.
+    isDirty: () => dirty,
     get element() { return element },
     // The component is loaded after the renderer exists: it needs this
     // renderer's React object at module scope.

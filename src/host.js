@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = 'f15f5ace'
+    const BUILD = 'cb6a7e45'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -2001,7 +2001,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="f15f5ace" />
+<meta name="dsh-sidebar-frog-build" content="cb6a7e45" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined
@@ -2900,6 +2900,16 @@ return {
     // storage key itself lives in src/shared/bridge.js.
     var DEFAULT_SETTINGS = {
       autoRefresh: true,   // poll the artifact list while the panel is open
+      // Whether the FILE TREE follows that poll. Off (the default) is deliberate:
+      // every artifact change used to re-read a directory (a row spinner, a flash)
+      // and repaint the whole panel, which during an active session read as "the
+      // tree keeps refreshing by itself" and cost more than it was worth. Off, the
+      // tree reads a directory only when the user asks (the toolbar 刷新 button, F5,
+      // the per-folder 「仅刷新此目录」), when this plugin created or deleted
+      // something, or when the workspace changed — and the refresh button reloads
+      // the ledger too, so a manual refresh is complete. On restores the follow
+      // (quietly: a background re-read shows no spinner and no flash).
+      treeAutoRefresh: false,
       defaultPanelWidth: 26, // panel width on load / before any drag, as % of window width
       minPanelWidth: 20,   // minimum panel width as % of window width
       showFileTree: true,  // show the 文件树 (file tree) tab
@@ -3632,6 +3642,10 @@ return {
     var _previewAbort = null;   // AbortController of the preview read in flight
     var _previewOffice = null;  // live Office widget (canvas / worker / URLs to release)
     var _loadInFlight = false;  // one artifact poll at a time
+    // The previous poll's ledger signature: a poll that returns the identical
+    // ledger must repaint nothing (see load()). null, not '', so the first —
+    // possibly empty — answer still counts as a change.
+    var _ledgerSig = null;
     var _treeRootSeq = 0;       // guards a stale (retried) root read
 
     // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -7844,9 +7858,14 @@ return {
       renderTree();
     }
 
-    // F5: re-read the root plus every folder currently expanded (no collapse).
-    // Bounded so a deeply expanded tree cannot storm the host.
+    // F5 and the toolbar 刷新: re-read the root plus every folder currently
+    // expanded (no collapse). Bounded so a deeply expanded tree cannot storm the
+    // host. It reads the LEDGER as well as the directories: the tree's A/M
+    // letters come from that list, and a manual refresh that left them stale
+    // would be a manual refresh of only half the view (the same rule as the
+    // sidebar's manualRefresh in src/client/filetree.js).
     function refreshTreeExpanded() {
+      load();
       loadTreeRoot(false);
       Object.keys(treeExpanded)
         .filter(function (p) { return treeExpanded[p]; })
@@ -8894,9 +8913,12 @@ return {
     var treeRefreshBtn = document.getElementById('treeRefresh');
     if (treeRefreshBtn) {
       treeRefreshBtn.appendChild(refreshIcon());
-      treeRefreshBtn.title = '刷新根目录（保留已展开的目录）· Shift+点击：整棵树重新加载';
+      treeRefreshBtn.title = '刷新根目录与产物台账（保留已展开的目录）· Shift+点击：整棵树重新加载';
       treeRefreshBtn.setAttribute('aria-label', '刷新根目录');
-      treeRefreshBtn.addEventListener('click', function (ev) { loadTreeRoot(ev.shiftKey === true); });
+      treeRefreshBtn.addEventListener('click', function (ev) {
+        if (ev.shiftKey === true) { load(); loadTreeRoot(true); }
+        else refreshTreeExpanded();
+      });
     }
     function load() {
       // One poll in flight at a time: the 2s interval plus an 8s timeout could
@@ -8934,9 +8956,23 @@ return {
           var wasListed = items.some(function (x) { return x.path === selectedPath; });
           items = data && Array.isArray(data.artifacts) ? data.artifacts : [];
           if (selectedPath && wasListed && !items.some(function (x) { return x.path === selectedPath; })) { selectedPath = null; }
-          render();
-          // The tree shows the same A/M change letters, so it follows the poll.
-          if (treeRoot) renderTree();
+          // ONE signature decides whether anything is repainted. This poll is a
+          // 2 s heartbeat, and rebuilding the ledger list AND the tree on an
+          // answer that did not change is the "the tree keeps refreshing by
+          // itself" report. A poll that changes nothing now writes nothing.
+          var sig = items.map(function (x) { return x.path + '@' + x.at + '#' + ((x.history && x.history.length) || 0); }).join('|');
+          var changed = sig !== _ledgerSig;
+          _ledgerSig = sig;
+          if (changed) {
+            render();
+            // The tree shows the same A/M change letters. Whether it FOLLOWS the
+            // poll is 「文件树自动刷新」 (off by default): with it off the tree is
+            // read only by its own 刷新 button, F5, its create/delete or a
+            // workspace switch — so a changing ledger must not repaint it either.
+            // The product's own 文件 tab, when it is the one on screen, refreshes
+            // through its own body and is not this page's business.
+            if (treeRoot && SETTINGS.treeAutoRefresh !== false) renderTree();
+          }
           // The state is a class, not an inline colour: the dot, the label tone
           // and the wait pulse all live in the stylesheet next to the header
           // rules, so a theme change cannot leave a hard-coded green behind.
