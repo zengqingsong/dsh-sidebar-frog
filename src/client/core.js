@@ -25,6 +25,40 @@
       return dispose
     }
 
+    // ── Does this window have a popout to offer at all? ────────────────────
+    // `dsh web` serves the app to a browser, where the popout is a plain second
+    // tab and every entry point below works. The DESKTOP app is not a browser:
+    // its window is a `dsh-app://app/` document inside Electron, and the shell's
+    // own window policy hands ONLY http(s) targets to the system browser and
+    // denies every other new window (verified against the shipped main process:
+    // `setWindowOpenHandler` returns `action: 'deny'` for any other protocol).
+    // The popout link is a RELATIVE address, so in there it resolves to
+    // `dsh-app://app/dsh-sidebar-frog…`: neither opened nor reported — the click
+    // simply does nothing, which is the one outcome this codebase refuses to
+    // ship. There is no second tab to pop out into, so the affordances are not
+    // drawn at all (「在桌面版里直接禁止」).
+    //
+    // Two independent signals, because either alone would be a guess:
+    //   · the window's own address — `dsh-app://app/` is the Desktop shell's
+    //     (its main process composes `applicationUrl` from that scheme);
+    //   · the Desktop preload's own marker, which is what the product's own
+    //     sidebar-browser keys its desktop-only branch off
+    //     (`globalThis.dshDesktop.protocolVersion === 1`).
+    // Neither is present in a browser, which is exactly where the popout works.
+    const desktopShell = () => {
+      try {
+        if (typeof location !== 'undefined' && location && location.protocol === 'dsh-app:') return true
+      } catch (e) {}
+      try {
+        if (typeof window !== 'undefined' && window && window.dshDesktop && window.dshDesktop.protocolVersion === 1) return true
+      } catch (e) {}
+      return false
+    }
+
+    // Read ONCE: a window cannot stop being the Desktop shell, and every entry
+    // point asks this while it renders.
+    const POPOUT_AVAILABLE = !desktopShell()
+
     // ── Which build the HOST half is running ───────────────────────────────
     // The two halves of this plugin have different lifetimes, and that asymmetry
     // is the whole reason a rebuild sometimes needs a process restart:

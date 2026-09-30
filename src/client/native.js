@@ -601,7 +601,12 @@
       // (its class is a private CSS-module hash), so the pair is registered as one
       // occupant that owns its own direction: a column (`.artifacts-foot-stack`).
       slots.inject('sidebar.footer.action', () => slots.register({
-        name: 'sidebar.footer.action', id: 'dsh-sidebar-frog-foot', order: 45, label: '文件树与弹出页',
+        name: 'sidebar.footer.action', id: 'dsh-sidebar-frog-foot', order: 45,
+        // The occupant's own name — what the shell labels the seat with. It
+        // names BOTH controls where both exist and only 文件树 in the Desktop
+        // app, where the stack it names holds one (POPOUT_AVAILABLE in
+        // src/client/core.js).
+        label: POPOUT_AVAILABLE ? '文件树与弹出页' : '文件树',
       }, SidebarFooterActions))
 
       // (2) The per-tab one, in the column's own actions menu
@@ -691,6 +696,10 @@
     // other three links share.
     const FooterPopoutButton = (props) => {
       const wide = !!(props && props.wide)
+      // No popout in the Desktop app — see POPOUT_AVAILABLE in src/client/core.js.
+      // The stack above then holds 文件树 alone, which is all this seat can
+      // honestly offer there.
+      if (!POPOUT_AVAILABLE) return null
       return React.createElement('a', {
         className: 'artifacts-foot-btn' + (wide ? ' is-wide' : ''),
         href: popoutHrefFor(currentSessionId()),
@@ -752,6 +761,9 @@
       const tab = props && props.tab
       const dismiss = props && props.dismiss
       if (!tab) return null
+      // The Desktop app has no popout to offer: the item would be a menu entry
+      // that does nothing at all (see POPOUT_AVAILABLE in src/client/core.js).
+      if (!POPOUT_AVAILABLE) return null
       // Our own views — plus the product's `files` kind when THIS PLUGIN is the
       // one drawing it. In takeover mode that tab is ours, so it gets our menu
       // item; while the product draws it, it must not: a foreign tab must not

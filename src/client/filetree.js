@@ -884,7 +884,11 @@ const FileTree = (props) => {
     // (the product renders .html, images, Office and PDF by itself, so no view
     // of ours is on screen to carry the link). window.open of a real address in
     // a click handler is not blocked, and the shared target name reuses one tab.
-    if (!entry.isDir) {
+    //
+    // …and not at all in the Desktop app, whose window policy denies every new
+    // window that is not http(s): the item would be a menu row that does nothing
+    // (see POPOUT_AVAILABLE in src/client/core.js).
+    if (!entry.isDir && POPOUT_AVAILABLE) {
       items.push({
         label: '在弹出页打开',
         run: () => { try { window.open(popoutFileHrefFor(sessionId, entry.path), POPOUT_TARGET, 'noopener') } catch (e) {} },

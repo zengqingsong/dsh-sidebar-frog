@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = 'cb6a7e45'
+          const BUILD = 'cbb20436'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -3886,6 +3886,40 @@ window.__ModuleLoader__.load({
       return dispose
     }
 
+    // ── Does this window have a popout to offer at all? ────────────────────
+    // `dsh web` serves the app to a browser, where the popout is a plain second
+    // tab and every entry point below works. The DESKTOP app is not a browser:
+    // its window is a `dsh-app://app/` document inside Electron, and the shell's
+    // own window policy hands ONLY http(s) targets to the system browser and
+    // denies every other new window (verified against the shipped main process:
+    // `setWindowOpenHandler` returns `action: 'deny'` for any other protocol).
+    // The popout link is a RELATIVE address, so in there it resolves to
+    // `dsh-app://app/dsh-sidebar-frog…`: neither opened nor reported — the click
+    // simply does nothing, which is the one outcome this codebase refuses to
+    // ship. There is no second tab to pop out into, so the affordances are not
+    // drawn at all (「在桌面版里直接禁止」).
+    //
+    // Two independent signals, because either alone would be a guess:
+    //   · the window's own address — `dsh-app://app/` is the Desktop shell's
+    //     (its main process composes `applicationUrl` from that scheme);
+    //   · the Desktop preload's own marker, which is what the product's own
+    //     sidebar-browser keys its desktop-only branch off
+    //     (`globalThis.dshDesktop.protocolVersion === 1`).
+    // Neither is present in a browser, which is exactly where the popout works.
+    const desktopShell = () => {
+      try {
+        if (typeof location !== 'undefined' && location && location.protocol === 'dsh-app:') return true
+      } catch (e) {}
+      try {
+        if (typeof window !== 'undefined' && window && window.dshDesktop && window.dshDesktop.protocolVersion === 1) return true
+      } catch (e) {}
+      return false
+    }
+
+    // Read ONCE: a window cannot stop being the Desktop shell, and every entry
+    // point asks this while it renders.
+    const POPOUT_AVAILABLE = !desktopShell()
+
     // ── Which build the HOST half is running ───────────────────────────────
     // The two halves of this plugin have different lifetimes, and that asymmetry
     // is the whole reason a rebuild sometimes needs a process restart:
@@ -7416,7 +7450,11 @@ const FileTree = (props) => {
     // (the product renders .html, images, Office and PDF by itself, so no view
     // of ours is on screen to carry the link). window.open of a real address in
     // a click handler is not blocked, and the shared target name reuses one tab.
-    if (!entry.isDir) {
+    //
+    // …and not at all in the Desktop app, whose window policy denies every new
+    // window that is not http(s): the item would be a menu row that does nothing
+    // (see POPOUT_AVAILABLE in src/client/core.js).
+    if (!entry.isDir && POPOUT_AVAILABLE) {
       items.push({
         label: '在弹出页打开',
         run: () => { try { window.open(popoutFileHrefFor(sessionId, entry.path), POPOUT_TARGET, 'noopener') } catch (e) {} },
@@ -8434,6 +8472,11 @@ const popoutFileHrefFor = (sid, path) => {
 // new one per file.
 const DocPopoutLink = (props) => {
   const p = props || {}
+  // No popout in the Desktop app — see POPOUT_AVAILABLE in src/client/core.js.
+  // Gating the LINK is what covers all four of its seats at once: the editor
+  // toolbar and the file-tab band here, and the two document bodies the shell's
+  // own preview is lent (src/client/docpreview.js).
+  if (!POPOUT_AVAILABLE) return null
   const href = popoutFileHrefFor(p.sessionId, p.path)
   const name = basename(p.path || '')
   return React.createElement('a', {
@@ -8458,7 +8501,9 @@ const DocPopoutLink = (props) => {
 // without a second row above the document.
 const DocPopoutBandAction = (props) => {
   const p = props || {}
-  if (p.hidden) return null
+  // The wrapper goes with the link: an empty `.artifacts-doclink-slot` would
+  // still hold its place at the end of the tab strip (see POPOUT_AVAILABLE).
+  if (p.hidden || !POPOUT_AVAILABLE) return null
   return React.createElement('span', { className: 'artifacts-tab-action artifacts-doclink-slot' },
     React.createElement(DocPopoutLink, { path: p.path, sessionId: p.sessionId, compact: true, place: 'band' }),
   )
@@ -9001,14 +9046,17 @@ const ArtifactsContent = (props) => {
           'aria-label': '收起侧边栏',
           onClick: () => store.setOpen(false),
         }, CollapsePanelIcon(15)),
-        React.createElement('a', {
+        // 弹出 has no destination in the Desktop app (POPOUT_AVAILABLE in
+        // src/client/core.js): the shell denies every new window that is not
+        // http(s), so the anchor is not drawn rather than drawn dead.
+        POPOUT_AVAILABLE ? React.createElement('a', {
           className: 'artifacts-link',
           href: popoutHref,
           target: POPOUT_TARGET,
           rel: 'noreferrer noopener',
           title: '在新标签页弹出（可拖到另一块显示器）',
           'aria-label': '在新标签页弹出',
-        }, PopoutIcon(15)),
+        }, PopoutIcon(15)) : null,
       ),
       React.createElement('span', { className: 'artifacts-spacer' }),
       activeTab === 'artifacts' ? React.createElement('button', {
@@ -9324,15 +9372,17 @@ const CornerButton = () => {
     }, PanelIcon(18)),
     // 弹出 is offered while the panel is closed; once it is open the panel's own
     // header carries the same action, and two identical buttons a thumb apart is
-    // the duplication this rewrite removes.
-    React.createElement('a', {
+    // the duplication this rewrite removes. It is gated on POPOUT_AVAILABLE for
+    // the reason in src/client/core.js — open or closed, the Desktop app has no
+    // tab to pop out into.
+    POPOUT_AVAILABLE ? React.createElement('a', {
       className: 'artifacts-corner-btn',
       href: popoutHref,
       target: POPOUT_TARGET,
       rel: 'noreferrer noopener',
       title: '在新标签页弹出',
       'aria-label': '在新标签页弹出',
-    }, PopoutIcon(16)),
+    }, PopoutIcon(16)) : null,
   )
 }
 
@@ -10733,7 +10783,12 @@ const SettingsSection = () => {
       // (its class is a private CSS-module hash), so the pair is registered as one
       // occupant that owns its own direction: a column (`.artifacts-foot-stack`).
       slots.inject('sidebar.footer.action', () => slots.register({
-        name: 'sidebar.footer.action', id: 'dsh-sidebar-frog-foot', order: 45, label: '文件树与弹出页',
+        name: 'sidebar.footer.action', id: 'dsh-sidebar-frog-foot', order: 45,
+        // The occupant's own name — what the shell labels the seat with. It
+        // names BOTH controls where both exist and only 文件树 in the Desktop
+        // app, where the stack it names holds one (POPOUT_AVAILABLE in
+        // src/client/core.js).
+        label: POPOUT_AVAILABLE ? '文件树与弹出页' : '文件树',
       }, SidebarFooterActions))
 
       // (2) The per-tab one, in the column's own actions menu
@@ -10823,6 +10878,10 @@ const SettingsSection = () => {
     // other three links share.
     const FooterPopoutButton = (props) => {
       const wide = !!(props && props.wide)
+      // No popout in the Desktop app — see POPOUT_AVAILABLE in src/client/core.js.
+      // The stack above then holds 文件树 alone, which is all this seat can
+      // honestly offer there.
+      if (!POPOUT_AVAILABLE) return null
       return React.createElement('a', {
         className: 'artifacts-foot-btn' + (wide ? ' is-wide' : ''),
         href: popoutHrefFor(currentSessionId()),
@@ -10884,6 +10943,9 @@ const SettingsSection = () => {
       const tab = props && props.tab
       const dismiss = props && props.dismiss
       if (!tab) return null
+      // The Desktop app has no popout to offer: the item would be a menu entry
+      // that does nothing at all (see POPOUT_AVAILABLE in src/client/core.js).
+      if (!POPOUT_AVAILABLE) return null
       // Our own views — plus the product's `files` kind when THIS PLUGIN is the
       // one drawing it. In takeover mode that tab is ours, so it gets our menu
       // item; while the product draws it, it must not: a foreign tab must not

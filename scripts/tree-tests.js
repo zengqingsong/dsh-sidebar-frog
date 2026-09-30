@@ -627,7 +627,7 @@ const mountSidebar = (store, options) => {
     'React', 'ReactDOM', 'currentSessionId', 'ctx', 'host', 'quoteToComposer', 'basename', 'fileIconKind', 'fallbackCopy',
     'RefreshIcon', 'TreeChevronIcon', 'FolderOpenIcon', 'FolderClosedIcon', 'FileTypeGlyph', 'SearchIcon',
     'ExpandAllIcon', 'CollapseAllIcon', 'CloseIcon', 'PlusIcon', 'window', 'document', 'localStorage', 'navigator', 'console',
-    'setTimeout', 'clearTimeout',
+    'setTimeout', 'clearTimeout', 'POPOUT_AVAILABLE',
     read('src/shared/paths.js') + '\n' + read('src/shared/ext.js') + '\n' + read('src/shared/filetype.js')
       + '\n' + read('src/client/filetree.js') + '\nreturn { FileTree };',
   )(
@@ -645,6 +645,11 @@ const mountSidebar = (store, options) => {
     },
     { clipboard: { writeText: () => Promise.resolve() } },
     console, setTimeout, clearTimeout,
+    // The tree carries a 「在弹出页打开」 item for every file, and does NOT carry
+    // it in the Desktop app, where the shell denies the new window it would open
+    // (see POPOUT_AVAILABLE in src/client/core.js). Injected like every other
+    // dependency of this module, so a scenario can mount either window.
+    opts.popoutAvailable !== false,
   )
   r.setComponent(mod.FileTree)
   const open = () => Object.keys(r.hooks[0].expanded).filter((k) => r.hooks[0].expanded[k]).sort()
@@ -836,6 +841,39 @@ export const runSidebarTree = async () => {
     if (r.findAll('artifacts-tree-menu').length) throw new Error('the menu stayed open')
     return 'menu closed'
   })
+
+  // ── the same menu in the DESKTOP app ─────────────────────────────────────
+  // The Desktop shell's window policy hands only http(s) targets to the system
+  // browser and denies every other new window, so this item's `window.open`
+  // would do nothing at all there. It must therefore not be offered — while the
+  // rest of the menu stays exactly as it is (a hidden item is one thing, a menu
+  // that lost its footing is another).
+  {
+    const dt = mountSidebar({}, { popoutAvailable: false })
+    launch.push(dt)
+    await dt.flush(120)
+    dt.clickTool('全部展开')
+    await dt.flush(220)
+    // Open each menu BEFORE its assertion: the hook runtime only repaints on a
+    // flush, so reading the tree straight after a state change sees the last frame.
+    dt.rightClickRow('D:/ws/README.md', POINTER.x, POINTER.y)
+    await dt.flush(40)
+    await check('sidebar (Desktop): no 在弹出页打开 item', () => {
+      const labels = dt.renderer.texts('artifacts-tree-menu-item')
+      if (labels.includes('在弹出页打开')) throw new Error('the Desktop menu still offers 在弹出页打开: ' + JSON.stringify(labels))
+      for (const kept of ['复制路径', '复制相对路径', '@引用到输入框', '删除文件…', '全部展开', '全部折叠']) {
+        if (!labels.includes(kept)) throw new Error('the Desktop menu lost ' + JSON.stringify(kept) + ': ' + JSON.stringify(labels))
+      }
+      return labels.length + ' items, no popout'
+    })
+    t.rightClickRow('D:/ws/README.md', POINTER.x, POINTER.y)
+    await t.flush(40)
+    await check('sidebar (browser): the same menu DOES offer it', () => {
+      const labels = t.renderer.texts('artifacts-tree-menu-item')
+      if (!labels.includes('在弹出页打开')) throw new Error('the browser menu lost 在弹出页打开: ' + JSON.stringify(labels))
+      return 'offered in a browser'
+    })
+  }
 
   // ── delete: a destructive action the menu only ARMS ──────────────────────
   // The 删除 item must not fire on its own: it opens a confirm, and only the

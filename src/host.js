@@ -34,7 +34,7 @@ return {
     // stale popout page) breaks the cross-window bridge in ways that look like
     // unrelated UI bugs. Compare against `npm run check` / the page's
     // <meta name="dsh-sidebar-frog-build">.
-    const BUILD = 'cb6a7e45'
+    const BUILD = 'cbb20436'
     try { console.log('[artifacts] dsh-sidebar-frog build ' + BUILD) } catch (e) {}
 
         // Shared extension → preview-type helpers (portable JS: var/function, no
@@ -2001,7 +2001,7 @@ return {
 <!-- Which build this page is. The host serves it from memory, so a rebuilt
      plugin that was not restarted still serves the old page:
      curl -s http://127.0.0.1:3080/dsh-sidebar-frog | grep dsh-sidebar-frog-build -->
-<meta name="dsh-sidebar-frog-build" content="cb6a7e45" />
+<meta name="dsh-sidebar-frog-build" content="cbb20436" />
 <!-- The tab's own icon. This page is the one surface that lives in a browser tab
      strip, usually on a second monitor among a dozen unrelated tabs, so the icon
      is how the user finds it again. Generated from scripts/logo.js and inlined

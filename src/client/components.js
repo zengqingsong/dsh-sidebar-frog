@@ -70,6 +70,11 @@ const popoutFileHrefFor = (sid, path) => {
 // new one per file.
 const DocPopoutLink = (props) => {
   const p = props || {}
+  // No popout in the Desktop app — see POPOUT_AVAILABLE in src/client/core.js.
+  // Gating the LINK is what covers all four of its seats at once: the editor
+  // toolbar and the file-tab band here, and the two document bodies the shell's
+  // own preview is lent (src/client/docpreview.js).
+  if (!POPOUT_AVAILABLE) return null
   const href = popoutFileHrefFor(p.sessionId, p.path)
   const name = basename(p.path || '')
   return React.createElement('a', {
@@ -94,7 +99,9 @@ const DocPopoutLink = (props) => {
 // without a second row above the document.
 const DocPopoutBandAction = (props) => {
   const p = props || {}
-  if (p.hidden) return null
+  // The wrapper goes with the link: an empty `.artifacts-doclink-slot` would
+  // still hold its place at the end of the tab strip (see POPOUT_AVAILABLE).
+  if (p.hidden || !POPOUT_AVAILABLE) return null
   return React.createElement('span', { className: 'artifacts-tab-action artifacts-doclink-slot' },
     React.createElement(DocPopoutLink, { path: p.path, sessionId: p.sessionId, compact: true, place: 'band' }),
   )
@@ -637,14 +644,17 @@ const ArtifactsContent = (props) => {
           'aria-label': '收起侧边栏',
           onClick: () => store.setOpen(false),
         }, CollapsePanelIcon(15)),
-        React.createElement('a', {
+        // 弹出 has no destination in the Desktop app (POPOUT_AVAILABLE in
+        // src/client/core.js): the shell denies every new window that is not
+        // http(s), so the anchor is not drawn rather than drawn dead.
+        POPOUT_AVAILABLE ? React.createElement('a', {
           className: 'artifacts-link',
           href: popoutHref,
           target: POPOUT_TARGET,
           rel: 'noreferrer noopener',
           title: '在新标签页弹出（可拖到另一块显示器）',
           'aria-label': '在新标签页弹出',
-        }, PopoutIcon(15)),
+        }, PopoutIcon(15)) : null,
       ),
       React.createElement('span', { className: 'artifacts-spacer' }),
       activeTab === 'artifacts' ? React.createElement('button', {
@@ -960,15 +970,17 @@ const CornerButton = () => {
     }, PanelIcon(18)),
     // 弹出 is offered while the panel is closed; once it is open the panel's own
     // header carries the same action, and two identical buttons a thumb apart is
-    // the duplication this rewrite removes.
-    React.createElement('a', {
+    // the duplication this rewrite removes. It is gated on POPOUT_AVAILABLE for
+    // the reason in src/client/core.js — open or closed, the Desktop app has no
+    // tab to pop out into.
+    POPOUT_AVAILABLE ? React.createElement('a', {
       className: 'artifacts-corner-btn',
       href: popoutHref,
       target: POPOUT_TARGET,
       rel: 'noreferrer noopener',
       title: '在新标签页弹出',
       'aria-label': '在新标签页弹出',
-    }, PopoutIcon(16)),
+    }, PopoutIcon(16)) : null,
   )
 }
 

@@ -1732,13 +1732,24 @@ const bootClient = (options) => {
     addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn) },
     removeEventListener: (type, fn) => { listeners[type] = (listeners[type] || []).filter((f) => f !== fn) },
   }
+  // The Desktop app's own marker. Its preload exposes `dshDesktop` to the
+  // application window — the product's sidebar-browser keys its desktop-only
+  // branch off exactly this field — and the popout is gated on it (see the 桌面版
+  // section below). Opt-in, because every other boot here is a browser.
+  if (opts.dshDesktop) window.dshDesktop = { protocolVersion: 1 }
   // `document` is deliberately not passed by default: the plugin must survive
   // without one (that is the documented `typeof document === 'undefined'`
   // guard). A test that wants to RENDER a component passes a stub instead.
+  //
+  // `location` is a parameter for the same reason `window` is: the Desktop
+  // shell's window address (`dsh-app://app/`) is the popout gate's OTHER signal,
+  // and a check has to be able to hand one over. It is `undefined` unless a boot
+  // asks for one, which is what a browser-free Node run looks like anyway.
   // eslint-disable-next-line no-new-func
-  new Function('window', 'localStorage', 'setTimeout', 'clearTimeout', 'document', 'fetch', 'setInterval', 'clearInterval', src)(
+  new Function('window', 'localStorage', 'setTimeout', 'clearTimeout', 'document', 'fetch', 'setInterval', 'clearInterval', 'location', src)(
     window, localStorage, () => 0, () => {},
     opts.document, opts.fetch || fetch, opts.setInterval || setInterval, opts.clearInterval || clearInterval,
+    opts.location,
   )
   if (!config) throw new Error('never called window.__ModuleLoader__.load')
   if (config.id !== 'dsh-sidebar-frog') throw new Error(`loader id is ${JSON.stringify(config.id)}`)
@@ -2404,6 +2415,66 @@ const footKid = (stack, id) => {
     ok('popout entry (floating surface)', 'no native popout entry beside the overlay\'s own two links')
   } catch (e) {
     bad('popout entry (floating surface)', e && e.message ? e.message : String(e))
+  }
+}
+
+// ── 桌面版：弹出页没有去处，入口一律不画 ─────────────────────────────────────
+// The Desktop app's window is a `dsh-app://app/` document inside Electron, and the
+// shell hands ONLY http(s) targets to the system browser — its own
+// `setWindowOpenHandler` denies every other new window. A popout link is a
+// RELATIVE address, so in there it resolves to `dsh-app://app/dsh-sidebar-frog…`:
+// neither opened nor reported, i.e. a click that does nothing at all, which is the
+// one outcome this codebase refuses to ship. The plugin therefore does not OFFER
+// the popout in that window — `POPOUT_AVAILABLE` in src/client/core.js is false and
+// every entry point draws nothing. This drives the two NATIVE seats; the overlay's
+// two links and the 「在弹出页打开」 component have their own guards (the panel is
+// only mountable further down this file, and the link's seats are driven where the
+// panel is).
+//
+// Both Desktop signals are driven, one boot each, because either ALONE would be a
+// guess: the window's own address and the preload's marker. A build that keyed off
+// only one of them used to look green here while the other was not wired at all.
+{
+  try {
+    for (const [label, options] of [
+      ['a dsh-app:// window', { location: { protocol: 'dsh-app:' } }],
+      ['the Desktop preload', { dshDesktop: true }],
+    ]) {
+      const native = bootClient(Object.assign({ sidebarRight: true }, options))
+      const foot = native.registrations.find((r) => r.def.id === 'dsh-sidebar-frog-foot')
+      if (!foot) throw new Error('the footer seat itself is gone in ' + label)
+      const stack = foot.component({ wide: true })
+      const kids = (stack && stack.props && stack.props.children) || []
+      if (kids.some((c) => c && c.props && c.props['data-frog-footer'] === 'popout')) {
+        throw new Error('the footer still draws the 弹出页 entry in ' + label + ' — its click would do nothing at all')
+      }
+      // …and 文件树 is untouched: the gate removes one control, not the seat.
+      footKid(stack, 'files')
+      if (foot.def.label !== '文件树') {
+        throw new Error('the footer seat is labelled ' + JSON.stringify(foot.def.label) + ' in ' + label + ' while it holds one control')
+      }
+      const item = native.registrations.find((r) => r.def.name === 'sidebar.right.tab.menu.item')
+      if (!item) throw new Error('the per-tab menu seat lost its registration in ' + label)
+      const menu = item.component({ tab: { kind: 'frog-files', id: 't1' }, dismiss: () => {} })
+      if (menu !== null && menu !== undefined) {
+        throw new Error('the per-tab 弹出 item still renders in ' + label + ' — a menu row that opens nothing')
+      }
+    }
+    // The same seats in a BROWSER: both entries are there, so the gate is a window
+    // test and not a switch that deleted the feature everywhere.
+    const browser = bootClient({ sidebarRight: true })
+    const browserFoot = browser.registrations.find((r) => r.def.id === 'dsh-sidebar-frog-foot')
+    footKid(browserFoot.component({ wide: true }), 'popout')
+    if (browserFoot.def.label !== '文件树与弹出页') {
+      throw new Error('a browser footer seat is labelled ' + JSON.stringify(browserFoot.def.label))
+    }
+    const browserItem = browser.registrations.find((r) => r.def.name === 'sidebar.right.tab.menu.item')
+    if (!browserItem.component({ tab: { kind: 'frog-files', id: 't1' }, dismiss: () => {} })) {
+      throw new Error('the per-tab 弹出 item is gone in a browser too — the Desktop gate is too wide')
+    }
+    ok('popout entry (Desktop)', 'no way out where there is nowhere to go: both Desktop signals hide the footer 弹出页 entry (and rename the seat to 文件树 alone) and the per-tab 弹出 item, while a browser window keeps both')
+  } catch (e) {
+    bad('popout entry (Desktop)', e && e.message ? e.message : String(e))
   }
 }
 
@@ -4281,6 +4352,51 @@ if (shared) {
   } catch (e) {
     bad('no duplicate collapse (rendered)', e && e.message ? e.message : String(e))
   }
+
+  // ── the same two links in the DESKTOP app: 收起 stays, 弹出 goes ──────────
+  // These links exist ONLY on the floating surface (the native column has its own
+  // entries, one section up), so this is every remaining seat but the file link.
+  // In the Desktop app the shell denies the window they open — a `dsh-app://`
+  // address is neither http(s) nor reported — so they are not drawn at all; see
+  // POPOUT_AVAILABLE in src/client/core.js. Both states are driven, because the
+  // open one is drawn by the panel's header and the closed one by the corner
+  // switch, and only one of them was ever noticed in the field.
+  try {
+    const open = await mountPanel({ dshDesktop: true })
+    await mountOverlayContent(open)
+    if (!open.r.findByTitle('收起侧边栏').length) {
+      throw new Error('the Desktop panel lost 收起 as well — the gate is too wide')
+    }
+    if (open.r.findAll('artifacts-link').length) {
+      throw new Error('the Desktop panel header still draws 弹出 — its click would do nothing at all')
+    }
+
+    // …and the same panel in a BROWSER keeps exactly one such link, so this is a
+    // window test rather than a control that vanished for everybody.
+    const browser = await mountPanel({})
+    await mountOverlayContent(browser)
+    if (browser.r.findAll('artifacts-link').length !== 1) {
+      throw new Error('a browser panel header draws ' + browser.r.findAll('artifacts-link').length + ' 弹出 links, want exactly 1')
+    }
+
+    const shut = await mountPanel({
+      dshDesktop: true,
+      storage: { [BRIDGE.settings]: serializeSettings(normalizeSettings({ defaultOpen: false })) },
+    })
+    const trigger = shut.boot.registrations.find((x) => x.def.id === 'dsh-sidebar-frog-trigger')
+    if (!trigger) throw new Error('the overlay trigger was not registered')
+    shut.r.setComponent(trigger.component)
+    await shut.flush()
+    if (shut.r.element === null) throw new Error('a closed Desktop panel lost its way back in')
+    if (!shut.r.findByTitle('打开侧边栏').length) throw new Error('the Desktop corner switch lost 打开侧边栏')
+    if (shut.r.findByTitle('在新标签页弹出').length) throw new Error('the Desktop corner switch still draws 弹出')
+    if (shut.r.findAll('artifacts-corner-btn').length !== 1) {
+      throw new Error('the Desktop corner switch draws ' + shut.r.findAll('artifacts-corner-btn').length + ' controls, want 打开 alone')
+    }
+    ok('popout entry (Desktop overlay)', 'the floating panel\'s own two links are gone in the Desktop app — closed, the corner switch is 打开 alone; open, the header keeps 收起 and has no 弹出 link (a browser keeps exactly one)')
+  } catch (e) {
+    bad('popout entry (Desktop overlay)', e && e.message ? e.message : String(e))
+  }
 }
 
 // ── 8. 借给系统的 Markdown 渲染器（ctx.documentPreviews） ───────────────────
@@ -5718,8 +5834,8 @@ try {
   // the band either. Mounting the native pane here asserted the props of
   // components the user will never see, which is exactly how the standalone bar
   // went on being certified after the band replaced it.
-  const mountOne = async (article, read1) => {
-    const mounted = await mountPanel({
+  const mountOne = async (article, read1, extra) => {
+    const mounted = await mountPanel(Object.assign({
       // NOT `sidebarRight: true`: that flag boots the client for the NATIVE
       // surface, where no floating panel is registered at all — and the floating
       // panel is the one that owns a band to put the link in.
@@ -5737,7 +5853,10 @@ try {
         }
         return Promise.resolve({ status: 200, json: () => Promise.resolve(Object.assign({ ok: true }, read1)) })
       },
-    })
+    // `extra` is how the Desktop window is mounted: the same panel, in a window
+    // whose shell denies the new window this link would open (see POPOUT_AVAILABLE
+    // in src/client/core.js).
+    }, extra || {}))
     await mountOverlayContent(mounted)
     const row = mounted.r.findAll('artifacts-item-main')[0]
     if (!row) throw new Error('the stubbed artifact list did not render')
@@ -5776,7 +5895,7 @@ try {
       }
       throw new Error('the panel rendered no band action / editor pane to inspect (found: ' + names.join(', ') + '; tree: ' + dump(mounted.r.element, 0).slice(0, 24).join(' | ') + ')')
     }
-    return { band: band.props, docAction: pane.props.docAction }
+    return { band: band.props, bandType: band.type, docAction: pane.props.docAction }
   }
   const countControls = (view) => (view.docAction ? 1 : 0) + (view.band.hidden ? 0 : 1)
 
@@ -5842,7 +5961,35 @@ try {
   if (!/noopener/.test(link[0])) {
     throw new Error('DocPopoutLink does not carry rel=noopener')
   }
-  ok('在弹出页打开 (rendered)', 'exactly one link per open file — the editor toolbar when it has an editor, its own bar when it has not, always under the SEAT session; addresses: absolute, workspace-relative, ./ relative, Windows-spelled, spaces, and the session-only fallback all resolve as intended; the anchor reuses one popout tab with noopener')
+
+  // ── …and NONE of it in the Desktop app ───────────────────────────────────
+  // The Desktop shell's window policy hands only http(s) targets to the system
+  // browser and denies every other new window, so this link would be a control
+  // that does nothing at all there. Both of its rendered seats are driven — the
+  // mini runtime does not expand a child component, so the element the panel
+  // built is INVOKED, which is exactly what a browser does with it.
+  const desktopEditable = await mountOne({ path: 'D:/ws/notes.md', kind: 'create', at: Date.now() },
+    { type: 'markdown', content: '# n\n', truncated: false, size: 4, version: 'v1' }, { dshDesktop: true })
+  if (!desktopEditable.docAction) {
+    throw new Error('the Desktop mount lost the editor toolbar\'s slot altogether — the PANEL changed, not the link')
+  }
+  if (desktopEditable.docAction.type(desktopEditable.docAction.props) !== null) {
+    throw new Error('the Desktop app still draws the editor toolbar\'s 「在弹出页打开」 — its click would do nothing at all')
+  }
+  const desktopImage = await mountOne({ path: 'D:/ws/pic.png', kind: 'create', at: Date.now() },
+    { type: 'image', content: '', truncated: false }, { dshDesktop: true })
+  if (desktopImage.band.hidden) {
+    throw new Error('the Desktop mount hid the band slot by itself, so the gate below proves nothing')
+  }
+  if (desktopImage.bandType(desktopImage.band) !== null) {
+    throw new Error('the Desktop app still draws the band\'s 「在弹出页打开」 — its click would do nothing at all')
+  }
+  // …and the very same call in a BROWSER still draws it, so this is a window
+  // test and not a switch that removed the feature everywhere.
+  if (image.bandType(image.band) === null) {
+    throw new Error('「在弹出页打开」 is gone in a browser too — the Desktop gate is too wide')
+  }
+  ok('在弹出页打开 (rendered)', 'exactly one link per open file — the editor toolbar when it has an editor, its own bar when it has not, always under the SEAT session; addresses: absolute, workspace-relative, ./ relative, Windows-spelled, spaces, and the session-only fallback all resolve as intended; the anchor reuses one popout tab with noopener; and in the DESKTOP app, where the shell denies the window it would open, neither seat draws it at all')
 } catch (e) {
   bad('在弹出页打开 (rendered)', e && e.message ? e.message : String(e))
 }
