@@ -95,6 +95,13 @@ var DEFAULT_SETTINGS = {
   // dark alike. Applied to the panel, the shell's own document tab and the popout
   // page from this one value; see markdownSkinClass.
   markdownSkin: 'default',
+  // The document's PALETTE: the shipped look (follows the app theme) or one of
+  // the classic reader palettes in src/shared/themes.js (书本蓝 / 绿 / 墨 / 橙 /
+  // 暖纸). Orthogonal to markdownSkin above — a skin is typography and a theme is
+  // colour — and applied to the same three readers from this one value. Each
+  // theme paints both light and dark, so this is a choice of document look, not
+  // of app mode. See markdownThemeClass.
+  markdownTheme: 'default',
   // Show each block's SOURCE line in a gutter down the left edge of a rendered
   // document — the answer to "which line is this?" without leaving the reader.
   // The numbers come from the anchors the renderer already stamps on every block
@@ -137,6 +144,7 @@ var SETTINGS_RANGES = {
 // coupling that cannot be loaded.
 var SETTINGS_CHOICES = {
   markdownSkin: ['default', 'github', 'wechat', 'zhihu'],
+  markdownTheme: ['default', 'bookblue', 'green', 'ink', 'orange', 'paper'],
 };
 
 function clampSetting(key, value) {

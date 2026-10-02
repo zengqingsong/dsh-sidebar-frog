@@ -336,14 +336,45 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-pdfview-spacer { flex: 1; }
 .artifacts-pdfview-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .artifacts-pdfview-canvas { display: block; margin: 0 auto; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, .35); }
-.artifacts-markdown { padding: 12px 14px; line-height: 1.6; word-wrap: break-word; font-size: 13px; }
-.artifacts-markdown h1, .artifacts-markdown h2, .artifacts-markdown h3, .artifacts-markdown h4, .artifacts-markdown h5, .artifacts-markdown h6 { margin: 14px 0 8px; line-height: 1.3; }
-.artifacts-markdown h1 { font-size: 1.45em; border-bottom: 1px solid var(--dsw-alias-border-l2); padding-bottom: 6px; }
-.artifacts-markdown h2 { font-size: 1.25em; border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: 4px; }
-.artifacts-markdown code { background: var(--dsw-alias-bg-layer-1); padding: 1px 5px; border-radius: 4px; font-family: var(--dsh-font-mono, ui-monospace, monospace); font-size: 0.9em; }
-.artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
-.artifacts-markdown pre code { background: transparent; padding: 0; }
-.artifacts-markdown img { max-width: 100%; }
+/* ── The document typography + palette layer (--md-*, see themes.js) ───────
+   Every declaration below reads its own --md-* property with the shipped value
+   as the FALLBACK, so with no theme chosen the look is exactly what it always
+   was, and a chosen theme repaints the document by setting the property on the
+   root (see 设置 › Markdown 文档主题). Reading the value at the point of USE —
+   rather than declaring a default once on :root — is what keeps a theme correct
+   in dark mode: the shell re-declares its tokens on <body>, so a value computed
+   at :root would keep the light palette.
+   TYPOGRAPHY rides the same contract and is read by the skins too
+   (src/shared/skins.js gives each platform its own fallback):
+   --md-font / --md-font-size / --md-line-height / --md-letter-spacing /
+   --md-para-gap / --md-heading-gap / --md-block-gap.
+   A --md-* property MUST be read WITH a fallback: an unset custom property makes
+   the declaration invalid at computed-value time, so the document would silently
+   drop to the browser's own defaults instead of the shipped look.
+   scripts/check.js enforces that.
+   The reading font is stated rather than inherited because this pane has one
+   job: a mixed Chinese/English document must not pick a different face for the
+   same character in a heading, a table cell and a paragraph. The stack is the
+   app's own UI stack plus the CJK faces it would have fallen back to anyway. */
+.artifacts-markdown { padding: 14px 18px 26px; font-size: var(--md-font-size, 13.5px); line-height: var(--md-line-height, 1.8); letter-spacing: var(--md-letter-spacing, .01em); word-wrap: break-word; overflow-wrap: break-word; color: var(--dsw-alias-label-primary); background: var(--md-page, transparent); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif); }
+.artifacts-markdown > :first-child { margin-top: 0; }
+.artifacts-markdown > :last-child { margin-bottom: 0; }
+.artifacts-markdown p { margin: var(--md-para-gap, .85em) 0; }
+.artifacts-markdown h1, .artifacts-markdown h2, .artifacts-markdown h3, .artifacts-markdown h4, .artifacts-markdown h5, .artifacts-markdown h6 { margin: var(--md-heading-gap, 1.7em) 0 .65em; line-height: 1.3; text-wrap: balance; font-weight: var(--md-heading-weight, 600); color: var(--md-heading, inherit); font-family: var(--md-heading-font, var(--md-font, inherit)); }
+.artifacts-markdown h1 { font-size: 1.6em; padding-bottom: .3em; border-bottom: var(--md-h1-rule-w, 1px) solid var(--md-heading-rule, var(--dsw-alias-border-l2)); }
+.artifacts-markdown h2 { font-size: 1.32em; }
+.artifacts-markdown h3 { font-size: 1.15em; }
+.artifacts-markdown h4 { font-size: 1.02em; }
+.artifacts-markdown h5 { font-size: .95em; }
+.artifacts-markdown h6 { font-size: .9em; color: var(--md-heading-soft, var(--md-heading, var(--dsw-alias-label-secondary))); }
+.artifacts-markdown hr { height: 1px; margin: 1.9em 0; border: 0; background: var(--md-rule, var(--dsw-alias-border-l2)); }
+.artifacts-markdown a { color: var(--md-link, var(--dsw-alias-state-business-primary)); text-decoration: none; }
+.artifacts-markdown a:hover { text-decoration: underline; text-underline-offset: .18em; }
+.artifacts-markdown strong { font-weight: 600; }
+.artifacts-markdown code { padding: .18em .42em; border: 1px solid var(--md-code-border, var(--dsw-alias-border-l1)); border-radius: 5px; background: var(--md-inline-code-bg, var(--dsw-alias-markdown-inline-code, var(--dsw-alias-bg-layer-1))); font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: .89em; font-variant-ligatures: none; }
+.artifacts-markdown pre { margin: var(--md-block-gap, 1.1em) 0; padding: 13px 15px; border: 1px solid var(--md-code-border, var(--dsw-alias-border-l1)); border-radius: 8px; background: var(--md-code-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); overflow: auto; line-height: 1.62; font-variant-ligatures: none; }
+.artifacts-markdown pre code { padding: 0; border: 0; background: transparent; font-size: .92em; }
+.artifacts-markdown img { max-width: 100%; height: auto; }
 /* The selection bar for a rendered document (see attachMarkdownSelectionBar in
    src/shared/markdown.js). Appended to <body>, fixed to the viewport, so it is
    outside any panel scope and carries fallbacks for the theme tokens. */
@@ -381,7 +412,7 @@ header:has([data-slot="conversation.session.header.utilities"]) {
   text-align: right;
   font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11px;
-  line-height: 1.75;
+  line-height: var(--md-line-height, 1.8);
   color: var(--dsw-alias-label-tertiary, #94a3b8);
   pointer-events: none;
   -webkit-user-select: none;
@@ -391,26 +422,36 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown picture > img { max-width: 100%; height: auto; }
 .artifacts-markdown [align="center"] { text-align: center; }
 .artifacts-markdown [align="right"] { text-align: right; }
-.artifacts-markdown blockquote { border-left: 3px solid var(--dsw-alias-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--dsw-alias-label-secondary); }
-.artifacts-markdown ul, .artifacts-markdown ol { padding-left: 24px; }
-.artifacts-markdown a { color: var(--dsw-alias-state-business-primary); }
+.artifacts-markdown blockquote { margin: var(--md-block-gap, 1.1em) 0; padding: .62em 1.05em; border-left: 3px solid var(--md-quote-bar, var(--dsw-alias-border-l3)); border-radius: 0 6px 6px 0; background: var(--md-quote-bg, var(--dsw-alias-markdown-citation, var(--dsw-alias-bg-layer-1))); color: var(--md-quote-fg, var(--dsw-alias-label-secondary)); }
+.artifacts-markdown blockquote > :first-child { margin-top: 0; }
+.artifacts-markdown blockquote > :last-child { margin-bottom: 0; }
+.artifacts-markdown blockquote blockquote { margin: .5em 0; border-left-width: 2px; background: transparent; }
+.artifacts-markdown ul, .artifacts-markdown ol { margin: var(--md-block-gap, .75em) 0; padding-left: 1.75em; }
+.artifacts-markdown li { margin: .28em 0; }
+.artifacts-markdown li > p { margin: .3em 0; }
+.artifacts-markdown li > ul, .artifacts-markdown li > ol { margin: .35em 0; }
+.artifacts-markdown ul { list-style-type: disc; }
+.artifacts-markdown ul ul { list-style-type: circle; }
+.artifacts-markdown ul ul ul { list-style-type: square; }
+.artifacts-markdown li::marker { color: var(--md-marker, var(--dsw-alias-label-tertiary)); }
 /* Math display blocks kept verbatim by mdToHtml for MathJax to typeset. */
-.artifacts-markdown .math-display { margin: 8px 0; overflow-x: auto; }
+.artifacts-markdown .math-display { margin: var(--md-block-gap, 1.1em) 0; overflow-x: auto; }
 .artifacts-markdown .math-display mjx-container { max-width: 100%; }
 /* Tables, task lists and extra inline marks produced by mdToHtml. */
-.artifacts-markdown table { border-collapse: collapse; margin: 8px 0; display: block; max-width: 100%; overflow-x: auto; font-size: 0.93em; }
-.artifacts-markdown th, .artifacts-markdown td { border: 1px solid var(--dsw-alias-border-l2); padding: 4px 9px; }
-.artifacts-markdown th { background: var(--dsw-alias-interactive-bg-hover); font-weight: 600; }
-.artifacts-markdown li.task-list-item { list-style: none; margin-left: -20px; }
-.artifacts-markdown li.task-list-item input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; accent-color: var(--dsw-alias-state-business-primary); }
-.artifacts-markdown mark { background: #ffe066; color: #241f00; border-radius: 3px; padding: 0 2px; }
-body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: #f6e7a1; }
+.artifacts-markdown table { display: block; width: max-content; max-width: 100%; margin: var(--md-block-gap, 1.1em) 0; border-collapse: collapse; overflow-x: auto; font-size: .94em; font-variant-numeric: tabular-nums; }
+.artifacts-markdown th, .artifacts-markdown td { padding: 7px 13px; border: 1px solid var(--md-table-border, var(--dsw-alias-border-l2)); }
+.artifacts-markdown th { font-weight: 600; }
+.artifacts-markdown thead th { background: var(--md-table-head-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); color: var(--md-table-head-fg, inherit); }
+.artifacts-markdown li.task-list-item { list-style: none; }
+.artifacts-markdown li.task-list-item input[type="checkbox"] { margin: 0 .4em 0 -1.35em; vertical-align: -.08em; accent-color: var(--md-accent, var(--dsw-alias-state-business-primary)); }
+.artifacts-markdown mark { background: var(--md-mark-bg, #ffe066); color: var(--md-mark-fg, #241f00); border-radius: 3px; padding: 0 2px; }
+body[data-ds-dark-theme] .artifacts-markdown mark { background: var(--md-mark-bg, #6b5c12); color: var(--md-mark-fg, #f6e7a1); }
 .artifacts-markdown del { color: var(--dsw-alias-label-tertiary); }
 .artifacts-markdown sup, .artifacts-markdown sub { line-height: 0; }
 /* Raw HTML embedded in the document: collapsible answers (<details>/<summary>,
    the courseware's "答案" convention), layout containers and simple marks. */
-.artifacts-markdown details { border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; margin: 8px 0; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
-.artifacts-markdown details > summary { position: relative; cursor: pointer; padding: 6px 28px 6px 10px; font-weight: 600; list-style: none; user-select: none; }
+.artifacts-markdown details { border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; margin: 10px 0; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.artifacts-markdown details > summary { position: relative; cursor: pointer; padding: 8px 30px 8px 12px; font-weight: 600; list-style: none; user-select: none; }
 .artifacts-markdown details > summary::-webkit-details-marker { display: none; }
 .artifacts-markdown details > summary::after { content: '▸'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--dsw-alias-label-tertiary); transition: transform .15s var(--ds-ease-in-out, ease); }
 .artifacts-markdown details[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
@@ -419,7 +460,7 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-markdown details > *:last-child { margin-bottom: 0; }
 .artifacts-markdown kbd { background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font: 0.85em var(--dsh-font-mono, ui-monospace, monospace); }
 .artifacts-markdown figure { margin: 8px 0; }
-.artifacts-markdown figcaption { margin-top: 4px; font-size: 0.9em; color: var(--dsw-alias-label-tertiary); }
+.artifacts-markdown figcaption { margin-top: 6px; font-size: .88em; color: var(--dsw-alias-label-tertiary); }
 .artifacts-markdown svg { max-width: 100%; height: auto; }
 /* Mermaid diagram containers (rendered SVG replaces the raw source). */
 .artifacts-markdown .mermaid { margin: 10px 0; overflow-x: auto; text-align: center; }
@@ -784,6 +825,16 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-chip { padding: 4px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
 .artifacts-chip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .12)); color: var(--dsw-alias-label-primary); }
 .artifacts-chip.is-on { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+/* The theme chips carry a dot of the theme's own accent (see 设置 › Markdown
+   文档主题). 默认 has no accent of its own — it IS the app theme — so it draws a
+   half-light/half-dark disc instead of a colour, which is also the honest
+   picture of "follows the app's light/dark mode". */
+.artifacts-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .14); background: var(--frog-swatch, transparent); }
+/* In dark mode the dot switches to the palette's own dark accent: a navy or a
+   near-black ink dot would otherwise disappear into the settings page. Both
+   values arrive inline from src/shared/themes.js (see markdownThemeOptions). */
+[data-ds-dark-theme] .artifacts-swatch { background: var(--frog-swatch-dark, var(--frog-swatch, transparent)); }
+.artifacts-swatch.is-auto { background: linear-gradient(135deg, var(--dsw-alias-bg-layer-1) 0 50%, var(--dsw-alias-label-primary) 50% 100%); }
 .artifacts-widthinput { width: 76px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; border-radius: 6px; padding: 4px 8px; }
 .artifacts-suffix { color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 22px; }
 

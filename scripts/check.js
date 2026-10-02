@@ -653,23 +653,171 @@ if (shared) {
     // picker offers is accepted.
     {
       const skins = new Function(read('src/shared/skins.js') + '\nreturn { MD_SKIN_ORDER, MD_SKIN_CSS, markdownSkinOptions }')()
+      const themes = new Function(read('src/shared/themes.js') + '\nreturn { MD_THEME_ORDER, MD_THEME_CSS, markdownThemeOptions, markdownThemeName, markdownThemeClass, markdownThemeCss }')()
       const settingsMod = new Function(read('src/shared/settings.js') + '\nreturn { SETTINGS_CHOICES }')()
-      const listed = settingsMod.SETTINGS_CHOICES.markdownSkin
-      const real = skins.MD_SKIN_ORDER
-      if (JSON.stringify(listed) !== JSON.stringify(real)) {
-        throw new Error('the settings allow-list ' + JSON.stringify(listed) + ' is not the skins list ' + JSON.stringify(real))
+      // Both name-valued settings, one loop: the same copy-vs-source comparison
+      // (the settings module cannot reference the skins/themes modules — it is
+      // evaluated FIRST in both bundles) and the same "listed but has no CSS" rule.
+      for (const [key, label, list, css] of [
+        ['markdownSkin', 'skins', skins.MD_SKIN_ORDER, skins.MD_SKIN_CSS],
+        ['markdownTheme', 'themes', themes.MD_THEME_ORDER, themes.MD_THEME_CSS],
+      ]) {
+        const listed = settingsMod.SETTINGS_CHOICES[key]
+        if (JSON.stringify(listed) !== JSON.stringify(list)) {
+          throw new Error('the settings allow-list for ' + key + ' ' + JSON.stringify(listed) + ' is not the ' + label + ' list ' + JSON.stringify(list))
+        }
+        for (const name of list) {
+          if (name !== 'default' && !css[name]) throw new Error(name + ' is listed as a ' + label + ' but has no CSS')
+        }
       }
       const options = skins.markdownSkinOptions().map((o) => o.value)
-      if (JSON.stringify(options) !== JSON.stringify(real)) {
-        throw new Error('the picker offers ' + JSON.stringify(options) + ', not ' + JSON.stringify(real))
+      if (JSON.stringify(options) !== JSON.stringify(skins.MD_SKIN_ORDER)) {
+        throw new Error('the picker offers ' + JSON.stringify(options) + ', not ' + JSON.stringify(skins.MD_SKIN_ORDER))
       }
-      for (const name of real) {
-        if (name !== 'default' && !skins.MD_SKIN_CSS[name]) throw new Error(name + ' is listed as a skin but has no CSS')
+      const themeOptions = themes.markdownThemeOptions()
+      if (JSON.stringify(themeOptions.map((o) => o.value)) !== JSON.stringify(themes.MD_THEME_ORDER)) {
+        throw new Error('the theme picker offers ' + JSON.stringify(themeOptions.map((o) => o.value)) + ', not ' + JSON.stringify(themes.MD_THEME_ORDER))
+      }
+      // A theme the picker cannot draw a colour for is a name with no picture —
+      // in BOTH modes, since a navy dot is invisible on a dark settings page.
+      for (const opt of themeOptions) {
+        if (opt.value === 'default') {
+          if (opt.swatch || opt.swatchDark) throw new Error('the default theme grew a swatch of its own')
+          continue
+        }
+        for (const [where, hex] of [['light', opt.swatch], ['dark', opt.swatchDark]]) {
+          if (!/^#[0-9a-f]{6}$/i.test(String(hex))) {
+            throw new Error('the ' + opt.value + ' theme has no ' + where + ' swatch for the picker: ' + JSON.stringify(hex))
+          }
+        }
+        if (opt.swatch === opt.swatchDark) {
+          throw new Error('the ' + opt.value + ' theme uses one swatch for both modes, which cannot be legible in both: ' + opt.swatch)
+        }
+      }
+      // The two helpers the renderers call: an unknown name degrades to the
+      // SHIPPED look — an empty class and no CSS — never to a class that matches
+      // nothing (a document wearing a class no stylesheet defines is unstyled).
+      if (themes.markdownThemeName('nonsense') !== 'default') throw new Error('markdownThemeName does not degrade an unknown theme')
+      if (themes.markdownThemeClass('default') !== '' || themes.markdownThemeClass('nonsense') !== '') {
+        throw new Error('markdownThemeClass does not degrade an unknown theme to the default')
+      }
+      if (themes.markdownThemeClass('orange') !== ' md-theme-orange') {
+        throw new Error('markdownThemeClass did not build the orange class: ' + JSON.stringify(themes.markdownThemeClass('orange')))
+      }
+      if (themes.markdownThemeCss('default') !== '' || themes.markdownThemeCss('nonsense') !== '') {
+        throw new Error('markdownThemeCss does not degrade an unknown theme to the default')
       }
     }
-    ok('settings shape', 'defaults, clamping, boolean coercion, name-valued choices (compared with the skins list) and round trip')
+    ok('settings shape', 'defaults, clamping, boolean coercion, both name-valued choices (the skins list and the themes list, each compared with its own source) and round trip')
   } catch (e) {
     bad('settings shape', e && e.message ? e.message : String(e))
+  }
+
+  // ── The document theme layer must be a CONTRACT, not a pile of one-offs ────
+  // A theme paints by setting --md-* properties that the base stylesheets and
+  // the skins read with their own token as the fallback (see src/shared/themes.js).
+  // Two failures are possible and NEITHER is visible in the app: a theme that
+  // sets a property nothing reads (a typo — the theme looks half-applied), and a
+  // property read somewhere that no theme ever sets (an axis that does nothing).
+  // Both are machine-checkable across the three files that hold the two halves,
+  // so they are checked rather than trusted.
+  try {
+    const themes = new Function(read('src/shared/themes.js') + '\nreturn { MD_THEME_ORDER, MD_THEME_CSS }')()
+    const consumers = [read('src/client/styles.js'), read('src/host/page.js'), read('src/shared/skins.js')]
+    const consumed = new Set()
+    for (const css of consumers) {
+      for (const m of css.matchAll(/var\(\s*(--md-[a-z0-9-]+)/g)) consumed.add(m[1])
+    }
+    const painted = new Set()
+    for (const name of themes.MD_THEME_ORDER) {
+      for (const m of String(themes.MD_THEME_CSS[name] || '').matchAll(/(--md-[a-z0-9-]+)\s*:/g)) painted.add(m[1])
+    }
+    const useless = [...painted].filter((n) => !consumed.has(n))
+    if (useless.length) throw new Error('a theme sets ' + useless.join(', ') + ' but no stylesheet reads it')
+    // The properties every theme must paint: without them a chosen theme would
+    // not visibly change the document, which is the entire feature.
+    const mustPaint = ['--md-heading', '--md-link', '--md-rule', '--md-quote-bar', '--md-quote-bg', '--md-code-bg', '--md-table-head-bg']
+    for (const name of themes.MD_THEME_ORDER) {
+      if (name === 'default') continue
+      const css = String(themes.MD_THEME_CSS[name])
+      const missing = mustPaint.filter((p) => css.indexOf(p + ':') < 0)
+      if (missing.length) throw new Error('the ' + name + ' theme does not paint ' + missing.join(', '))
+      // Both modes or the theme is broken in half the app.
+      if (css.indexOf('[data-ds-dark-theme]') < 0) throw new Error('the ' + name + ' theme has no dark values')
+      if (css.indexOf('.md-theme-' + name) < 0) throw new Error('the ' + name + ' theme\'s rules are not scoped by its own class')
+    }
+    ok('document theme contract', consumed.size + ' --md-* properties read by the panel stylesheet, the popout stylesheet and the skins; every theme sets only those, paints the visible essentials, scopes its rules to its own class, and defines both light and dark values')
+  } catch (e) {
+    bad('document theme contract', e && e.message ? e.message : String(e))
+  }
+
+  // ── The document TYPOGRAPHY layer must be readable without a theme ─────────
+  // The reading rhythm (font, size, leading, tracking, the gaps between blocks)
+  // is a --md-* contract like the palette, and the base stylesheets and every
+  // skin read it with their OWN value as the fallback. Two failures are silent
+  // and this is where they are caught:
+  //   · a read with NO fallback. An unset custom property makes the declaration
+  //     invalid at computed-value time, so the property falls back to the
+  //     browser's default — a document that never got a theme would quietly lose
+  //     its size or its leading, and nothing on screen would say why.
+  //   · a rule written for only ONE of the two faces. The panel's root is
+  //     .artifacts-markdown and the popout's is .markdown, so neither stylesheet
+  //     can cover for the other: a rhythm added to one is invisible in the other
+  //     window until somebody opens it.
+  const TYPO_PROPS = ['--md-font', '--md-font-size', '--md-line-height', '--md-letter-spacing', '--md-para-gap', '--md-heading-gap', '--md-block-gap']
+  try {
+    const readProps = (css) => {
+      const found = new Map()
+      for (const name of TYPO_PROPS) {
+        // The name is terminated by the comma (a fallback) or the closing paren
+        // (none) — --md-font must not match inside --md-font-size.
+        const re = new RegExp('var\\(\\s*' + name + '\\s*([,)])', 'g')
+        let m
+        while ((m = re.exec(css))) {
+          if (!found.has(name)) found.set(name, [])
+          found.get(name).push(m[1])
+        }
+      }
+      return found
+    }
+    const faces = [
+      ['the panel stylesheet', read('src/client/styles.js')],
+      ['the popout stylesheet', read('src/host/page.js')],
+    ]
+    const problems = []
+    for (const [where, css] of faces) {
+      const found = readProps(css)
+      if (!found.size) problems.push(where + ' reads no typography property at all')
+      for (const [name, tails] of found) {
+        if (tails.includes(')')) problems.push(where + ' reads ' + name + ' with no fallback')
+      }
+    }
+    if (!problems.length) {
+      const panelSet = [...readProps(faces[0][1]).keys()].sort().join(',')
+      const pageSet = [...readProps(faces[1][1]).keys()].sort().join(',')
+      if (panelSet !== pageSet) {
+        problems.push('the two faces read different typography: the panel reads [' + panelSet + '], the popout reads [' + pageSet + ']')
+      }
+    }
+    // Every skin states the reading font and the two properties a reader feels
+    // first — the size and the leading — with its own fallback, or it would
+    // silently inherit the base pane's rhythm instead of the platform's.
+    const skins = new Function(read('src/shared/skins.js') + '\nreturn { MD_SKIN_ORDER, MD_SKIN_CSS }')()
+    for (const name of skins.MD_SKIN_ORDER) {
+      const css = String(skins.MD_SKIN_CSS[name] || '')
+      if (!css) continue
+      const found = readProps(css)
+      for (const want of ['--md-font', '--md-font-size', '--md-line-height']) {
+        const tails = found.get(want)
+        if (!tails) problems.push('the ' + name + ' skin never reads ' + want)
+        else if (tails.includes(')')) problems.push('the ' + name + ' skin reads ' + want + ' with no fallback')
+      }
+    }
+    if (problems.length) throw new Error(problems.join('; '))
+    const panelCount = readProps(faces[0][1]).size
+    ok('document typography contract', TYPO_PROPS.length + ' typography properties read by both faces (' + panelCount + ' of them here) and by every skin, each with its own fallback — an unset property would silently drop the document to the browser\'s defaults')
+  } catch (e) {
+    bad('document typography contract', e && e.message ? e.message : String(e))
   }
 
   // The panel's opening width is what a user sees first, and a regression to
@@ -940,9 +1088,10 @@ if (shared) {
       // inline formatting still applied.
       ['a plain quote', '> hello', (h) => h === '<blockquote>hello</blockquote>'],
       ['inline inside a quote', '> **b** and `c`', (h) => h === '<blockquote><strong>b</strong> and <code>c</code></blockquote>'],
-      // Two source lines are two paragraphs, exactly as they are outside a quote
-      // — and the `</p>` must not be torn out of the middle of the run.
-      ['two lines', '> one\n> two', (h) => h === '<blockquote><p>one</p>\n<p>two</p></blockquote>'],
+      // Two source lines are ONE paragraph — a soft break is a space — while a
+      // quoted blank line is still a paragraph break.
+      ['two lines are one paragraph', '> one\n> two', (h) => h === '<blockquote>one two</blockquote>'],
+      ['a quoted blank line still splits', '> one\n>\n> two', (h) => h === '<blockquote><p>one</p>\n<p>two</p></blockquote>'],
     ]
     const wrong = cases
       .filter(([, src, want]) => !want(md.mdToHtml(src)))
@@ -998,6 +1147,86 @@ console.log('markdown lists and tables')
     ok('markdown lists and tables', `${cases.length} shapes: ${cases.map(([n]) => n).join(', ')}`)
   } catch (e) {
     bad('markdown lists and tables', e && e.message ? e.message : String(e))
+  }
+}
+
+// A paragraph is a RUN of lines, and an inline pass owes the document the marks
+// it actually wrote. Before this, four things were lost or misread:
+//
+//   · every source line became its own <p>, so hard-wrapped prose — and a
+//     Chinese paragraph broken across source lines — read as over-spaced text;
+//   · _em_ and __strong__ were not emphasis at all, ***x*** and **a *b* c**
+//     came out half-rendered, and a backslash escape printed its own backslash;
+//   · a link or image title made the whole link disappear;
+//   · a code span's content was still scanned for emphasis and URLs.
+console.log('markdown paragraphs and inline marks')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') + '\nreturn { mdToHtml }',
+    )()
+    const cases = [
+      // ── a paragraph is a run ──────────────────────────────────────────────
+      ['a wrapped paragraph is one run', 'first\nsecond\nthird', (h) => h === '<p>first second third</p>'],
+      ['a blank line still separates', 'a\n\nb', (h) => h === '<p>a</p>\n<p>b</p>'],
+      ['a list interrupts a run', 'text\n- a\n- b', (h) => h === '<p>text</p>\n<ul><li>a</li><li>b</li></ul>'],
+      ['a heading interrupts a run', 'text\n# H', (h) => h === '<p>text</p>\n<h1>H</h1>'],
+      ['a quote interrupts a run', 'text\n> q', (h) => h === '<p>text</p>\n<blockquote>q</blockquote>'],
+      ['a fence interrupts a run', 'text\n\x60\x60\x60\nx\n\x60\x60\x60', (h) => h.startsWith('<p>text</p>') && h.includes('<pre>')],
+      ['a table interrupts a run', 'text\n| a | b |\n|---|---|\n| 1 | 2 |', (h) => h.startsWith('<p>text</p>') && h.includes('<table>')],
+      ['an hr interrupts a run', 'a\nb\n\n---\n\nc', (h) => h === '<p>a b</p>\n<hr>\n<p>c</p>'],
+      // ── the quote side of the same rule ───────────────────────────────────
+      ['two quoted lines are one paragraph', '> one\n> two', (h) => h === '<blockquote>one two</blockquote>'],
+      ['a quoted blank line still splits', '> one\n>\n> two', (h) => h === '<blockquote><p>one</p>\n<p>two</p></blockquote>'],
+      ['marks two deep in a quote', '> - **a**\n>   - \x60b\x60', (h) => h === '<blockquote><ul><li><strong>a</strong><ul><li><code>b</code></li></ul></li></ul></blockquote>'],
+      // ── inline marks ──────────────────────────────────────────────────────
+      ['underscore emphasis', '_em_ __strong__', (h) => h === '<p><em>em</em> <strong>strong</strong></p>'],
+      ['an underscore inside a word stays', 'snake_case_name', (h) => h === '<p>snake_case_name</p>'],
+      ['a CJK underscore inside a word stays', '中_文_字', (h) => h === '<p>中_文_字</p>'],
+      ['nested emphasis', '**bold *italic* bold**', (h) => h === '<p><strong>bold <em>italic</em> bold</strong></p>'],
+      ['a triple run', '***both***', (h) => h === '<p><strong><em>both</em></strong></p>'],
+      ['a backslash escape', '\\*literal\\* and \\_x\\_', (h) => h === '<p>*literal* and _x_</p>'],
+      ['a whitespace run is not emphasis', '** b ** and * c *', (h) => h === '<p>** b ** and * c *</p>'],
+      ['a link title', '[a](https://ex.test "T")', (h) => h === '<p><a href="https://ex.test" title="T" target="_blank" rel="noopener noreferrer">a</a></p>'],
+      ['an image title', '![alt](p.png "T")', (h) => h === '<p><img alt="alt" src="p.png" title="T"></p>'],
+      // A code span is code: its content is neither emphasized nor auto-linked,
+      // and one extra pair of backticks lets it hold a backtick of its own.
+      ['a code span keeps its marks', '\x60*x*\x60 and \x60http://ex.test\x60', (h) => h === '<p><code>*x*</code> and <code>http://ex.test</code></p>'],
+      ['a code span can hold a backtick', '\x60\x60a\x60b\x60\x60', (h) => h === '<p><code>a\x60b</code></p>'],
+      ['a 1) ordered marker', '1) a\n2) b', (h) => h === '<ol><li>a</li><li>b</li></ol>'],
+    ]
+    const wrong = cases
+      .filter(([, src, want]) => !want(md.mdToHtml(src)))
+      .map(([name, src]) => name + ' rendered as ' + JSON.stringify(md.mdToHtml(src)))
+    if (wrong.length) throw new Error(wrong.join(' | '))
+    ok('markdown paragraphs and inline marks', cases.length + ' shapes: ' + cases.map(([n]) => n).join(', '))
+  } catch (e) {
+    bad('markdown paragraphs and inline marks', e && e.message ? e.message : String(e))
+  }
+}
+
+// Markdown that shared the closing tag's line must survive the raw-HTML pass:
+// the gatherer returns the tail and mdToHtml puts it back where the element was
+// instead of dropping it. The failure mode was content that simply vanished.
+console.log('markdown block html tail')
+{
+  try {
+    const md = new Function(
+      read('src/shared/highlight.js') + '\n' + read('src/shared/markdown.js') + '\nreturn { mdToHtml }',
+    )()
+    const cases = [
+      ['a one-line details keeps its body', '<details><summary>ans</summary>**inner**</details>', (h) =>
+        h === '<details><summary>ans</summary>\n<p><strong>inner</strong></p></details>'],
+      ['a paragraph keeps its tail', '<p>a</p> tail', (h) => h === '<p>a</p>\n<p> tail</p>'],
+      ['nothing is duplicated', '<div>x</div>y', (h) => (h.match(/x/g) || []).length === 1 && (h.match(/y/g) || []).length === 1],
+    ]
+    const wrong = cases
+      .filter(([, src, want]) => !want(md.mdToHtml(src)))
+      .map(([name, src]) => name + ' rendered as ' + JSON.stringify(md.mdToHtml(src)))
+    if (wrong.length) throw new Error(wrong.join(' | '))
+    ok('markdown block html tail', cases.length + ' shapes: ' + cases.map(([n]) => n).join(', '))
+  } catch (e) {
+    bad('markdown block html tail', e && e.message ? e.message : String(e))
   }
 }
 
@@ -1174,9 +1403,8 @@ console.log('markdown source-line anchors')
       ['a fenced block', (h) => h.indexOf('<pre data-line="9" data-line-end="11" data-lineno="9\u201311">') >= 0],
       // The inner render is handed a slice of the source, so these two numbers
       // are what proves the offset: inner line 1 is source line 13, not line 1.
-      ['a quote and its inner paragraphs', (h) => h.indexOf('<blockquote data-line="13" data-line-end="14" data-lineno="13\u201314">') >= 0 &&
-        h.indexOf('<p data-line="13" data-lineno="13">引用第一行</p>') >= 0 &&
-        h.indexOf('<p data-line="14" data-lineno="14">引用第二行</p>') >= 0],
+      ['a quote and its joined paragraph', (h) => h.indexOf('<blockquote data-line="13" data-line-end="14" data-lineno="13\u201314">') >= 0 &&
+        h.indexOf('<p data-line="13" data-line-end="14" data-lineno="13\u201314">引用第一行 引用第二行</p>') >= 0],
       ['a table and its rows', (h) => h.indexOf('<table data-line="16" data-line-end="18" data-lineno="16\u201318">') >= 0 &&
         h.indexOf('<tr data-line="18" data-lineno="18">') >= 0 && h.indexOf('<td data-line="18" data-lineno="18">1</td>') >= 0],
       ['a details block and its inner paragraph', (h) => h.indexOf('<details data-line="20" data-line-end="24" data-lineno="20\u201324">') >= 0 &&
@@ -4574,7 +4802,7 @@ if (shared) {
     {
       const skinned = await mountPanel({
         shellMarkdown: true,
-        storage: { [BRIDGE.settings]: serializeSettings(normalizeSettings({ markdownSkin: 'github' })) },
+        storage: { [BRIDGE.settings]: serializeSettings(normalizeSettings({ markdownSkin: 'github', markdownTheme: 'bookblue' })) },
       })
       const reg = skinned.boot.registrations.find((r) => r.def.name === 'sidebar.right.tab.document')
       const el = reg.component({
@@ -4592,9 +4820,18 @@ if (shared) {
       if (String(rendered.props.className).indexOf('md-skin-github') < 0) {
         throw new Error('the chosen skin is not on the render root: ' + JSON.stringify(rendered.props.className))
       }
+      // …and the theme, on the same root and in its OWN style tag. Two tags, so
+      // that a skin switch cannot rewrite the theme: asserted by id here, since
+      // one tag carrying both stylesheets would pass a weaker assertion.
+      if (String(rendered.props.className).indexOf('md-theme-bookblue') < 0) {
+        throw new Error('the chosen theme is not on the render root: ' + JSON.stringify(rendered.props.className))
+      }
       const tags = skinned.styleTags || []
       if (!tags.some((t) => t.id === 'dsh-sidebar-frog-skin' && String(t.textContent).indexOf('.md-skin-github h1') >= 0)) {
         throw new Error('the skin stylesheet was not put on the page: ' + JSON.stringify(tags.map((t) => t.id)))
+      }
+      if (!tags.some((t) => t.id === 'dsh-sidebar-frog-theme' && String(t.textContent).indexOf('.md-theme-bookblue') >= 0)) {
+        throw new Error('the theme stylesheet was not put on the page: ' + JSON.stringify(tags.map((t) => t.id)))
       }
 
       // 设置 › 预览显示行号, on the same render: the class the stylesheet keys off
@@ -4632,7 +4869,7 @@ if (shared) {
         }
       }
     }
-    ok('lent markdown body (rendered)', 'delegates to the panel\'s own MarkdownView, carries the address\'s session, wears the chosen document skin (class + one stylesheet), and byte payloads degrade to a hint')
+    ok('lent markdown body (rendered)', 'delegates to the panel\'s own MarkdownView, carries the address\'s session, wears the chosen document skin and theme (two classes, two stylesheets, neither able to rewrite the other), and byte payloads degrade to a hint')
   } catch (e) {
     bad('lent markdown body (rendered)', e && e.message ? e.message : String(e))
   }
@@ -6588,7 +6825,9 @@ try {
     if (!reg) throw new Error('the settings section was not registered')
     panel.r.setComponent(reg.component)
     await panel.flush()
-    const chips = panel.r.findAll('artifacts-chip')
+    // Two pickers share the chip shape (skin and theme), so the skin guard has to
+    // name its own chips rather than trusting findAll to mean "the skin row".
+    const chips = panel.r.findAll('artifacts-chip').filter((c) => 'data-frog-skin' in c.props)
     const skins = chips.map((c) => c.props['data-frog-skin'])
     for (const want of ['default', 'github', 'wechat', 'zhihu']) {
       if (skins.indexOf(want) < 0) throw new Error('no ' + want + ' chip in the skin picker (' + JSON.stringify(skins) + ')')
@@ -6607,7 +6846,7 @@ try {
     if (stored.markdownSkin !== 'github') {
       throw new Error('choosing a skin wrote ' + JSON.stringify(stored.markdownSkin) + ', expected "github"')
     }
-    const after = panel.r.findAll('artifacts-chip')
+    const after = panel.r.findAll('artifacts-chip').filter((c) => 'data-frog-skin' in c.props)
     const on = after.filter((c) => /(^|\s)is-on(\s|$)/.test(String(c.props.className)))
     if (on.length !== 1 || on[0].props['data-frog-skin'] !== 'github') {
       throw new Error('the chosen chip is not the marked one: ' + JSON.stringify(on.map((c) => c.props['data-frog-skin'])))
@@ -6616,6 +6855,62 @@ try {
       throw new Error('the chosen chip does not report itself pressed')
     }
     ok('skin picker (operable)', 'four skin chips, the current one marked, and a click writes the setting — a control that cannot be operated is a missing feature')
+
+    // ── …and the same for the theme picker ─────────────────────────────────
+    // The theme row is a second control of the same shape, so it gets the same
+    // treatment: a click must write markdownTheme, mark exactly one chip, and
+    // leave markdownSkin alone (two axes, two settings — a picker that wrote the
+    // wrong key would be invisible in every other check here).
+    const themeChips = panel.r.findAll('artifacts-chip').filter((c) => 'data-frog-theme' in c.props)
+    const rows = themeChips.map((c) => c.props['data-frog-theme'])
+    for (const want of ['default', 'bookblue', 'green', 'ink', 'orange', 'paper']) {
+      if (rows.indexOf(want) < 0) throw new Error('no ' + want + ' chip in the theme picker (' + JSON.stringify(rows) + ')')
+    }
+    const themeMarked = themeChips.filter((c) => /(^|\s)is-on(\s|$)/.test(String(c.props.className)))
+    if (themeMarked.length !== 1 || themeMarked[0].props['data-frog-theme'] !== 'default') {
+      throw new Error('the theme picker does not mark the current theme: ' + JSON.stringify(themeMarked.map((c) => c.props['data-frog-theme'])))
+    }
+    if (themeChips.some((c) => typeof c.props.onClick !== 'function')) {
+      throw new Error('a theme chip has no click handler')
+    }
+    // Every chip carries a swatch: a dot of the theme's accent, or the two-tone
+    // "follows the app theme" mark for 默认 — the row is a palette, not six words.
+    for (const c of themeChips) {
+      const kids = c.props.children
+      const list = Array.isArray(kids) ? kids : [kids]
+      const swatch = list.find((k) => k && k.props && /artifacts-swatch/.test(String(k.props.className)))
+      if (!swatch) throw new Error('the ' + c.props['data-frog-theme'] + ' chip has no swatch')
+      const wantAuto = c.props['data-frog-theme'] === 'default'
+      if (wantAuto !== /(^|\s)is-auto(\s|$)/.test(String(swatch.props.className))) {
+        throw new Error('the ' + c.props['data-frog-theme'] + ' chip draws the wrong kind of swatch')
+      }
+      const style = swatch.props.style || {}
+      if (wantAuto) {
+        if (style['--frog-swatch']) throw new Error('the default chip carries an accent colour anyway')
+      } else if (!/^#[0-9a-f]{6}$/i.test(String(style['--frog-swatch']))
+        || !/^#[0-9a-f]{6}$/i.test(String(style['--frog-swatch-dark']))) {
+        throw new Error('the ' + c.props['data-frog-theme'] + ' swatch has no light/dark pair: ' + JSON.stringify(style))
+      }
+    }
+    // The click a user makes on 「书本蓝」.
+    themeChips.find((c) => c.props['data-frog-theme'] === 'bookblue').props.onClick()
+    await panel.flush()
+    const storedTheme = JSON.parse(String(panel.boot.store[BRIDGE.settings] || '{}'))
+    if (storedTheme.markdownTheme !== 'bookblue') {
+      throw new Error('choosing a theme wrote ' + JSON.stringify(storedTheme.markdownTheme) + ', expected "bookblue"')
+    }
+    if (storedTheme.markdownSkin !== 'github') {
+      throw new Error('choosing a theme also rewrote the skin: ' + JSON.stringify(storedTheme.markdownSkin))
+    }
+    const themeAfter = panel.r.findAll('artifacts-chip').filter((c) => 'data-frog-theme' in c.props)
+    const themeOn = themeAfter.filter((c) => /(^|\s)is-on(\s|$)/.test(String(c.props.className)))
+    if (themeOn.length !== 1 || themeOn[0].props['data-frog-theme'] !== 'bookblue') {
+      throw new Error('the chosen theme chip is not the marked one: ' + JSON.stringify(themeOn.map((c) => c.props['data-frog-theme'])))
+    }
+    if (String(themeOn[0].props['aria-pressed']) !== 'true') {
+      throw new Error('the chosen theme chip does not report itself pressed')
+    }
+    ok('theme picker (operable)', 'six theme chips with a swatch each, the current one marked, and a click writes markdownTheme without touching the skin — two independent axes, driven the way a user drives them')
   } catch (e) {
     bad('skin picker (operable)', e && e.message ? e.message : String(e))
   }

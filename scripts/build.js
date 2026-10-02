@@ -68,6 +68,10 @@ export function buildBundles() {
   const filetype = read('src/shared/filetype.js')
   const markdown = read('src/shared/markdown.js')
   const skins = read('src/shared/skins.js')
+  // The document PALETTES (橙 / 绿 / 书本蓝 / 墨 / 暖纸). A theme is a --md-*
+  // variable layer the base stylesheets and the skins read with their own token
+  // as the fallback — see src/shared/themes.js for why it is variables.
+  const themes = read('src/shared/themes.js')
   const highlight = read('src/shared/highlight.js')
   // Cross-window protocol + the settings shape. Both halves of the plugin get
   // the same text, which is what keeps them from drifting apart.
@@ -145,7 +149,7 @@ export function buildBundles() {
   // keeps `buildBundles()` the single place that decides what a build contains.)
   const logo = read('scripts/logo.js')
   const build = createHash('sha1')
-    .update([ext, filetype, markdown, highlight, bridge, settings, format, paths, linediff, table, range, gitslice,
+    .update([ext, filetype, markdown, skins, themes, highlight, bridge, settings, format, paths, linediff, table, range, gitslice,
       editor, office, officeCss,
       hostBody, core, pageSrc, routes,
       clientBody, clientCore, styles, icons, preview, filetree, editorUi, components, native, docpreview, usage, git, logo].join('\u0000'))
@@ -193,6 +197,9 @@ export function buildBundles() {
   page = replaceAll(page, '@@highlight@@', indent(highlight, 4))
   page = replaceAll(page, '@@markdown@@', indent(markdown, 4))
   page = replaceAll(page, '@@skins@@', indent(skins, 4))
+  // Immediately after `skins`: the two are read together by markdownThemeClass /
+  // markdownSkinClass, and the page's script calls both at render time.
+  page = replaceAll(page, '@@themes@@', indent(themes, 4))
   page = replaceAll(page, '@@editor@@', indent(editor, 4))
   // The office stylesheet goes INSIDE the page's <style> block, at its own
   // indentation (the block is written at column 0).
@@ -202,6 +209,21 @@ export function buildBundles() {
   // routed: a favicon request from a cold tab must not depend on the auth guard
   // or on the host having finished booting.
   page = replaceAll(page, '@@favicon@@', faviconDataUri())
+  // The page AS THE BROWSER RECEIVES IT. src/host/page.js is one String.raw
+  // template assigned to a const, and the host splices that module in as code,
+  // so the value of the assignment — this template body — is what its route
+  // serves. Anything else that serves the page itself (the browser suite's stub
+  // host) must serve THIS and not the module around it: handed the source, a
+  // browser takes the leading assignment line as body text, drops the doctype,
+  // and moves everything after it — the whole <head>, and with it the page's own
+  // <style> — into <body>. The page still renders and the suite still passes,
+  // but that stylesheet now sits AFTER the plugin's own style tags (which are
+  // appended to <head>), so every equal-specificity rule the product resolves
+  // one way resolves the other way under test.
+  const pageHtml = page.slice(page.indexOf('`') + 1, page.lastIndexOf('`'))
+  if (pageHtml.indexOf('<!doctype html>') !== 0) {
+    throw new Error('the popout page template could not be extracted from src/host/page.js')
+  }
 
   host = replaceAll(host, '@@build@@', build)
   host = replaceAll(host, '@@ext@@', indent(ext, 4))
@@ -241,6 +263,7 @@ export function buildBundles() {
   client = replaceAll(client, '@@highlight@@', indent(highlight, 4))
   client = replaceAll(client, '@@markdown@@', indent(markdown, 4))
   client = replaceAll(client, '@@skins@@', indent(skins, 4))
+  client = replaceAll(client, '@@themes@@', indent(themes, 4))
   // After core: the editor core reads the theme helpers core declares, and the
   // React half below mounts it.
   client = replaceAll(client, '@@editor@@', indent(editor, 4))
@@ -261,7 +284,7 @@ export function buildBundles() {
   client = replaceAll(client, '@@git@@', git)
   assertNoMarkers(client, 'client.js')
 
-  return { host, client, page, build }
+  return { host, client, page, pageHtml, build }
 }
 
 const isCli = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url

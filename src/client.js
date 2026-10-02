@@ -13,6 +13,8 @@
  *   filetype   → src/shared/filetype.js   (file-tree icon classifier + brand artwork, shared with the popout page)
  *   highlight  → src/shared/highlight.js
  *   markdown   → src/shared/markdown.js
+ *   skins      → src/shared/skins.js      (document typography skins)
+ *   themes     → src/shared/themes.js     (document colour themes)
  *   editor     → src/shared/editor.js     (the CodeMirror mount, shared with the popout page)
  *   core       → src/client/core.js       (state/store/settings helpers)
  *   styles     → src/client/styles.js     (the injected CSS)
@@ -198,7 +200,7 @@ window.__ModuleLoader__.load({
           // startup and the popout page carries it as a <meta>; settings shows
           // this one, so a half-restarted process is visible instead of looking
           // like an unrelated UI bug.
-          const BUILD = 'cbb20436'
+          const BUILD = 'dbf428ef'
 
               // Cross-window bridge between the two halves of the plugin.
     //
@@ -389,6 +391,13 @@ window.__ModuleLoader__.load({
       // dark alike. Applied to the panel, the shell's own document tab and the popout
       // page from this one value; see markdownSkinClass.
       markdownSkin: 'default',
+      // The document's PALETTE: the shipped look (follows the app theme) or one of
+      // the classic reader palettes in src/shared/themes.js (书本蓝 / 绿 / 墨 / 橙 /
+      // 暖纸). Orthogonal to markdownSkin above — a skin is typography and a theme is
+      // colour — and applied to the same three readers from this one value. Each
+      // theme paints both light and dark, so this is a choice of document look, not
+      // of app mode. See markdownThemeClass.
+      markdownTheme: 'default',
       // Show each block's SOURCE line in a gutter down the left edge of a rendered
       // document — the answer to "which line is this?" without leaving the reader.
       // The numbers come from the anchors the renderer already stamps on every block
@@ -431,6 +440,7 @@ window.__ModuleLoader__.load({
     // coupling that cannot be loaded.
     var SETTINGS_CHOICES = {
       markdownSkin: ['default', 'github', 'wechat', 'zhihu'],
+      markdownTheme: ['default', 'bookblue', 'green', 'ink', 'orange', 'paper'],
     };
 
     function clampSetting(key, value) {
@@ -2506,17 +2516,34 @@ window.__ModuleLoader__.load({
     // are terminated at end-of-document. Fences MAY appear inside — the inner
     // source is re-rendered by mdToHtml, whose fence rule consumes them.
     function gatherBlockHtml(line, i, lines, tag) {
-      var reClose = new RegExp('</' + tag + '\\b[^>]*>', 'i');
-      var reOpen = new RegExp('<' + tag + '\\b', 'i');
-      var depth = (line.match(reOpen) || []).length - (line.match(reClose) || []).length;
+      // Global, so a line carrying SEVERAL openers or closers of the same tag is
+      // counted for what it is: a non-global match reports one hit per line no
+      // matter how many times the tag appears, which silently under-counts nesting.
+      var count = function (s) {
+        return (s.match(new RegExp('<' + tag + '\\b', 'gi')) || []).length -
+          (s.match(new RegExp('</' + tag + '\\b[^>]*>', 'gi')) || []).length;
+      };
+      // The text on the line where the element closed, AFTER its own closing tag.
+      // mdToHtml re-processes it (see the caller), so
+      // '<details><summary>a</summary>**b**</details>' keeps '**b**'.
+      var tailAfterClose = function (s) {
+        var re = new RegExp('</' + tag + '\\b[^>]*>', 'gi');
+        var last = null;
+        var m;
+        while ((m = re.exec(s))) last = m;
+        return last ? s.slice(last.index + last[0].length) : '';
+      };
+      var depth = count(line);
       var buf = [line];
+      var rest = depth <= 0 ? tailAfterClose(line) : '';
       while (depth > 0 && i + 1 < lines.length) {
         i += 1;
         var ln = lines[i];
         buf.push(ln);
-        depth += (ln.match(reOpen) || []).length - (ln.match(reClose) || []).length;
+        depth += count(ln);
+        if (depth <= 0) rest = tailAfterClose(ln);
       }
-      return { block: buf.join('\n'), next: i + 1, closed: depth <= 0 };
+      return { block: buf.join('\n'), next: i + 1, closed: depth <= 0, rest: rest };
     }
     // Inline-ish elements: content is ONE inline source line (whitespace
     // collapsed), not a mini document.
@@ -2612,7 +2639,11 @@ window.__ModuleLoader__.load({
         toks.push(m);
         return '\x01K' + toks.length + '\x02';
       });
-      s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      // A double quote is left alone: it is harmless in element content, and every
+      // attribute-value site that needs it escaped (alt, title, href) does so where
+      // it builds the attribute. Escaping it here broke '[a](u "title")' — the
+      // inline pass saw &quot; where it expected a delimiter.
+      s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return s.replace(/\x01K(\d+)\x02/g, function (m, d) { return toks[Number(d) - 1] || m; });
     }
 
@@ -2702,10 +2733,27 @@ window.__ModuleLoader__.load({
     }
 
     // ── Inline pass ─────────────────────────────────────────────────────────
+    // Is this a word character for the underscore rule? ASCII plus the broad
+    // non-Latin ranges (CJK, accented Latin, Cyrillic, Greek, kana …) that Markdown
+    // treats as letters, so 'foo_bar_baz' and '中_文_字' stay literal while '_em_'
+    // and '__strong__' do not.
+    var MD_WORD = /[0-9A-Za-z_\u00c0-\uffff]/;
+    function mdIsWord(ch) { return !!ch && MD_WORD.test(ch); }
     function mdInline(s, opts) {
       opts = opts || {};
       var math = [];
       var kept = [];
+      var esc = [];
+      // A paragraph reaches this pass as several source lines joined by a newline;
+      // a soft break is a space in the output, and collapsing it here is also what
+      // lets emphasis span the break the way every other Markdown renderer allows.
+      s = String(s).replace(/\n/g, ' ');
+      // Backslash escapes come first: the document is saying "this asterisk is an
+      // asterisk", so every rule below must see a token instead of the mark.
+      s = s.replace(/\\([\\\x60*_{}\[\]()#+\-.!~=|^])/g, function (m, c) {
+        esc.push(c);
+        return '\x01E' + esc.length + '\x02';
+      });
       // Protect display ($$...$$) first, then inline ($...$) math. Tokens carry no
       // characters the markup regexes act on, and the restore is verbatim.
       s = s.replace(/\$\$([^$\n]+)\$\$/g, function (m) { math.push(m); return '\x01M' + math.length + '\x02'; });
@@ -2713,23 +2761,69 @@ window.__ModuleLoader__.load({
       // Re-protect any raw single-line <svg> that mdEscape let through, so the
       // rules below (strong/em, auto-link on xmlns URLs, …) never touch its markup.
       s = s.replace(/<svg[\s\S]*?<\/svg>/gi, function (m) { kept.push(m); return '\x01A' + kept.length + '\x02'; });
-      s = s.replace(/\x60([^\x60]+)\x60/g, function (m, c) { return '<code>' + c + '</code>'; });
+      // Code spans are shelved like links: their content is code, so emphasis,
+      // links and auto-linking must not reach inside it. One or more backticks
+      // delimit, which is what lets a span CONTAIN a backtick.
+      s = s.replace(/(\x60+)([\s\S]*?)\1/g, function (m, ticks, code) {
+        var body = code.replace(/\n/g, ' ');
+        if (body.length > 2 && body.charAt(0) === ' ' && body.charAt(body.length - 1) === ' ' && body.replace(/\s/g, '') !== '') {
+          body = body.slice(1, -1);
+        }
+        kept.push('<code>' + body + '</code>');
+        return '\x01A' + kept.length + '\x02';
+      });
       // Images and links are shelved as tokens while auto-linking runs, so a URL
-      // inside a rendered href/src cannot be wrapped in a second anchor.
-      s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-        kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts) + '">');
+      // inside a rendered href/src cannot be wrapped in a second anchor. The
+      // optional quoted string after the target is the link TITLE.
+      s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g, function (m, alt, url, title) {
+        kept.push('<img alt="' + htmlEscape(alt) + '" src="' + mdMedia(url, opts) + '"' +
+          (title ? ' title="' + htmlEscape(title) + '"' : '') + '>');
         return '\x01A' + kept.length + '\x02';
       });
-      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
-        kept.push('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a>');
+      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g, function (m, label, url, title) {
+        kept.push('<a href="' + url + '"' + (title ? ' title="' + htmlEscape(title) + '"' : '') +
+          ' target="_blank" rel="noopener noreferrer">' + label + '</a>');
         return '\x01A' + kept.length + '\x02';
       });
-      s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-      s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-      s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-      s = s.replace(/==([^=\n]+)==/g, '<mark>$1</mark>');
-      s = s.replace(/\^([^^\n]+)\^/g, '<sup>$1</sup>');
-      s = s.replace(/~([^~\n]+)~/g, '<sub>$1</sub>');
+      // Emphasis, strongest delimiter run first so '***x***' is not eaten as '**'
+      // followed by '*'. A run whose content starts or ends with whitespace is not
+      // emphasis ('** b **' stays as written), and the single '*' pass runs after
+      // the double one so '*nested*' inside '**bold *nested* bold**' is reached.
+      s = s.replace(/\*\*\*([^\n]+?)\*\*\*/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<strong><em>' + inner + '</em></strong>';
+      });
+      s = s.replace(/\*\*([^\n]+?)\*\*/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<strong>' + inner + '</strong>';
+      });
+      s = s.replace(/\*([^*\n]+?)\*/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<em>' + inner + '</em>';
+      });
+      // Underscore emphasis: it does not open or close inside a word, so
+      // 'foo_bar_baz' and '中_文_字' stay literal while '_em_' and '__strong__' work.
+      var under = function (run, open, close) {
+        s = s.replace(new RegExp(run + '([^_\\n]+?)' + run, 'g'), function (m, inner, offset) {
+          var before = offset > 0 ? s.charAt(offset - 1) : '';
+          var after = s.charAt(offset + m.length);
+          if (mdIsWord(before) && mdIsWord(after)) return m;
+          if (/^\s|\s$/.test(inner)) return m;
+          return open + inner + close;
+        });
+      };
+      under('___', '<strong><em>', '</em></strong>');
+      under('__', '<strong>', '</strong>');
+      under('_', '<em>', '</em>');
+      s = s.replace(/~~([^~\n]+?)~~/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<del>' + inner + '</del>';
+      });
+      s = s.replace(/==([^=\n]+?)==/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<mark>' + inner + '</mark>';
+      });
+      s = s.replace(/\^([^^\n]+?)\^/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<sup>' + inner + '</sup>';
+      });
+      s = s.replace(/~([^~\n]+?)~/g, function (m, inner) {
+        return /^\s|\s$/.test(inner) ? m : '<sub>' + inner + '</sub>';
+      });
       // Bare URLs. A URL directly after ( is skipped — that shape is a Markdown
       // link target handled above. Trailing punctuation is kept outside the link.
       s = s.replace(/(^|[\s([>])((?:https?:\/\/|www\.)[^\s<>"']+)/g, function (m, pre, url) {
@@ -2749,7 +2843,8 @@ window.__ModuleLoader__.load({
       // Restoring repeatedly until nothing is left fixes every nesting depth, and the
       // bound is only there so a malformed token cannot spin.
       s = restoreTokens(s, kept, 'A');
-      return restoreTokens(s, math, 'M');
+      s = restoreTokens(s, math, 'M');
+      return restoreTokens(s, esc, 'E');
     }
 
     // Replace the \x01<t>\x02 tokens with what they stand for, repeatedly: a token's
@@ -2775,7 +2870,7 @@ window.__ModuleLoader__.load({
     // go, where it used to fall out of the list as a stray paragraph still carrying
     // its indentation.
     function mdListMarker(line) {
-      var m = /^([ \t]*)([-*+]|\d+\.)([ \t]+)([\s\S]*)$/.exec(String(line));
+      var m = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)([\s\S]*)$/.exec(String(line));
       if (!m) return null;
       var bullet = m[2].charAt(0);
       return {
@@ -2878,6 +2973,24 @@ window.__ModuleLoader__.load({
       var listSpan = mdAnchor(opts, start + 1, i);
       if (listSpan) html[0] = html[0].slice(0, -1) + listSpan + '>';
       return { html: html.join(''), next: i };
+    }
+
+    // Does line i begin a block of its own? This is where a paragraph RUN ends:
+    // the shapes are exactly the ones the block pass recognizes below, so a line
+    // this returns false for is prose and belongs to the paragraph above it.
+    function mdStartsBlock(lines, i) {
+      var l = lines[i];
+      if (/^\s*(\x60{3,}|~{3,})/.test(l)) return true;
+      if (/^\s*\$\$/.test(l)) return true;
+      if (/^\s*<svg/i.test(l)) return true;
+      var bh = /^\s*<([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(l);
+      if (bh && BLOCK_HTML_TAGS[bh[1].toLowerCase()] && !(bh[1].toLowerCase() === 'summary' && /\/\s*>$/.test(l))) return true;
+      if (/^(#{1,6})\s+/.test(l)) return true;
+      if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(l)) return true;
+      if (/^\s*>\s?/.test(l)) return true;
+      if (mdListMarker(l)) return true;
+      if (isTableRow(l) && i + 1 < lines.length && isDelimRow(lines[i + 1])) return true;
+      return false;
     }
 
     // ── Block pass ──────────────────────────────────────────────────────────
@@ -3008,7 +3121,12 @@ window.__ModuleLoader__.load({
             var bhStart = i + 1;
             var bh = gatherBlockHtml(line, i, lines, bhTag);
             out.push(renderBlockHtml(bh.block, bhTag, mdOpts, bhStart, bh.next));
-            i = bh.next;
+            // Markdown that shared the closing tag's line is still source — a
+            // '<details><summary>答案</summary>正文</details>' one-liner used to drop
+            // '正文' entirely. Put the tail back where the element was and let the
+            // loop render it, so the content survives as its own block.
+            if (bh.rest.replace(/\s+$/, '') !== '') { lines[bh.next - 1] = bh.rest; i = bh.next - 1; }
+            else i = bh.next;
             continue;
           }
         }
@@ -3098,8 +3216,19 @@ window.__ModuleLoader__.load({
           continue;
         }
         if (line.trim() === '') { i += 1; continue; }
-        out.push('<p' + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
+        // A paragraph is a RUN of consecutive non-blank lines, not one line: prose
+        // that is hard-wrapped — or a Chinese paragraph broken across source lines —
+        // used to come out as one <p> per line, which is not what the author wrote
+        // and reads as cramped, over-spaced text. The run stops at the first line
+        // that starts a block of its own.
+        var paraStart = i + 1;
+        var para = [line];
         i += 1;
+        while (i < lines.length && lines[i].trim() !== '' && !mdStartsBlock(lines, i)) {
+          para.push(lines[i]);
+          i += 1;
+        }
+        out.push('<p' + mdAnchor(mdOpts, paraStart, i) + '>' + mdInline(mdEscape(para.join('\n'), mdOpts), mdOpts) + '</p>');
       }
       return out.join('\n');
     }
@@ -3355,6 +3484,12 @@ window.__ModuleLoader__.load({
     // themes. A hardcoded light palette would look broken in a dark app, and the
     // platform's own palette is not what a reader inside DSH is looking at.
     //
+    // COLOR is a separate axis: src/shared/themes.js gives the reader the classic
+    // document palettes (橙 / 绿 / 书本蓝 / 墨 / 暖纸) as a --md-* variable layer, and
+    // the color-bearing declarations below read those variables with their own
+    // token as the fallback — so a skin still paints exactly the token colour when
+    // no theme is chosen, and a chosen theme repaints the skin too.
+    //
     // Portable JS (var/function, no template literals, no closing script tag): this
     // file is inlined into the client bundle AND into the popout page's String.raw
     // template, and a backtick or a dollar-brace in it would end that template.
@@ -3380,62 +3515,79 @@ window.__ModuleLoader__.load({
 
     var MD_SKIN_CSS = {
       github: [
-        '.md-skin-github { font-size: 14px; line-height: 1.6; }',
-        '.md-skin-github h1 { font-size: 1.75em; border-bottom: 1px solid var(--dsw-alias-border-l2); padding-bottom: .3em; }',
-        '.md-skin-github h2 { font-size: 1.4em; border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: .3em; }',
-        '.md-skin-github h3 { font-size: 1.2em; }',
-        '.md-skin-github h4, .md-skin-github h5, .md-skin-github h6 { font-size: 1em; }',
-        '.md-skin-github h1, .md-skin-github h2, .md-skin-github h3 { margin: 20px 0 12px; }',
-        '.md-skin-github p { margin: 12px 0; }',
-        '.md-skin-github ul, .md-skin-github ol { padding-left: 2em; }',
-        '.md-skin-github li + li { margin-top: 4px; }',
-        '.md-skin-github code { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: .2em .4em; font-size: .85em; }',
-        '.md-skin-github pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 16px; line-height: 1.45; }',
-        '.md-skin-github pre code { background: transparent; padding: 0; font-size: .85em; }',
-        '.md-skin-github blockquote { border-left: .25em solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); padding: 0 1em; margin: 12px 0; }',
+        '.md-skin-github { font-size: var(--md-font-size, 14px); line-height: var(--md-line-height, 1.62); letter-spacing: var(--md-letter-spacing, normal); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", Helvetica, Arial, sans-serif); }',
+        '.md-skin-github > :first-child { margin-top: 0; }',
+        '.md-skin-github > :last-child { margin-bottom: 0; }',
+        '.md-skin-github p { margin: 0 0 var(--md-para-gap, 16px); }',
+        '.md-skin-github h1, .md-skin-github h2, .md-skin-github h3, .md-skin-github h4, .md-skin-github h5, .md-skin-github h6 { margin: var(--md-heading-gap, 24px) 0 16px; font-weight: 600; line-height: 1.25; }',
+        '.md-skin-github h1 { font-size: 2em; padding-bottom: .3em; border-bottom: 1px solid var(--md-heading-rule, var(--dsw-alias-border-l2)); }',
+        '.md-skin-github h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid var(--md-heading-rule, var(--dsw-alias-border-l2)); }',
+        '.md-skin-github h3 { font-size: 1.25em; }',
+        '.md-skin-github h4 { font-size: 1em; }',
+        '.md-skin-github h5 { font-size: .875em; }',
+        '.md-skin-github h6 { font-size: .85em; color: var(--dsw-alias-label-secondary); }',
+        '.md-skin-github ul, .md-skin-github ol { margin: 0 0 var(--md-block-gap, 16px); padding-left: 2em; }',
+        '.md-skin-github li + li { margin-top: .25em; }',
+        '.md-skin-github li > p { margin-top: 16px; }',
+        '.md-skin-github code { padding: .2em .4em; border: 0; border-radius: 6px; font-size: 85%; background: var(--md-inline-code-bg, var(--dsw-alias-markdown-inline-code, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-github pre { margin: 0 0 var(--md-block-gap, 16px); padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45; border: 0; border-radius: 6px; background: var(--md-code-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-github pre code { padding: 0; font-size: 100%; background: transparent; }',
+        '.md-skin-github blockquote { margin: 0 0 var(--md-block-gap, 16px); padding: 0 1em; border-left: .25em solid var(--md-quote-bar, var(--dsw-alias-border-l3)); border-radius: 0; background: var(--md-quote-bg, transparent); color: var(--md-quote-fg, var(--dsw-alias-label-secondary)); }',
         '.md-skin-github blockquote > :first-child { margin-top: 0; }',
         '.md-skin-github blockquote > :last-child { margin-bottom: 0; }',
-        '.md-skin-github hr { border: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); height: 0; margin: 24px 0; }',
-        '.md-skin-github table { display: table; width: auto; max-width: 100%; }',
-        '.md-skin-github th, .md-skin-github td { border: 1px solid var(--dsw-alias-border-l2); padding: 6px 13px; }',
-        '.md-skin-github thead tr { background: var(--dsw-alias-bg-layer-1); }',
+        '.md-skin-github hr { height: .25em; margin: 24px 0; border: 0; background: var(--md-rule, var(--dsw-alias-border-l2)); }',
+        '.md-skin-github table { display: block; width: max-content; max-width: 100%; margin: 0 0 var(--md-block-gap, 16px); overflow: auto; }',
+        '.md-skin-github th, .md-skin-github td { padding: 6px 13px; border: 1px solid var(--md-table-border, var(--dsw-alias-border-l2)); }',
+        '.md-skin-github thead th { background: var(--md-table-head-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); color: var(--md-table-head-fg, inherit); }',
+        '.md-skin-github tbody tr:nth-child(2n) { background: var(--md-table-stripe-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); }',
         '.md-skin-github img { max-width: 100%; box-sizing: content-box; }',
+        '.md-skin-github li.task-list-item input[type="checkbox"] { margin: 0 .4em 0 -1.4em; }',
       ].join('\n'),
       wechat: [
-        '.md-skin-wechat { font-size: 16px; line-height: 1.75; letter-spacing: .04em; }',
-        '.md-skin-wechat h1, .md-skin-wechat h2, .md-skin-wechat h3, .md-skin-wechat h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
-        '.md-skin-wechat h1 { font-size: 1.4em; margin: 26px 0 14px; }',
-        '.md-skin-wechat h2 { font-size: 1.25em; margin: 24px 0 12px; }',
-        '.md-skin-wechat h3 { font-size: 1.1em; margin: 20px 0 10px; }',
-        '.md-skin-wechat p { margin: 18px 0; }',
-        '.md-skin-wechat ul, .md-skin-wechat ol { padding-left: 1.6em; }',
-        '.md-skin-wechat li { margin: 8px 0; }',
-        '.md-skin-wechat code { background: var(--dsw-alias-bg-layer-1); padding: .15em .4em; border-radius: 3px; font-size: .9em; }',
-        '.md-skin-wechat pre { background: var(--dsw-alias-bg-layer-1); border-radius: 6px; padding: 14px 16px; line-height: 1.6; }',
-        '.md-skin-wechat pre code { background: transparent; padding: 0; }',
-        '.md-skin-wechat blockquote { border-left: 3px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); padding: 12px 14px; margin: 18px 0; }',
+        '.md-skin-wechat { font-size: var(--md-font-size, 16px); line-height: var(--md-line-height, 1.85); letter-spacing: var(--md-letter-spacing, .02em); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif); }',
+        '.md-skin-wechat > :first-child { margin-top: 0; }',
+        '.md-skin-wechat p { margin: var(--md-para-gap, 1.15em) 0; }',
+        '.md-skin-wechat h1, .md-skin-wechat h2, .md-skin-wechat h3, .md-skin-wechat h4 { border: 0; padding: 0; font-weight: 600; }',
+        '.md-skin-wechat h1 { font-size: 1.45em; margin: var(--md-heading-gap, 1.7em) 0 .8em; }',
+        '.md-skin-wechat h2 { font-size: 1.3em; margin: calc(var(--md-heading-gap, 1.6em) - .1em) 0 .7em; }',
+        '.md-skin-wechat h3 { font-size: 1.12em; margin: calc(var(--md-heading-gap, 1.4em) - .3em) 0 .6em; }',
+        '.md-skin-wechat ul, .md-skin-wechat ol { margin: var(--md-block-gap, 1em) 0; padding-left: 1.5em; }',
+        '.md-skin-wechat li { margin: .45em 0; }',
+        '.md-skin-wechat code { padding: .15em .4em; border: 0; border-radius: 3px; font-size: .9em; background: var(--md-inline-code-bg, var(--dsw-alias-markdown-inline-code, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-wechat pre { margin: var(--md-block-gap, 1.2em) 0; padding: 14px 16px; border: 0; border-radius: 4px; font-size: .9em; line-height: 1.65; background: var(--md-code-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-wechat pre code { padding: 0; background: transparent; }',
+        '.md-skin-wechat blockquote { margin: var(--md-block-gap, 1.2em) 0; padding: .85em 1em; border-left: 3px solid var(--md-quote-bar, var(--dsw-alias-border-l3)); border-radius: 0 4px 4px 0; background: var(--md-quote-bg, var(--dsw-alias-markdown-citation, var(--dsw-alias-bg-layer-1))); color: var(--md-quote-fg, var(--dsw-alias-label-secondary)); }',
+        '.md-skin-wechat blockquote > :first-child { margin-top: 0; }',
+        '.md-skin-wechat blockquote > :last-child { margin-bottom: 0; }',
         '.md-skin-wechat a { text-decoration: none; border-bottom: 1px solid currentColor; }',
-        // A 公众号 lays its images out as centered blocks, and separates sections
-        // with a dashed rule rather than a solid one.
-        '.md-skin-wechat img { display: block; margin: 18px auto; }',
+        '.md-skin-wechat img { display: block; max-width: 100%; margin: 1.3em auto; }',
         '.md-skin-wechat picture { display: block; text-align: center; }',
-        '.md-skin-wechat hr { border: 0; border-top: 1px dashed var(--dsw-alias-border-l2); margin: 28px 0; }',
-        '.md-skin-wechat table { display: table; width: 100%; font-size: .95em; }',
-        '.md-skin-wechat th, .md-skin-wechat td { border: 1px solid var(--dsw-alias-border-l1); padding: 8px 10px; }',
+        '.md-skin-wechat hr { height: 0; margin: 1.8em 0; border: 0; border-top: 1px dashed var(--md-rule, var(--dsw-alias-border-l2)); background: transparent; }',
+        '.md-skin-wechat table { display: table; width: 100%; margin: var(--md-block-gap, 1.2em) 0; font-size: .92em; }',
+        '.md-skin-wechat th, .md-skin-wechat td { padding: 8px 10px; border: 1px solid var(--md-table-border, var(--dsw-alias-border-l1)); }',
+        '.md-skin-wechat thead th { background: var(--md-table-head-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); color: var(--md-table-head-fg, inherit); }',
       ].join('\n'),
       zhihu: [
-        '.md-skin-zhihu { font-size: 15px; line-height: 1.7; }',
-        '.md-skin-zhihu h1, .md-skin-zhihu h2, .md-skin-zhihu h3, .md-skin-zhihu h4 { border-bottom: 0; padding-bottom: 0; font-weight: 600; }',
-        '.md-skin-zhihu h2 { font-size: 1.3em; margin: 26px 0 12px; }',
-        '.md-skin-zhihu h3 { font-size: 1.15em; margin: 22px 0 10px; }',
-        '.md-skin-zhihu p { margin: 14px 0; }',
-        '.md-skin-zhihu code { background: var(--dsw-alias-bg-layer-1); border-radius: 3px; padding: .15em .35em; font-size: .9em; }',
-        '.md-skin-zhihu pre { border-radius: 4px; padding: 12px 16px; }',
-        '.md-skin-zhihu blockquote { border-left: 3px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); color: var(--dsw-alias-label-secondary); padding: 4px 16px; margin: 16px 0; }',
-        '.md-skin-zhihu img { border-radius: 4px; }',
-        '.md-skin-zhihu table { display: table; width: 100%; font-size: .95em; }',
-        '.md-skin-zhihu th, .md-skin-zhihu td { border: 1px solid var(--dsw-alias-border-l1); padding: 7px 10px; }',
-        '.md-skin-zhihu thead tr { background: var(--dsw-alias-bg-layer-1); }',
+        '.md-skin-zhihu { font-size: var(--md-font-size, 15px); line-height: var(--md-line-height, 1.78); letter-spacing: var(--md-letter-spacing, .008em); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif); }',
+        '.md-skin-zhihu > :first-child { margin-top: 0; }',
+        '.md-skin-zhihu p { margin: var(--md-para-gap, 1em) 0; }',
+        '.md-skin-zhihu h1, .md-skin-zhihu h2, .md-skin-zhihu h3, .md-skin-zhihu h4 { border: 0; padding: 0; font-weight: 600; }',
+        '.md-skin-zhihu h1 { font-size: 1.5em; margin: var(--md-heading-gap, 1.7em) 0 .7em; }',
+        '.md-skin-zhihu h2 { font-size: 1.3em; margin: calc(var(--md-heading-gap, 1.6em) - .1em) 0 .7em; }',
+        '.md-skin-zhihu h3 { font-size: 1.12em; margin: calc(var(--md-heading-gap, 1.4em) - .3em) 0 .6em; }',
+        '.md-skin-zhihu ul, .md-skin-zhihu ol { margin: var(--md-block-gap, .9em) 0; padding-left: 1.6em; }',
+        '.md-skin-zhihu li { margin: .3em 0; }',
+        '.md-skin-zhihu code { padding: .15em .35em; border: 0; border-radius: 3px; font-size: .9em; background: var(--md-inline-code-bg, var(--dsw-alias-markdown-inline-code, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-zhihu pre { margin: var(--md-block-gap, 1.1em) 0; padding: 12px 16px; border: 0; border-radius: 4px; background: var(--md-code-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); }',
+        '.md-skin-zhihu pre code { padding: 0; background: transparent; }',
+        '.md-skin-zhihu blockquote { margin: var(--md-block-gap, 1.1em) 0; padding: .4em 1em; border-left: 3px solid var(--md-quote-bar, var(--dsw-alias-border-l3)); border-radius: 0; background: var(--md-quote-bg, transparent); color: var(--md-quote-fg, var(--dsw-alias-label-secondary)); }',
+        '.md-skin-zhihu blockquote > :first-child { margin-top: 0; }',
+        '.md-skin-zhihu blockquote > :last-child { margin-bottom: 0; }',
+        '.md-skin-zhihu img { max-width: 100%; border-radius: 4px; }',
+        '.md-skin-zhihu hr { height: 1px; margin: 1.6em 0; border: 0; background: var(--md-rule, var(--dsw-alias-border-l2)); }',
+        '.md-skin-zhihu table { display: table; width: 100%; margin: var(--md-block-gap, 1.1em) 0; font-size: .95em; }',
+        '.md-skin-zhihu th, .md-skin-zhihu td { padding: 7px 10px; border: 1px solid var(--md-table-border, var(--dsw-alias-border-l1)); }',
+        '.md-skin-zhihu thead th { background: var(--md-table-head-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); color: var(--md-table-head-fg, inherit); }',
       ].join('\n'),
     };
 
@@ -3460,6 +3612,198 @@ window.__ModuleLoader__.load({
     function markdownSkinOptions() {
       return MD_SKIN_ORDER.map(function (name) {
         return { value: name, label: MD_SKIN_LABELS[name] || name };
+      });
+    }
+
+              // ── Document themes for rendered Markdown ──────────────────────────────────
+    // A SKIN (src/shared/skins.js) decides TYPOGRAPHY: heading sizes, density, the
+    // reading font, and how a code block, a quote and a table SIT on the page. A
+    // THEME decides the document's PALETTE — the classic handful of reader palettes
+    // a courseware or a textbook is written for: 橙, 绿, 书本蓝, 墨, 暖纸.
+    // The two compose: a theme is a row of buttons next to the skin picker, and
+    // 微信 × 书本蓝 is as valid as 默认 × 默认. A theme may also restate one of the
+    // typography properties below when the palette itself calls for it — 墨 is ink
+    // on rice paper and asks for a serif's leading — which is the only reason the
+    // two axes are not strictly disjoint.
+    //
+    // HOW IT WORKS (and why it is variables rather than rules)
+    // -------------------------------------------------------
+    // Every theme paints through ONE contract of CSS custom properties, and the
+    // base stylesheets read them with their own token as the fallback:
+    //
+    //     .artifacts-markdown a { color: var(--md-link, var(--dsw-alias-state-business-primary)); }
+    //
+    // When no theme is chosen the property is UNDEFINED and the fallback is used, so
+    // the shipped look is bit-for-bit what it was before themes existed. A theme
+    // only sets the properties it wants to change, on the Markdown root itself,
+    // from where they inherit to every block.
+    //
+    // The fallback form is not a style preference, it is a correctness requirement.
+    // Declaring the DEFAULTS once on a container (":root { --md-link: var(--dsw-...) }")
+    // would compute the alias where it is DECLARED — and the shell flips dark by
+    // re-declaring tokens on <body>, not on <html>, so a value computed at :root
+    // would keep the light palette in a dark app. Reading a var() with a fallback
+    // resolves the token at the point of USE, which is why nothing here has to know
+    // about light and dark beyond overriding its own properties.
+    //
+    // The properties, and what each one paints:
+    //
+    //   --md-page             the document's own background (paper-like themes)
+    //
+    //   TYPOGRAPHY — read by the base stylesheets AND by every skin, each of which
+    //   supplies its own fallback, so an unchosen theme leaves the chosen skin's
+    //   rhythm exactly as it was:
+    //
+    //   --md-font             the document's body font-family
+    //   --md-font-size        the root font-size
+    //   --md-line-height      leading
+    //   --md-letter-spacing   tracking (a little of it reads better in CJK)
+    //   --md-para-gap         the space between paragraphs
+    //   --md-heading-gap      the space above a heading
+    //   --md-block-gap        the space around a code block, table, quote or rule
+    //
+    //   COLOUR:
+    //
+    //   --md-heading-font     h1–h6 font-family      (defaults to --md-font)
+    //   --md-heading          h1–h6 colour
+    //   --md-heading-weight   h1–h6 font-weight
+    //   --md-heading-rule     the rule under h1 (and the skin's own heading rules)
+    //   --md-h1-rule-w        its thickness
+    //   --md-rule             <hr>
+    //   --md-link             links
+    //   --md-marker           list markers
+    //   --md-accent           checkboxes and other accent-coloured controls
+    //   --md-inline-code-bg   inline code background
+    //   --md-code-bg          fenced code background
+    //   --md-code-border      the border around code and inline code
+    //   --md-quote-bar        the blockquote's left bar
+    //   --md-quote-bg         the blockquote's background
+    //   --md-quote-fg         the blockquote's text
+    //   --md-table-border     table cell borders
+    //   --md-table-head-bg    the header row's background
+    //   --md-table-head-fg    the header row's text
+    //   --md-table-stripe-bg  the zebra rows of a table (the GitHub skin's)
+    //   --md-mark-bg          <mark> background
+    //   --md-mark-fg          <mark> text
+    //
+    // Portable JS (var/function, no template literals, no closing script tag): this
+    // file is inlined into the client bundle AND into the popout page's String.raw
+    // template, and a backtick or a dollar-brace in it would end that template.
+    //
+    // Every rule is scoped by the class the Markdown ROOT carries (see
+    // markdownThemeClass), so a theme never reaches anything else on the page. The
+    // dark block is written as "[data-ds-dark-theme] .md-theme-x" because BOTH
+    // carriers of the dark marker match it: the shell puts it on <body>, the popout
+    // page puts it on <html>.
+    //
+    // default is the shipped look (no theme properties at all), so it contributes
+    // no CSS.
+
+    var MD_THEME_DEFAULT = 'default';
+
+    var MD_THEME_LABELS = {
+      default: '默认（跟随主题）',
+      orange: '橙色',
+      green: '绿色',
+      bookblue: '书本蓝',
+      ink: '墨（宋体）',
+      paper: '暖纸',
+    };
+
+    // The swatch the picker draws beside each name: the theme's own accent, so the
+    // row reads as a palette and not as six words. Two values because a document
+    // palette has two — a near-black ink or a navy is invisible as a dot on a dark
+    // settings page, so the dark swatch is the palette's own dark accent. null for
+    // the light swatch means "no accent of its own": the picker draws the two-tone
+    // disc for 默认 instead.
+    var MD_THEME_SWATCH = {
+      default: null,
+      orange: '#e07b1f',
+      green: '#2f9e44',
+      bookblue: '#1f4e79',
+      ink: '#2b2b28',
+      paper: '#c08a3e',
+    };
+
+    var MD_THEME_SWATCH_DARK = {
+      default: null,
+      orange: '#f5b662',
+      green: '#8ce99a',
+      bookblue: '#9dc3e6',
+      ink: '#d9d2c2',
+      paper: '#e8c98a',
+    };
+
+    // The order the settings panel lists them in: the shipped look first, then the
+    // classic reader palettes, in the order the palettes show up in the wild — the
+    // two warm papers (橙 / 暖纸) last, after the cool and the neutral inks.
+    var MD_THEME_ORDER = ['default', 'bookblue', 'green', 'ink', 'orange', 'paper'];
+
+    var MD_THEME_CSS = {
+      // 橙 — the warm amber a classroom deck and a highlight marker share. Paper is
+      // kept very slightly warm so the tint reads as a tint and not as a stain.
+      orange: [
+        '.md-theme-orange { --md-heading: #b45309; --md-heading-rule: #f0c48a; --md-h1-rule-w: 2px; --md-heading-weight: 600; --md-link: #c2410c; --md-marker: #d97706; --md-accent: #ea7c1f; --md-rule: #f0dcc2; --md-inline-code-bg: #fbf0e2; --md-code-bg: #fdf8f1; --md-code-border: #f2ddc2; --md-quote-bar: #f0a34d; --md-quote-bg: #fdf5ea; --md-quote-fg: #7c4a12; --md-table-border: #efdcc3; --md-table-head-bg: #fbefdd; --md-table-stripe-bg: #fdf7ee; --md-table-head-fg: #8a5312; }',
+        '[data-ds-dark-theme] .md-theme-orange { --md-heading: #f5b662; --md-heading-rule: #6b4a1f; --md-link: #ffb566; --md-marker: #f0a34d; --md-accent: #f59e0b; --md-rule: #3d2f1f; --md-inline-code-bg: #2b2119; --md-code-bg: #241d16; --md-code-border: #3d2f1f; --md-quote-bar: #b5762a; --md-quote-bg: #2a2119; --md-quote-fg: #e6c9a3; --md-table-border: #3d2f1f; --md-table-head-bg: #2b2119; --md-table-stripe-bg: #211a12; --md-table-head-fg: #f2cf9b; }',
+      ].join('\n'),
+      // 绿 — the cool, calm green of a biology plate; the lightest of the five, so
+      // its paper stays white.
+      green: [
+        '.md-theme-green { --md-heading: #1f7a3a; --md-heading-rule: #a9d9b6; --md-h1-rule-w: 2px; --md-heading-weight: 600; --md-link: #1e7a4a; --md-marker: #37b24d; --md-accent: #2f9e44; --md-rule: #cfe8d6; --md-inline-code-bg: #e9f6ec; --md-code-bg: #f4faf5; --md-code-border: #cfe8d6; --md-quote-bar: #74c98a; --md-quote-bg: #f1faf3; --md-quote-fg: #23613a; --md-table-border: #d3ead9; --md-table-head-bg: #e9f6ec; --md-table-stripe-bg: #f7fcf8; --md-table-head-fg: #1f6b36; }',
+        '[data-ds-dark-theme] .md-theme-green { --md-heading: #8ce99a; --md-heading-rule: #2c4a33; --md-link: #6ee7a0; --md-marker: #51cf66; --md-accent: #40c057; --md-rule: #2c4a33; --md-inline-code-bg: #1c2b20; --md-code-bg: #16211a; --md-code-border: #2c4a33; --md-quote-bar: #4b9e63; --md-quote-bg: #1c2b20; --md-quote-fg: #b7e4c7; --md-table-border: #2c4a33; --md-table-head-bg: #1c2b20; --md-table-stripe-bg: #131c17; --md-table-head-fg: #b7e4c7; }',
+      ].join('\n'),
+      // 书本蓝 — the deep indigo of a printed textbook cover. Cool paper, a heavier
+      // heading, and a rule under the first-level heading that reads like a printed
+      // section break.
+      bookblue: [
+        '.md-theme-bookblue { --md-heading: #1f4e79; --md-heading-rule: #a8c4e0; --md-h1-rule-w: 2px; --md-heading-weight: 700; --md-link: #1c5aa8; --md-marker: #3b7dd8; --md-accent: #2b6cb0; --md-rule: #cfdcec; --md-inline-code-bg: #eaf1f9; --md-code-bg: #f5f8fc; --md-code-border: #d3e0ef; --md-quote-bar: #6f9fd0; --md-quote-bg: #f2f6fb; --md-quote-fg: #2c4a6b; --md-table-border: #d3e0ef; --md-table-head-bg: #e8f0f9; --md-table-stripe-bg: #f8fbfe; --md-table-head-fg: #1f4e79; }',
+        '[data-ds-dark-theme] .md-theme-bookblue { --md-heading: #9dc3e6; --md-heading-rule: #2b3d52; --md-link: #8ab8f0; --md-marker: #74a9e8; --md-accent: #5b9bd5; --md-rule: #2b3d52; --md-inline-code-bg: #1d2734; --md-code-bg: #181f2a; --md-code-border: #2b3d52; --md-quote-bar: #4a7099; --md-quote-bg: #1d2734; --md-quote-fg: #bcd4ea; --md-table-border: #2b3d52; --md-table-head-bg: #1d2734; --md-table-stripe-bg: #151b24; --md-table-head-fg: #bcd4ea; }',
+      ].join('\n'),
+      // 墨 — ink on rice paper: a serif body, an off-white page and almost no hue.
+      // The one theme that changes the TYPE, not just the colour, which is why it
+      // is named after the ink rather than after a colour.
+      ink: [
+        '.md-theme-ink { --md-page: #fbf9f4; --md-font: Georgia, "Songti SC", "SimSun", "Noto Serif SC", serif; --md-heading-font: var(--md-font); --md-line-height: 1.92; --md-letter-spacing: .02em; --md-para-gap: 1em; --md-block-gap: 1.25em; --md-heading: #1c1c1a; --md-heading-weight: 700; --md-heading-rule: #c9c2b4; --md-h1-rule-w: 2px; --md-link: #9c5a3c; --md-marker: #a89b7f; --md-accent: #8c7a5b; --md-rule: #d8d1bf; --md-inline-code-bg: #efeade; --md-code-bg: #f4f1e9; --md-code-border: #ddd6c4; --md-quote-bar: #b8ad96; --md-quote-bg: #f6f3ec; --md-quote-fg: #4a463c; --md-table-border: #ddd6c4; --md-table-head-bg: #efeade; --md-table-stripe-bg: #f8f5ee; --md-table-head-fg: #3a3630; --md-mark-bg: #f2e2a8; --md-mark-fg: #3a3020; }',
+        '[data-ds-dark-theme] .md-theme-ink { --md-page: #1a1a18; --md-heading: #ece7db; --md-heading-rule: #4a453a; --md-link: #d8ab7f; --md-marker: #b0a184; --md-accent: #b0a184; --md-rule: #3a382f; --md-inline-code-bg: #26251f; --md-code-bg: #201f1c; --md-code-border: #3a382f; --md-quote-bar: #6b6455; --md-quote-bg: #24231f; --md-quote-fg: #cfc9ba; --md-table-border: #3a382f; --md-table-head-bg: #26251f; --md-table-stripe-bg: #1d1c19; --md-table-head-fg: #ddd6c4; --md-mark-bg: #5c4a1c; --md-mark-fg: #f6e7a1; }',
+      ].join('\n'),
+      // 暖纸 — the eye-comfort sepia of a paperback (and of every 护眼模式): a
+      // cream page, brown ink, no serif change, so it can be worn all day.
+      paper: [
+        '.md-theme-paper { --md-page: #fdf6e3; --md-heading: #8a5a1e; --md-heading-rule: #e6d3a8; --md-h1-rule-w: 2px; --md-heading-weight: 600; --md-link: #a05a1b; --md-marker: #b8860b; --md-accent: #c08a3e; --md-rule: #e6d6ae; --md-inline-code-bg: #f3e8cd; --md-code-bg: #f7efdb; --md-code-border: #e6d6ae; --md-quote-bar: #d8b978; --md-quote-bg: #f8efd8; --md-quote-fg: #6b5325; --md-table-border: #e6d6ae; --md-table-head-bg: #f4e9cd; --md-table-stripe-bg: #fbf4e2; --md-table-head-fg: #7a5520; --md-mark-bg: #f0dfa8; --md-mark-fg: #4a3a12; }',
+        '[data-ds-dark-theme] .md-theme-paper { --md-page: #211f1a; --md-heading: #e8c98a; --md-heading-rule: #4a4130; --md-link: #e0b070; --md-marker: #cbb37a; --md-accent: #c9a15c; --md-rule: #3a3428; --md-inline-code-bg: #2b271e; --md-code-bg: #262218; --md-code-border: #3a3428; --md-quote-bar: #8a7444; --md-quote-bg: #2b271e; --md-quote-fg: #ddc9a0; --md-table-border: #3a3428; --md-table-head-bg: #2b271e; --md-table-stripe-bg: #201d15; --md-table-head-fg: #e3d2ab; --md-mark-bg: #5c4a1c; --md-mark-fg: #f6e7a1; }',
+      ].join('\n'),
+    };
+
+    // The theme actually applied: an unknown or missing name is the shipped look, so
+    // a hand-edited localStorage entry can never leave a document unpainted.
+    function markdownThemeName(name) {
+      return Object.prototype.hasOwnProperty.call(MD_THEME_CSS, name) ? name : MD_THEME_DEFAULT;
+    }
+
+    // The extra class the Markdown root carries. Empty for the default theme.
+    function markdownThemeClass(name) {
+      var n = markdownThemeName(name);
+      return n === MD_THEME_DEFAULT ? '' : ' md-theme-' + n;
+    }
+
+    // The CSS for one theme: '' for the default (it sets no properties at all).
+    function markdownThemeCss(name) {
+      return MD_THEME_CSS[markdownThemeName(name)] || '';
+    }
+
+    // [{ value, label, swatch, swatchDark }] for the settings control, in listing
+    // order. swatch is '' for 默认 (it has no accent of its own); swatchDark falls
+    // back to swatch, so a caller never has to know whether a palette needed a
+    // second value.
+    function markdownThemeOptions() {
+      return MD_THEME_ORDER.map(function (name) {
+        var light = MD_THEME_SWATCH[name] || '';
+        return {
+          value: name,
+          label: MD_THEME_LABELS[name] || name,
+          swatch: light,
+          swatchDark: MD_THEME_SWATCH_DARK[name] || light,
+        };
       });
     }
 
@@ -4711,14 +5055,45 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-pdfview-spacer { flex: 1; }
 .artifacts-pdfview-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .artifacts-pdfview-canvas { display: block; margin: 0 auto; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, .35); }
-.artifacts-markdown { padding: 12px 14px; line-height: 1.6; word-wrap: break-word; font-size: 13px; }
-.artifacts-markdown h1, .artifacts-markdown h2, .artifacts-markdown h3, .artifacts-markdown h4, .artifacts-markdown h5, .artifacts-markdown h6 { margin: 14px 0 8px; line-height: 1.3; }
-.artifacts-markdown h1 { font-size: 1.45em; border-bottom: 1px solid var(--dsw-alias-border-l2); padding-bottom: 6px; }
-.artifacts-markdown h2 { font-size: 1.25em; border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: 4px; }
-.artifacts-markdown code { background: var(--dsw-alias-bg-layer-1); padding: 1px 5px; border-radius: 4px; font-family: var(--dsh-font-mono, ui-monospace, monospace); font-size: 0.9em; }
-.artifacts-markdown pre { background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; border-radius: 6px; overflow: auto; }
-.artifacts-markdown pre code { background: transparent; padding: 0; }
-.artifacts-markdown img { max-width: 100%; }
+/* ── The document typography + palette layer (--md-*, see themes.js) ───────
+   Every declaration below reads its own --md-* property with the shipped value
+   as the FALLBACK, so with no theme chosen the look is exactly what it always
+   was, and a chosen theme repaints the document by setting the property on the
+   root (see 设置 › Markdown 文档主题). Reading the value at the point of USE —
+   rather than declaring a default once on :root — is what keeps a theme correct
+   in dark mode: the shell re-declares its tokens on <body>, so a value computed
+   at :root would keep the light palette.
+   TYPOGRAPHY rides the same contract and is read by the skins too
+   (src/shared/skins.js gives each platform its own fallback):
+   --md-font / --md-font-size / --md-line-height / --md-letter-spacing /
+   --md-para-gap / --md-heading-gap / --md-block-gap.
+   A --md-* property MUST be read WITH a fallback: an unset custom property makes
+   the declaration invalid at computed-value time, so the document would silently
+   drop to the browser's own defaults instead of the shipped look.
+   scripts/check.js enforces that.
+   The reading font is stated rather than inherited because this pane has one
+   job: a mixed Chinese/English document must not pick a different face for the
+   same character in a heading, a table cell and a paragraph. The stack is the
+   app's own UI stack plus the CJK faces it would have fallen back to anyway. */
+.artifacts-markdown { padding: 14px 18px 26px; font-size: var(--md-font-size, 13.5px); line-height: var(--md-line-height, 1.8); letter-spacing: var(--md-letter-spacing, .01em); word-wrap: break-word; overflow-wrap: break-word; color: var(--dsw-alias-label-primary); background: var(--md-page, transparent); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif); }
+.artifacts-markdown > :first-child { margin-top: 0; }
+.artifacts-markdown > :last-child { margin-bottom: 0; }
+.artifacts-markdown p { margin: var(--md-para-gap, .85em) 0; }
+.artifacts-markdown h1, .artifacts-markdown h2, .artifacts-markdown h3, .artifacts-markdown h4, .artifacts-markdown h5, .artifacts-markdown h6 { margin: var(--md-heading-gap, 1.7em) 0 .65em; line-height: 1.3; text-wrap: balance; font-weight: var(--md-heading-weight, 600); color: var(--md-heading, inherit); font-family: var(--md-heading-font, var(--md-font, inherit)); }
+.artifacts-markdown h1 { font-size: 1.6em; padding-bottom: .3em; border-bottom: var(--md-h1-rule-w, 1px) solid var(--md-heading-rule, var(--dsw-alias-border-l2)); }
+.artifacts-markdown h2 { font-size: 1.32em; }
+.artifacts-markdown h3 { font-size: 1.15em; }
+.artifacts-markdown h4 { font-size: 1.02em; }
+.artifacts-markdown h5 { font-size: .95em; }
+.artifacts-markdown h6 { font-size: .9em; color: var(--md-heading-soft, var(--md-heading, var(--dsw-alias-label-secondary))); }
+.artifacts-markdown hr { height: 1px; margin: 1.9em 0; border: 0; background: var(--md-rule, var(--dsw-alias-border-l2)); }
+.artifacts-markdown a { color: var(--md-link, var(--dsw-alias-state-business-primary)); text-decoration: none; }
+.artifacts-markdown a:hover { text-decoration: underline; text-underline-offset: .18em; }
+.artifacts-markdown strong { font-weight: 600; }
+.artifacts-markdown code { padding: .18em .42em; border: 1px solid var(--md-code-border, var(--dsw-alias-border-l1)); border-radius: 5px; background: var(--md-inline-code-bg, var(--dsw-alias-markdown-inline-code, var(--dsw-alias-bg-layer-1))); font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: .89em; font-variant-ligatures: none; }
+.artifacts-markdown pre { margin: var(--md-block-gap, 1.1em) 0; padding: 13px 15px; border: 1px solid var(--md-code-border, var(--dsw-alias-border-l1)); border-radius: 8px; background: var(--md-code-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); overflow: auto; line-height: 1.62; font-variant-ligatures: none; }
+.artifacts-markdown pre code { padding: 0; border: 0; background: transparent; font-size: .92em; }
+.artifacts-markdown img { max-width: 100%; height: auto; }
 /* The selection bar for a rendered document (see attachMarkdownSelectionBar in
    src/shared/markdown.js). Appended to <body>, fixed to the viewport, so it is
    outside any panel scope and carries fallbacks for the theme tokens. */
@@ -4756,7 +5131,7 @@ header:has([data-slot="conversation.session.header.utilities"]) {
   text-align: right;
   font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11px;
-  line-height: 1.75;
+  line-height: var(--md-line-height, 1.8);
   color: var(--dsw-alias-label-tertiary, #94a3b8);
   pointer-events: none;
   -webkit-user-select: none;
@@ -4766,26 +5141,36 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .artifacts-markdown picture > img { max-width: 100%; height: auto; }
 .artifacts-markdown [align="center"] { text-align: center; }
 .artifacts-markdown [align="right"] { text-align: right; }
-.artifacts-markdown blockquote { border-left: 3px solid var(--dsw-alias-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--dsw-alias-label-secondary); }
-.artifacts-markdown ul, .artifacts-markdown ol { padding-left: 24px; }
-.artifacts-markdown a { color: var(--dsw-alias-state-business-primary); }
+.artifacts-markdown blockquote { margin: var(--md-block-gap, 1.1em) 0; padding: .62em 1.05em; border-left: 3px solid var(--md-quote-bar, var(--dsw-alias-border-l3)); border-radius: 0 6px 6px 0; background: var(--md-quote-bg, var(--dsw-alias-markdown-citation, var(--dsw-alias-bg-layer-1))); color: var(--md-quote-fg, var(--dsw-alias-label-secondary)); }
+.artifacts-markdown blockquote > :first-child { margin-top: 0; }
+.artifacts-markdown blockquote > :last-child { margin-bottom: 0; }
+.artifacts-markdown blockquote blockquote { margin: .5em 0; border-left-width: 2px; background: transparent; }
+.artifacts-markdown ul, .artifacts-markdown ol { margin: var(--md-block-gap, .75em) 0; padding-left: 1.75em; }
+.artifacts-markdown li { margin: .28em 0; }
+.artifacts-markdown li > p { margin: .3em 0; }
+.artifacts-markdown li > ul, .artifacts-markdown li > ol { margin: .35em 0; }
+.artifacts-markdown ul { list-style-type: disc; }
+.artifacts-markdown ul ul { list-style-type: circle; }
+.artifacts-markdown ul ul ul { list-style-type: square; }
+.artifacts-markdown li::marker { color: var(--md-marker, var(--dsw-alias-label-tertiary)); }
 /* Math display blocks kept verbatim by mdToHtml for MathJax to typeset. */
-.artifacts-markdown .math-display { margin: 8px 0; overflow-x: auto; }
+.artifacts-markdown .math-display { margin: var(--md-block-gap, 1.1em) 0; overflow-x: auto; }
 .artifacts-markdown .math-display mjx-container { max-width: 100%; }
 /* Tables, task lists and extra inline marks produced by mdToHtml. */
-.artifacts-markdown table { border-collapse: collapse; margin: 8px 0; display: block; max-width: 100%; overflow-x: auto; font-size: 0.93em; }
-.artifacts-markdown th, .artifacts-markdown td { border: 1px solid var(--dsw-alias-border-l2); padding: 4px 9px; }
-.artifacts-markdown th { background: var(--dsw-alias-interactive-bg-hover); font-weight: 600; }
-.artifacts-markdown li.task-list-item { list-style: none; margin-left: -20px; }
-.artifacts-markdown li.task-list-item input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; accent-color: var(--dsw-alias-state-business-primary); }
-.artifacts-markdown mark { background: #ffe066; color: #241f00; border-radius: 3px; padding: 0 2px; }
-body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: #f6e7a1; }
+.artifacts-markdown table { display: block; width: max-content; max-width: 100%; margin: var(--md-block-gap, 1.1em) 0; border-collapse: collapse; overflow-x: auto; font-size: .94em; font-variant-numeric: tabular-nums; }
+.artifacts-markdown th, .artifacts-markdown td { padding: 7px 13px; border: 1px solid var(--md-table-border, var(--dsw-alias-border-l2)); }
+.artifacts-markdown th { font-weight: 600; }
+.artifacts-markdown thead th { background: var(--md-table-head-bg, var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-1))); color: var(--md-table-head-fg, inherit); }
+.artifacts-markdown li.task-list-item { list-style: none; }
+.artifacts-markdown li.task-list-item input[type="checkbox"] { margin: 0 .4em 0 -1.35em; vertical-align: -.08em; accent-color: var(--md-accent, var(--dsw-alias-state-business-primary)); }
+.artifacts-markdown mark { background: var(--md-mark-bg, #ffe066); color: var(--md-mark-fg, #241f00); border-radius: 3px; padding: 0 2px; }
+body[data-ds-dark-theme] .artifacts-markdown mark { background: var(--md-mark-bg, #6b5c12); color: var(--md-mark-fg, #f6e7a1); }
 .artifacts-markdown del { color: var(--dsw-alias-label-tertiary); }
 .artifacts-markdown sup, .artifacts-markdown sub { line-height: 0; }
 /* Raw HTML embedded in the document: collapsible answers (<details>/<summary>,
    the courseware's "答案" convention), layout containers and simple marks. */
-.artifacts-markdown details { border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; margin: 8px 0; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
-.artifacts-markdown details > summary { position: relative; cursor: pointer; padding: 6px 28px 6px 10px; font-weight: 600; list-style: none; user-select: none; }
+.artifacts-markdown details { border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; margin: 10px 0; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.artifacts-markdown details > summary { position: relative; cursor: pointer; padding: 8px 30px 8px 12px; font-weight: 600; list-style: none; user-select: none; }
 .artifacts-markdown details > summary::-webkit-details-marker { display: none; }
 .artifacts-markdown details > summary::after { content: '▸'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--dsw-alias-label-tertiary); transition: transform .15s var(--ds-ease-in-out, ease); }
 .artifacts-markdown details[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
@@ -4794,7 +5179,7 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-markdown details > *:last-child { margin-bottom: 0; }
 .artifacts-markdown kbd { background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)); border: 1px solid var(--dsw-alias-border-l2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font: 0.85em var(--dsh-font-mono, ui-monospace, monospace); }
 .artifacts-markdown figure { margin: 8px 0; }
-.artifacts-markdown figcaption { margin-top: 4px; font-size: 0.9em; color: var(--dsw-alias-label-tertiary); }
+.artifacts-markdown figcaption { margin-top: 6px; font-size: .88em; color: var(--dsw-alias-label-tertiary); }
 .artifacts-markdown svg { max-width: 100%; height: auto; }
 /* Mermaid diagram containers (rendered SVG replaces the raw source). */
 .artifacts-markdown .mermaid { margin: 10px 0; overflow-x: auto; text-align: center; }
@@ -5159,6 +5544,16 @@ body[data-ds-dark-theme] .artifacts-markdown mark { background: #6b5c12; color: 
 .artifacts-chip { padding: 4px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; cursor: pointer; }
 .artifacts-chip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .12)); color: var(--dsw-alias-label-primary); }
 .artifacts-chip.is-on { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-state-business-primary); }
+/* The theme chips carry a dot of the theme's own accent (see 设置 › Markdown
+   文档主题). 默认 has no accent of its own — it IS the app theme — so it draws a
+   half-light/half-dark disc instead of a colour, which is also the honest
+   picture of "follows the app's light/dark mode". */
+.artifacts-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .14); background: var(--frog-swatch, transparent); }
+/* In dark mode the dot switches to the palette's own dark accent: a navy or a
+   near-black ink dot would otherwise disappear into the settings page. Both
+   values arrive inline from src/shared/themes.js (see markdownThemeOptions). */
+[data-ds-dark-theme] .artifacts-swatch { background: var(--frog-swatch-dark, var(--frog-swatch, transparent)); }
+.artifacts-swatch.is-auto { background: linear-gradient(135deg, var(--dsw-alias-bg-layer-1) 0 50%, var(--dsw-alias-label-primary) 50% 100%); }
 .artifacts-widthinput { width: 76px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; border-radius: 6px; padding: 4px 8px; }
 .artifacts-suffix { color: var(--dsw-alias-label-secondary); font-size: 14px; line-height: 22px; }
 
@@ -6012,17 +6407,21 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       })
     }
 
-    // ── The document skin ───────────────────────────────────────────────────
-    // Which platform typography rendered Markdown wears (see src/shared/skins.js
-    // for the styles themselves and why they carry no colors). Only the SELECTED
-    // skin's CSS is on the page, in one tag: a skin is a few dozen rules scoped by
-    // the class the Markdown root carries, so switching skins is a textContent
-    // write rather than a re-render of every open document.
+    // ── The document's skin and theme ───────────────────────────────────────
+    // TWO independent choices with one mechanism each: the skin is which platform
+    // TYPOGRAPHY rendered Markdown wears (src/shared/skins.js) and the theme is
+    // which classic PALETTE it wears (src/shared/themes.js). Only the selected
+    // one's CSS is on the page, in its own tag: both are a few dozen rules scoped
+    // by a class the Markdown root carries, so switching either is a textContent
+    // write rather than a re-render of every open document. Two tags rather than
+    // one so that switching the skin cannot rewrite the theme (and vice versa) —
+    // the two files are edited for different reasons and neither should have to
+    // know the other is on the page.
     const SKIN_STYLE_ID = 'dsh-sidebar-frog-skin'
-    const syncMarkdownSkin = () => {
+    const THEME_STYLE_ID = 'dsh-sidebar-frog-theme'
+    const syncReaderStyle = (id, css) => {
       if (typeof document === 'undefined') return
-      const css = markdownSkinCss(settingsStore.get().markdownSkin)
-      const existing = document.getElementById(SKIN_STYLE_ID)
+      const existing = document.getElementById(id)
       if (!css) {
         if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
         return
@@ -6032,12 +6431,17 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
         return
       }
       const tag = document.createElement('style')
-      tag.id = SKIN_STYLE_ID
+      tag.id = id
       // The same attribute the panel's own stylesheet carries, so a hot-swapped
       // bundle replaces this one too instead of leaving a stale skin behind.
       tag.setAttribute('data-plugin', 'dsh-sidebar-frog')
       tag.textContent = css
       document.head.appendChild(tag)
+    }
+    const syncMarkdownSkin = () => {
+      const st = settingsStore.get()
+      syncReaderStyle(SKIN_STYLE_ID, markdownSkinCss(st.markdownSkin))
+      syncReaderStyle(THEME_STYLE_ID, markdownThemeCss(st.markdownTheme))
     }
 
     const MarkdownView = (props) => {
@@ -6056,6 +6460,7 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
       // block (see mdAnchor and .artifacts-markdown.is-lines in styles.js).
       const st = useSettings()
       const skin = st.markdownSkin
+      const theme = st.markdownTheme
       const showLines = !!st.previewLineNumbers
       React.useEffect(() => {
         const node = ref.current
@@ -6102,8 +6507,8 @@ body[data-ds-dark-theme] .tok-property { color: #ced4da; }
         // this file mounts after the preview (or leaves), the dep below cannot
         // see it, so the bar is rebuilt on the next content/skin change and the
         // button set follows the editor within one interaction.
-      }, [content, mdPath, mdSession, skin, showLines, props.editable])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + (showLines ? ' is-lines' : '') })
+      }, [content, mdPath, mdSession, skin, theme, showLines, props.editable])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + markdownThemeClass(theme) + (showLines ? ' is-lines' : '') })
     }
 
     const PdfView = (props) => {
@@ -9634,7 +10039,7 @@ const SettingsSection = () => {
       React.createElement('div', { className: 'artifacts-setrow is-stacked' },
         React.createElement('div', { className: 'artifacts-settext' },
           React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档皮肤'),
-          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤只改排版与结构（标题线、行距、代码块、表格、图片位置），颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤改的是阅读排版——正文字体（带中文字面）、字号、行距、字距，段落与标题的间距，以及代码块、引用、表格、图片怎么落在页面上；每套皮肤都按自己模仿的平台选字体，微信最松、GitHub 最紧凑。颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
         ),
         React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
           markdownSkinOptions().map((opt) => {
@@ -9648,6 +10053,44 @@ const SettingsSection = () => {
               title: 'Markdown 文档皮肤：' + opt.label,
               onClick: () => set('markdownSkin', opt.value),
             }, opt.label)
+          }),
+        ),
+      ),
+      // The document THEME: the palette, a second and independent axis from the
+      // skin above. Same button shape, for the same reason (a native select is a
+      // browser widget this panel can neither style nor test), plus the theme's
+      // own accent as a dot beside the name — otherwise the row is six words and
+      // a reader has to choose one to find out what it looks like.
+      React.createElement('div', { className: 'artifacts-setrow is-stacked' },
+        React.createElement('div', { className: 'artifacts-settext' },
+          React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档主题'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的配色：默认跟随本应用主题，也可以换一套经典阅读配色——书本蓝（教材）、绿（青竹）、墨（宋体·宣纸）、橙（暖阳）、暖纸（护眼）。主题与上面的皮肤是两条独立的轴：皮肤管排版（字体、行距、字距、块间距与表格形态），主题管颜色（标题、链接、引用条、代码块、表头与整页纸色）；唯一的例外是「墨」——它是衬线阅读配色，会连行距与字距一起重述。每套主题都同时给出浅色与深色两套取值，因此明暗模式都成立。面板、系统侧边栏的文档页与弹出页会一起切换。'),
+        ),
+        React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
+          markdownThemeOptions().map((opt) => {
+            const on = markdownThemeName(settings.markdownTheme) === opt.value
+            return React.createElement('button', {
+              key: opt.value,
+              type: 'button',
+              className: 'artifacts-chip' + (on ? ' is-on' : ''),
+              'data-frog-theme': opt.value,
+              'aria-pressed': on ? 'true' : 'false',
+              title: 'Markdown 文档主题：' + opt.label,
+              onClick: () => set('markdownTheme', opt.value),
+            },
+              React.createElement('span', {
+                key: 'swatch',
+                className: 'artifacts-swatch' + (opt.swatch ? '' : ' is-auto'),
+                // Two values because a document palette has two: a navy or an ink
+                // dot is invisible on a dark settings page, so the stylesheet
+                // switches to the palette's own dark accent under
+                // [data-ds-dark-theme] (see .artifacts-swatch). '' for 默认: that
+                // chip draws the two-tone "follows the app theme" disc instead of
+                // an accent of its own.
+                style: opt.swatch ? { '--frog-swatch': opt.swatch, '--frog-swatch-dark': opt.swatchDark } : undefined,
+              }),
+              opt.label,
+            )
           }),
         ),
       ),

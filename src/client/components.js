@@ -1232,7 +1232,7 @@ const SettingsSection = () => {
       React.createElement('div', { className: 'artifacts-setrow is-stacked' },
         React.createElement('div', { className: 'artifacts-settext' },
           React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档皮肤'),
-          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤只改排版与结构（标题线、行距、代码块、表格、图片位置），颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的排版样式：默认跟随本应用的主题，也可以套用 GitHub / 微信 / 知乎 这类平台的文档排版。皮肤改的是阅读排版——正文字体（带中文字面）、字号、行距、字距，段落与标题的间距，以及代码块、引用、表格、图片怎么落在页面上；每套皮肤都按自己模仿的平台选字体，微信最松、GitHub 最紧凑。颜色仍取自当前主题，因此明暗两种主题下都成立；面板、系统侧边栏的文档页与弹出页会一起切换。'),
         ),
         React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
           markdownSkinOptions().map((opt) => {
@@ -1246,6 +1246,44 @@ const SettingsSection = () => {
               title: 'Markdown 文档皮肤：' + opt.label,
               onClick: () => set('markdownSkin', opt.value),
             }, opt.label)
+          }),
+        ),
+      ),
+      // The document THEME: the palette, a second and independent axis from the
+      // skin above. Same button shape, for the same reason (a native select is a
+      // browser widget this panel can neither style nor test), plus the theme's
+      // own accent as a dot beside the name — otherwise the row is six words and
+      // a reader has to choose one to find out what it looks like.
+      React.createElement('div', { className: 'artifacts-setrow is-stacked' },
+        React.createElement('div', { className: 'artifacts-settext' },
+          React.createElement('div', { className: 'artifacts-settitle' }, 'Markdown 文档主题'),
+          React.createElement('div', { className: 'artifacts-setdesc' }, '渲染 Markdown 时使用的配色：默认跟随本应用主题，也可以换一套经典阅读配色——书本蓝（教材）、绿（青竹）、墨（宋体·宣纸）、橙（暖阳）、暖纸（护眼）。主题与上面的皮肤是两条独立的轴：皮肤管排版（字体、行距、字距、块间距与表格形态），主题管颜色（标题、链接、引用条、代码块、表头与整页纸色）；唯一的例外是「墨」——它是衬线阅读配色，会连行距与字距一起重述。每套主题都同时给出浅色与深色两套取值，因此明暗模式都成立。面板、系统侧边栏的文档页与弹出页会一起切换。'),
+        ),
+        React.createElement('div', { className: 'artifacts-setcontrol artifacts-setchips' },
+          markdownThemeOptions().map((opt) => {
+            const on = markdownThemeName(settings.markdownTheme) === opt.value
+            return React.createElement('button', {
+              key: opt.value,
+              type: 'button',
+              className: 'artifacts-chip' + (on ? ' is-on' : ''),
+              'data-frog-theme': opt.value,
+              'aria-pressed': on ? 'true' : 'false',
+              title: 'Markdown 文档主题：' + opt.label,
+              onClick: () => set('markdownTheme', opt.value),
+            },
+              React.createElement('span', {
+                key: 'swatch',
+                className: 'artifacts-swatch' + (opt.swatch ? '' : ' is-auto'),
+                // Two values because a document palette has two: a navy or an ink
+                // dot is invisible on a dark settings page, so the stylesheet
+                // switches to the palette's own dark accent under
+                // [data-ds-dark-theme] (see .artifacts-swatch). '' for 默认: that
+                // chip draws the two-tone "follows the app theme" disc instead of
+                // an accent of its own.
+                style: opt.swatch ? { '--frog-swatch': opt.swatch, '--frog-swatch-dark': opt.swatchDark } : undefined,
+              }),
+              opt.label,
+            )
           }),
         ),
       ),

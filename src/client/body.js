@@ -13,6 +13,8 @@
  *   filetype   → src/shared/filetype.js   (file-tree icon classifier + brand artwork, shared with the popout page)
  *   highlight  → src/shared/highlight.js
  *   markdown   → src/shared/markdown.js
+ *   skins      → src/shared/skins.js      (document typography skins)
+ *   themes     → src/shared/themes.js     (document colour themes)
  *   editor     → src/shared/editor.js     (the CodeMirror mount, shared with the popout page)
  *   core       → src/client/core.js       (state/store/settings helpers)
  *   styles     → src/client/styles.js     (the injected CSS)
@@ -213,6 +215,7 @@ window.__ModuleLoader__.load({
           @@highlight@@
           @@markdown@@
           @@skins@@
+          @@themes@@
           @@editor@@
 
           @@core@@

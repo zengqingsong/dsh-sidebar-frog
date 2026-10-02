@@ -329,7 +329,11 @@ function listdir(p) {
 }
 
 export async function startHost() {
-  const { page, build } = buildBundles()
+  // The page the BROWSER gets, not the module that holds it — see the note on
+  // pageHtml in scripts/build.js: served the source, a browser renders the same
+  // markup with the page's <style> in <body>, which is a cascade the product
+  // does not have.
+  const { pageHtml, build } = buildBundles()
   // The Office fixtures, built before the first request can ask for one.
   const officeFixtures = await buildOfficeFixtures()
   // Every request is recorded: when a test fails with "nothing happened", the
@@ -354,7 +358,7 @@ export async function startHost() {
     }
     if (u.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
-      res.end(page)
+      res.end(pageHtml)
       return
     }
     // Keep the console clean: a 404 here would show up as a page error.
@@ -1430,7 +1434,165 @@ async function run(s, shots, host) {
     await put(false, true)
   })
 
+  // ── 设置 › Markdown 文档主题: the palette must reach an OPEN document ──────
+  // The in-app panel re-renders when the setting changes, so it cannot show this
+  // bug; this page is plain DOM, where the stylesheet is rewritten and the class
+  // re-applied by applySettings. A stylesheet for a theme the open root does not
+  // carry is exactly the silent failure worth an engine test: the document would
+  // keep the OLD colours until it was reopened, and no assertion in check.js can
+  // see it. The two axes are driven together at the end, because a skin switch
+  // that rewrote the theme tag (or vice versa) is the other silent half.
+  await test('the document theme repaints the open document, and composes with the skin', async () => {
+    const put = async (name, value) => {
+      await s.evaluate(`(() => {
+        const key = ${JSON.stringify(SETTINGS_KEY)}
+        const raw = localStorage.getItem(key)
+        const data = raw ? JSON.parse(raw) : {}
+        data[${JSON.stringify(name)}] = ${JSON.stringify(value)}
+        localStorage.setItem(key, JSON.stringify(data))
+        // The same event the sidebar's write raises in another tab/window.
+        window.dispatchEvent(new StorageEvent('storage', { key: key, newValue: JSON.stringify(data) }))
+      })()`)
+      await s.wait(90)
+    }
+    const read = () => s.evaluate(`(() => {
+      const root = document.querySelector('#previewArea .markdown')
+      const h1 = root ? root.querySelector('h1') : null
+      const theme = document.getElementById('dsh-sidebar-frog-theme')
+      const skin = document.getElementById('dsh-sidebar-frog-skin')
+      return {
+        cls: root ? String(root.className) : '',
+        h1: h1 ? getComputedStyle(h1).color : '',
+        page: root ? getComputedStyle(root).backgroundColor : '',
+        theme: theme ? String(theme.textContent) : '',
+        skin: skin ? String(skin.textContent) : '',
+      }
+    })()`)
 
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown h1")', { label: 'the guide to render', timeout: 4000 })
+    const before = await read()
+    assert(before.cls.indexOf('md-theme-') < 0, 'a theme class is on the root with the default theme: ' + before.cls)
+    assert(!before.theme, 'a theme stylesheet is on the page with the default theme')
+    assert(!before.skin, 'a skin stylesheet is on the page with the default skin')
+
+    // The palette, applied to the document that is ALREADY open.
+    await put('markdownTheme', 'bookblue')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-theme-bookblue") >= 0',
+      { label: 'the open document to take the theme class', timeout: 4000 })
+    const themed = await read()
+    assert(themed.theme.indexOf('.md-theme-bookblue') >= 0,
+      'the theme stylesheet is not on the page: ' + themed.theme.slice(0, 80))
+    assert(themed.h1 !== before.h1, 'the theme did not repaint the open heading: ' + before.h1 + ' -> ' + themed.h1)
+    assert(themed.page === before.page, '书本蓝 changed the page tint: ' + themed.page)
+
+    // A paper theme DOES tint the page — the property that makes 暖纸 a page and
+    // not merely another accent colour.
+    await put('markdownTheme', 'paper')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-theme-paper") >= 0',
+      { label: 'the paper theme to arrive', timeout: 4000 })
+    const paper = await read()
+    assert(paper.page !== themed.page, 'the paper theme did not tint the page: ' + paper.page)
+
+    // …and it composes with a skin: two classes on the root, two stylesheets, and
+    // neither switch rewrites the other's file.
+    await put('markdownSkin', 'github')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-skin-github") >= 0',
+      { label: 'the skin class to arrive', timeout: 4000 })
+    const both = await read()
+    assert(/md-skin-github/.test(both.skin), 'the skin stylesheet is missing: ' + both.skin.slice(0, 60))
+    assert(/md-theme-paper/.test(both.theme), 'the skin switch rewrote the theme stylesheet')
+    assert(/md-skin-github/.test(both.cls) && /md-theme-paper/.test(both.cls),
+      'the skin and the theme are not both on the root: ' + both.cls)
+
+    // Back to the shipped pair: BOTH classes and BOTH stylesheets go — a leftover
+    // theme tag would repaint a document that is on 默认.
+    await put('markdownTheme', 'default')
+    await put('markdownSkin', 'default')
+    const back = await read()
+    assert(back.cls.indexOf('md-theme-') < 0 && back.cls.indexOf('md-skin-') < 0,
+      'the root kept a class after going back to 默认: ' + back.cls)
+    assert(!back.theme && !back.skin, 'a stylesheet stayed on the page after going back to 默认')
+    eq(back.h1, before.h1, 'the heading colour did not come back to the shipped one')
+  })
+
+  // The other axis, measured rather than looked at: the TYPOGRAPHY a reader
+  // actually receives. A skin is a set of --md-* reads with its own fallback, so
+  // the failure this catches is a skin whose rules never reach the document (the
+  // stylesheet is on the page, the class is on the root, and the text still has
+  // the pane's size) — which looks like "the picker does nothing".
+  await test('the reading typography follows the skin, and 墨 restates it', async () => {
+    const put = async (name, value) => {
+      await s.evaluate(`(() => {
+        const key = ${JSON.stringify(SETTINGS_KEY)}
+        const raw = localStorage.getItem(key)
+        const data = raw ? JSON.parse(raw) : {}
+        data[${JSON.stringify(name)}] = ${JSON.stringify(value)}
+        localStorage.setItem(key, JSON.stringify(data))
+        window.dispatchEvent(new StorageEvent('storage', { key: key, newValue: JSON.stringify(data) }))
+      })()`)
+      await s.wait(90)
+    }
+    const typo = () => s.evaluate(`(() => {
+      const root = document.querySelector('#previewArea .markdown')
+      if (!root) return null
+      const cs = getComputedStyle(root)
+      return {
+        cls: String(root.className),
+        size: parseFloat(cs.fontSize),
+        lead: parseFloat(cs.lineHeight),
+        ratio: parseFloat(cs.lineHeight) / parseFloat(cs.fontSize),
+        track: cs.letterSpacing,
+        font: cs.fontFamily,
+      }
+    })()`)
+
+    await openDoc('guide.md')
+    await s.waitFor('!!document.querySelector("#previewArea .markdown p")', { label: 'a paragraph to measure', timeout: 4000 })
+    const base = await typo()
+    assert(base, 'no rendered document to measure')
+    assert(base.size >= 13 && base.size <= 16, 'the shipped reading size is not a readable one: ' + base.size + 'px')
+    assert(base.ratio > 1.6 && base.ratio < 2.1, 'the shipped leading is not a comfortable one: ' + base.ratio)
+    assert(/PingFang|YaHei|Hiragino|Noto Sans CJK/.test(base.font),
+      'the reading font names no CJK face of its own: ' + base.font)
+    assert(parseFloat(base.track) > 0, 'the shipped tracking is zero: ' + base.track)
+
+    // 微信 is the roomiest of the three: a larger size AND a larger typeface.
+    await put('markdownSkin', 'wechat')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-skin-wechat") >= 0',
+      { label: 'the 微信 skin to arrive', timeout: 4000 })
+    const wechat = await typo()
+    assert(wechat.size > base.size, 'the 微信 skin did not change the reading size: ' + wechat.size + ' vs ' + base.size)
+    assert(wechat.font !== base.font, 'the 微信 skin did not change the reading font: ' + wechat.font)
+    assert(wechat.ratio > 1.7, 'the 微信 skin is not the roomy one: ' + wechat.ratio)
+
+    // GitHub is the opposite end: smaller, and its own font stack.
+    await put('markdownSkin', 'github')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-skin-github") >= 0',
+      { label: 'the GitHub skin to arrive', timeout: 4000 })
+    const github = await typo()
+    assert(github.size < wechat.size, 'the GitHub skin is not the denser one: ' + github.size + ' vs ' + wechat.size)
+    assert(github.ratio < wechat.ratio, 'the GitHub skin is not the tighter one: ' + github.ratio + ' vs ' + wechat.ratio)
+    assert(github.font !== wechat.font, 'the two skins read in the same face: ' + github.font)
+
+    // 墨 is the one palette allowed to restate the type: a serif wants air, so
+    // the leading it asks for must reach the document even under a skin.
+    await put('markdownSkin', 'default')
+    await put('markdownTheme', 'ink')
+    await s.waitFor('document.querySelector("#previewArea .markdown").className.indexOf("md-theme-ink") >= 0',
+      { label: 'the 墨 theme to arrive', timeout: 4000 })
+    const ink = await typo()
+    assert(/Georgia|Songti|SimSun|Noto Serif/.test(ink.font), 'the 墨 theme did not switch the document to a serif: ' + ink.font)
+    assert(ink.ratio > base.ratio, 'the 墨 theme did not give the serif more leading: ' + ink.ratio + ' vs ' + base.ratio)
+
+    await put('markdownTheme', 'default')
+    await put('markdownSkin', 'default')
+    const back = await typo()
+    assert(back.cls.indexOf('md-skin-') < 0 && back.cls.indexOf('md-theme-') < 0,
+      'the document kept a skin or theme class: ' + back.cls)
+    eq(back.font, base.font, 'the reading font did not come back to the shipped one')
+    eq(String(back.lead), String(base.lead), 'the leading did not come back to the shipped one')
+  })
 
   await test('a Chinese file name survives the tree, the request and the preview', async () => {
     // Four hops, each of which can mangle it independently: the tree row's

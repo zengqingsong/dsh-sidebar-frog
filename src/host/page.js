@@ -100,18 +100,22 @@ const page = String.raw`<!doctype html>
     --dsw-static-amber-500: #f59e0b;
     --dsw-static-amber-600: #dd8629;
     --dsw-static-red-600: #ec1313;
-    /* The design tokens the Markdown skins use (src/shared/skins.js), aliased
-       onto this page own palette: one skin stylesheet then serves the panel,
-       the shell document tab and this page.
-       These point at the STATIC ramp and not at --p-*, and that is deliberate:
-       the alias block is declared once, in the light block only, while --p-*
-       is redefined in the dark block. An alias pointing at --p-* would be
-       resolved against whichever --p-* won the cascade — fine today, one
-       cross-reference away from a dark-mode skin painting light colours. */
+    /* The design tokens the Markdown skins and base rules use
+       (src/shared/skins.js, the .markdown rules below), aliased onto this
+       page's own palette: one stylesheet then serves the panel, the shell
+       document tab and this page.
+       Where a token has a --p-* counterpart the alias points AT it rather than
+       at the static ramp, because resolution happens where the alias is used:
+       a token that follows --p-bg-layer-1 turns dark in the dark block for
+       free. An alias pinned to the static ramp is exactly what made a skin's
+       code background stay white on a dark popout page. */
     --dsw-alias-bg-base: var(--p-bg);
-    --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-00);
-    --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-50);
-    --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-00);
+    --dsw-alias-bg-layer-1: var(--p-bg-layer-1);
+    --dsw-alias-bg-layer-2: var(--p-bg-layer-2);
+    --dsw-alias-bg-layer-3: var(--p-bg-layer-3);
+    --dsw-alias-markdown-code-block: var(--p-code-bg);
+    --dsw-alias-markdown-inline-code: var(--p-code-bg);
+    --dsw-alias-markdown-citation: var(--p-bg-layer-2);
     --dsw-alias-border-l1: var(--p-border-l1);
     --dsw-alias-border-l2: var(--p-border-l2);
     --dsw-alias-border-l3: var(--p-border-l3);
@@ -361,7 +365,10 @@ const page = String.raw`<!doctype html>
   .docbtn:hover { background: var(--p-hover); }
   .docbtn:focus-visible { outline: 2px solid var(--p-accent); outline-offset: 1px; }
   .docbtn:disabled { opacity: 0.6; cursor: default; }
-  .markdown { padding: 16px 20px; line-height: 1.6; word-wrap: break-word; }
+  .markdown { padding: 18px 22px 34px; font-size: var(--md-font-size, 14px); line-height: var(--md-line-height, 1.8); letter-spacing: var(--md-letter-spacing, .01em); word-wrap: break-word; overflow-wrap: break-word; color: var(--p-text); background: var(--md-page, transparent); font-family: var(--md-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif); }
+  .markdown > :first-child { margin-top: 0; }
+  .markdown > :last-child { margin-bottom: 0; }
+  .markdown p { margin: var(--md-para-gap, .85em) 0; }
   /* Source-line gutter (设置 › 预览显示行号). The panel's twin of these rules lives
      in src/client/styles.js under .artifacts-markdown.is-lines — the two class
      names differ (this page's root is .markdown), so the rules are written twice
@@ -373,40 +380,63 @@ const page = String.raw`<!doctype html>
     content: attr(data-lineno);
     position: absolute; left: -4em; width: 3.4em; text-align: right;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px; line-height: 1.75; color: var(--p-text-tertiary);
+    font-size: 11px; line-height: var(--md-line-height, 1.8); color: var(--p-text-tertiary);
     pointer-events: none; -webkit-user-select: none; user-select: none;
   }
-  .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 16px 0 8px; line-height: 1.3; }
-  .markdown h1 { font-size: 1.5em; border-bottom: 1px solid var(--p-border-l2); padding-bottom: 6px; }
-  .markdown h2 { font-size: 1.3em; border-bottom: 1px solid var(--p-border-l1); padding-bottom: 4px; }
-  .markdown code { background: var(--p-code-bg); color: var(--p-code-fg); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
-  .markdown pre { background: var(--p-code-bg); padding: 12px 14px; border-radius: 6px; overflow: auto; }
-  .markdown pre code { background: transparent; padding: 0; }
-  .markdown img { max-width: 100%; }
+  /* The --md-* document palette (see src/shared/themes.js): each declaration
+     below reads its own property with this page's token as the FALLBACK, so an
+     unchosen theme is byte-for-byte the look this page always had. The panel's
+     twin of these rules lives in src/client/styles.js under .artifacts-markdown;
+     the two roots have different class names, so the palette is read twice on
+     purpose (a guard in scripts/check.js requires both sides to read it). */
+  .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: var(--md-heading-gap, 1.7em) 0 .65em; line-height: 1.3; text-wrap: balance; font-weight: var(--md-heading-weight, 600); color: var(--md-heading, inherit); font-family: var(--md-heading-font, var(--md-font, inherit)); }
+  .markdown h1 { font-size: 1.6em; padding-bottom: .3em; border-bottom: var(--md-h1-rule-w, 1px) solid var(--md-heading-rule, var(--p-border-l2)); }
+  .markdown h2 { font-size: 1.32em; }
+  .markdown h3 { font-size: 1.15em; }
+  .markdown h4 { font-size: 1.02em; }
+  .markdown h5 { font-size: .95em; }
+  .markdown h6 { font-size: .9em; color: var(--md-heading-soft, var(--md-heading, var(--p-text-secondary))); }
+  .markdown hr { height: 1px; margin: 1.9em 0; border: 0; background: var(--md-rule, var(--p-border-l2)); }
+  .markdown a { color: var(--md-link, var(--p-accent)); text-decoration: none; }
+  .markdown a:hover { text-decoration: underline; text-underline-offset: .18em; }
+  .markdown strong { font-weight: 600; }
+  .markdown code { padding: .18em .42em; border: 1px solid var(--md-code-border, var(--p-border-l1)); border-radius: 5px; background: var(--md-inline-code-bg, var(--p-code-bg)); color: var(--p-code-fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .89em; font-variant-ligatures: none; }
+  .markdown pre { margin: var(--md-block-gap, 1.1em) 0; padding: 13px 15px; border: 1px solid var(--md-code-border, var(--p-border-l1)); border-radius: 8px; background: var(--md-code-bg, var(--p-code-bg)); overflow: auto; line-height: 1.62; font-variant-ligatures: none; }
+  .markdown pre code { padding: 0; border: 0; background: transparent; font-size: .92em; }
+  .markdown img { max-width: 100%; height: auto; }
 .markdown picture { max-width: 100%; }
 .markdown picture > img { max-width: 100%; height: auto; }
 .markdown [align="center"] { text-align: center; }
 .markdown [align="right"] { text-align: right; }
-  .markdown blockquote { border-left: 3px solid var(--p-border-l2); margin: 8px 0; padding: 2px 12px; color: var(--p-text-secondary); }
-  .markdown ul, .markdown ol { padding-left: 24px; }
-  .markdown a { color: var(--p-accent); }
-  .markdown hr { border: none; border-top: 1px solid var(--p-border-l2); margin: 16px 0; }
+  .markdown blockquote { margin: var(--md-block-gap, 1.1em) 0; padding: .62em 1.05em; border-left: 3px solid var(--md-quote-bar, var(--p-border-l3)); border-radius: 0 6px 6px 0; background: var(--md-quote-bg, var(--p-bg-layer-2)); color: var(--md-quote-fg, var(--p-text-secondary)); }
+  .markdown blockquote > :first-child { margin-top: 0; }
+  .markdown blockquote > :last-child { margin-bottom: 0; }
+  .markdown blockquote blockquote { margin: .5em 0; border-left-width: 2px; background: transparent; }
+  .markdown ul, .markdown ol { margin: var(--md-block-gap, .75em) 0; padding-left: 1.75em; }
+  .markdown li { margin: .28em 0; }
+  .markdown li > p { margin: .3em 0; }
+  .markdown li > ul, .markdown li > ol { margin: .35em 0; }
+  .markdown ul { list-style-type: disc; }
+  .markdown ul ul { list-style-type: circle; }
+  .markdown ul ul ul { list-style-type: square; }
+  .markdown li::marker { color: var(--md-marker, var(--p-text-tertiary)); }
   /* Math display blocks kept verbatim by mdToHtml for MathJax to typeset. */
-  .markdown .math-display { margin: 10px 0; overflow-x: auto; }
+  .markdown .math-display { margin: var(--md-block-gap, 1.1em) 0; overflow-x: auto; }
   /* Tables, task lists and extra inline marks produced by mdToHtml. */
-  .markdown table { border-collapse: collapse; margin: 10px 0; display: block; max-width: 100%; overflow-x: auto; font-size: 0.93em; }
-  .markdown th, .markdown td { border: 1px solid var(--p-border-l2); padding: 5px 10px; }
-  .markdown th { background: var(--p-hover); font-weight: 600; }
-  .markdown li.task-list-item { list-style: none; margin-left: -20px; }
-  .markdown li.task-list-item input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; accent-color: var(--p-accent); }
-  .markdown mark { background: #ffe066; color: #241f00; border-radius: 3px; padding: 0 2px; }
-  [data-ds-dark-theme] .markdown mark { background: #6b5c12; color: #f6e7a1; }
+  .markdown table { display: block; width: max-content; max-width: 100%; margin: var(--md-block-gap, 1.1em) 0; border-collapse: collapse; overflow-x: auto; font-size: .94em; font-variant-numeric: tabular-nums; }
+  .markdown th, .markdown td { padding: 7px 13px; border: 1px solid var(--md-table-border, var(--p-border-l2)); }
+  .markdown th { font-weight: 600; }
+  .markdown thead th { background: var(--md-table-head-bg, var(--p-code-bg)); color: var(--md-table-head-fg, inherit); }
+  .markdown li.task-list-item { list-style: none; }
+  .markdown li.task-list-item input[type="checkbox"] { margin: 0 .4em 0 -1.35em; vertical-align: -.08em; accent-color: var(--md-accent, var(--p-accent)); }
+  .markdown mark { background: var(--md-mark-bg, #ffe066); color: var(--md-mark-fg, #241f00); border-radius: 3px; padding: 0 2px; }
+  [data-ds-dark-theme] .markdown mark { background: var(--md-mark-bg, #6b5c12); color: var(--md-mark-fg, #f6e7a1); }
   .markdown del { color: var(--p-text-tertiary); }
   .markdown sup, .markdown sub { line-height: 0; }
   /* Raw HTML embedded in the document: collapsible answers (<details>/
      <summary>, the courseware's "答案" convention) and layout containers. */
-  .markdown details { border: 1px solid var(--p-border-l2); border-radius: 8px; margin: 8px 0; background: var(--p-bg-layer-1); overflow: hidden; }
-  .markdown details > summary { position: relative; cursor: pointer; padding: 6px 28px 6px 10px; font-weight: 600; list-style: none; user-select: none; }
+  .markdown details { border: 1px solid var(--p-border-l2); border-radius: 8px; margin: 10px 0; background: var(--p-bg-layer-1); overflow: hidden; }
+  .markdown details > summary { position: relative; cursor: pointer; padding: 8px 30px 8px 12px; font-weight: 600; list-style: none; user-select: none; }
   .markdown details > summary::-webkit-details-marker { display: none; }
   .markdown details > summary::after { content: '▸'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--p-text-tertiary); transition: transform .15s ease; }
   .markdown details[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
@@ -415,7 +445,7 @@ const page = String.raw`<!doctype html>
   .markdown details > *:last-child { margin-bottom: 0; }
   .markdown kbd { background: var(--p-bg-layer-1); border: 1px solid var(--p-border-l2); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font: 0.85em ui-monospace, SFMono-Regular, Menlo, monospace; }
   .markdown figure { margin: 8px 0; }
-  .markdown figcaption { margin-top: 4px; font-size: 0.9em; color: var(--p-text-tertiary); }
+  .markdown figcaption { margin-top: 6px; font-size: .88em; color: var(--p-text-tertiary); }
   .markdown svg { max-width: 100%; height: auto; }
   /* Mermaid diagram containers (rendered SVG replaces the raw source). */
   .markdown .mermaid { margin: 10px 0; overflow-x: auto; text-align: center; }
@@ -965,6 +995,7 @@ const page = String.raw`<!doctype html>
     }
 @@markdown@@
 @@skins@@
+@@themes@@
 @@editor@@
 
     // Change review in the popout tab: the same line-per-row diff the sidebar
@@ -1939,11 +1970,9 @@ const page = String.raw`<!doctype html>
         } else if (type === 'markdown') {
           var md = el('div', 'markdown');
           // opts.path lets relative image/svg links resolve next to the doc.
-          // The class carries the skin AND the line-number gutter: both are
-          // settings, both are pure CSS over markup that is already there (the
-          // renderer stamps data-lineno on every block — see mdAnchor).
-          md.className = 'markdown' + markdownSkinClass(SETTINGS.markdownSkin) +
-            (SETTINGS.previewLineNumbers === true ? ' is-lines' : '');
+          // The class carries the skin, the theme AND the line-number gutter —
+          // see mdRootClass for why it is built in one place.
+          md.className = mdRootClass();
         md.innerHTML = mdToHtml(data.content, { path: path, sessionId: currentSessionId(), lineAnchors: true });
           area.appendChild(md);
           typesetMath(md);
@@ -3477,21 +3506,36 @@ const page = String.raw`<!doctype html>
     // the poll interval and its「自动刷新」switch, whether the 文件树 tab exists,
     // and the default divider position.
     var _pollTimer = null;
-    // The document skin (src/shared/skins.js): one style tag for the whole page,
-    // rewritten when the setting changes. A skin is a few dozen rules scoped by
-    // the class the Markdown root carries, so switching one costs a textContent
-    // write — not a re-render of every open document.
+    // The document's skin and theme (src/shared/skins.js / themes.js): one style
+    // tag EACH, rewritten when its setting changes. A skin is typography and a
+    // theme is a palette, and both are a few dozen rules scoped by a class the
+    // Markdown root carries — so switching either costs a textContent write, not
+    // a re-render of every open document, and neither rewrite can disturb the
+    // other's tag.
     var SKIN_STYLE_ID = "dsh-sidebar-frog-skin";
-    function applyMarkdownSkin() {
-      var css = markdownSkinCss(SETTINGS.markdownSkin);
-      var existing = document.getElementById(SKIN_STYLE_ID);
+    var THEME_STYLE_ID = "dsh-sidebar-frog-theme";
+    function syncReaderStyle(id, css) {
+      var existing = document.getElementById(id);
       if (!css) { if (existing && existing.parentNode) existing.parentNode.removeChild(existing); return; }
       if (existing) { if (existing.textContent !== css) existing.textContent = css; return; }
       var tag = document.createElement("style");
-      tag.id = SKIN_STYLE_ID;
+      tag.id = id;
       tag.setAttribute("data-plugin", "dsh-sidebar-frog");
       tag.textContent = css;
       document.head.appendChild(tag);
+    }
+    function applyMarkdownSkin() {
+      syncReaderStyle(SKIN_STYLE_ID, markdownSkinCss(SETTINGS.markdownSkin));
+      syncReaderStyle(THEME_STYLE_ID, markdownThemeCss(SETTINGS.markdownTheme));
+    }
+    // The class an open document's root carries: the skin, the theme and the
+    // line-number gutter, all three of them settings, all three pure CSS over
+    // markup that is already there. Built in ONE place, because the class a
+    // document is opened with and the class a settings change re-applies must not
+    // be able to drift apart.
+    function mdRootClass() {
+      return 'markdown' + markdownSkinClass(SETTINGS.markdownSkin) + markdownThemeClass(SETTINGS.markdownTheme)
+        + (SETTINGS.previewLineNumbers === true ? ' is-lines' : '');
     }
     function applySettings() {
       applyMarkdownSkin();
@@ -3501,7 +3545,11 @@ const page = String.raw`<!doctype html>
       // a flip keeps the cursor, the undo history and any unsaved draft.
       var roots = document.querySelectorAll('.markdown');
       for (var ri = 0; ri < roots.length; ri += 1) {
-        roots[ri].classList.toggle('is-lines', SETTINGS.previewLineNumbers === true);
+        // The WHOLE class, not just the gutter: the two stylesheets just above
+        // were rewritten to the newly chosen pair, so a root left wearing the OLD
+        // skin/theme class matches nothing in them and the open document would go
+        // unstyled until it was reopened.
+        roots[ri].className = mdRootClass();
       }
       if (editorCtl && typeof editorCtl.setLineNumbers === 'function') {
         editorCtl.setLineNumbers(SETTINGS.editorLineNumbers !== false);

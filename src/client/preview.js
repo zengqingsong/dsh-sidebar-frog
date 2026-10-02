@@ -309,17 +309,21 @@
       })
     }
 
-    // ── The document skin ───────────────────────────────────────────────────
-    // Which platform typography rendered Markdown wears (see src/shared/skins.js
-    // for the styles themselves and why they carry no colors). Only the SELECTED
-    // skin's CSS is on the page, in one tag: a skin is a few dozen rules scoped by
-    // the class the Markdown root carries, so switching skins is a textContent
-    // write rather than a re-render of every open document.
+    // ── The document's skin and theme ───────────────────────────────────────
+    // TWO independent choices with one mechanism each: the skin is which platform
+    // TYPOGRAPHY rendered Markdown wears (src/shared/skins.js) and the theme is
+    // which classic PALETTE it wears (src/shared/themes.js). Only the selected
+    // one's CSS is on the page, in its own tag: both are a few dozen rules scoped
+    // by a class the Markdown root carries, so switching either is a textContent
+    // write rather than a re-render of every open document. Two tags rather than
+    // one so that switching the skin cannot rewrite the theme (and vice versa) —
+    // the two files are edited for different reasons and neither should have to
+    // know the other is on the page.
     const SKIN_STYLE_ID = 'dsh-sidebar-frog-skin'
-    const syncMarkdownSkin = () => {
+    const THEME_STYLE_ID = 'dsh-sidebar-frog-theme'
+    const syncReaderStyle = (id, css) => {
       if (typeof document === 'undefined') return
-      const css = markdownSkinCss(settingsStore.get().markdownSkin)
-      const existing = document.getElementById(SKIN_STYLE_ID)
+      const existing = document.getElementById(id)
       if (!css) {
         if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
         return
@@ -329,12 +333,17 @@
         return
       }
       const tag = document.createElement('style')
-      tag.id = SKIN_STYLE_ID
+      tag.id = id
       // The same attribute the panel's own stylesheet carries, so a hot-swapped
       // bundle replaces this one too instead of leaving a stale skin behind.
       tag.setAttribute('data-plugin', 'dsh-sidebar-frog')
       tag.textContent = css
       document.head.appendChild(tag)
+    }
+    const syncMarkdownSkin = () => {
+      const st = settingsStore.get()
+      syncReaderStyle(SKIN_STYLE_ID, markdownSkinCss(st.markdownSkin))
+      syncReaderStyle(THEME_STYLE_ID, markdownThemeCss(st.markdownTheme))
     }
 
     const MarkdownView = (props) => {
@@ -353,6 +362,7 @@
       // block (see mdAnchor and .artifacts-markdown.is-lines in styles.js).
       const st = useSettings()
       const skin = st.markdownSkin
+      const theme = st.markdownTheme
       const showLines = !!st.previewLineNumbers
       React.useEffect(() => {
         const node = ref.current
@@ -399,8 +409,8 @@
         // this file mounts after the preview (or leaves), the dep below cannot
         // see it, so the bar is rebuilt on the next content/skin change and the
         // button set follows the editor within one interaction.
-      }, [content, mdPath, mdSession, skin, showLines, props.editable])
-      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + (showLines ? ' is-lines' : '') })
+      }, [content, mdPath, mdSession, skin, theme, showLines, props.editable])
+      return React.createElement('div', { ref, className: 'artifacts-markdown' + markdownSkinClass(skin) + markdownThemeClass(theme) + (showLines ? ' is-lines' : '') })
     }
 
     const PdfView = (props) => {

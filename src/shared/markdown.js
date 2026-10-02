@@ -138,17 +138,34 @@ function renderPicture(block, opts, startLine, endLine) {
 // are terminated at end-of-document. Fences MAY appear inside — the inner
 // source is re-rendered by mdToHtml, whose fence rule consumes them.
 function gatherBlockHtml(line, i, lines, tag) {
-  var reClose = new RegExp('</' + tag + '\\b[^>]*>', 'i');
-  var reOpen = new RegExp('<' + tag + '\\b', 'i');
-  var depth = (line.match(reOpen) || []).length - (line.match(reClose) || []).length;
+  // Global, so a line carrying SEVERAL openers or closers of the same tag is
+  // counted for what it is: a non-global match reports one hit per line no
+  // matter how many times the tag appears, which silently under-counts nesting.
+  var count = function (s) {
+    return (s.match(new RegExp('<' + tag + '\\b', 'gi')) || []).length -
+      (s.match(new RegExp('</' + tag + '\\b[^>]*>', 'gi')) || []).length;
+  };
+  // The text on the line where the element closed, AFTER its own closing tag.
+  // mdToHtml re-processes it (see the caller), so
+  // '<details><summary>a</summary>**b**</details>' keeps '**b**'.
+  var tailAfterClose = function (s) {
+    var re = new RegExp('</' + tag + '\\b[^>]*>', 'gi');
+    var last = null;
+    var m;
+    while ((m = re.exec(s))) last = m;
+    return last ? s.slice(last.index + last[0].length) : '';
+  };
+  var depth = count(line);
   var buf = [line];
+  var rest = depth <= 0 ? tailAfterClose(line) : '';
   while (depth > 0 && i + 1 < lines.length) {
     i += 1;
     var ln = lines[i];
     buf.push(ln);
-    depth += (ln.match(reOpen) || []).length - (ln.match(reClose) || []).length;
+    depth += count(ln);
+    if (depth <= 0) rest = tailAfterClose(ln);
   }
-  return { block: buf.join('\n'), next: i + 1, closed: depth <= 0 };
+  return { block: buf.join('\n'), next: i + 1, closed: depth <= 0, rest: rest };
 }
 // Inline-ish elements: content is ONE inline source line (whitespace
 // collapsed), not a mini document.
@@ -244,7 +261,11 @@ function mdEscape(s, opts) {
     toks.push(m);
     return '\x01K' + toks.length + '\x02';
   });
-  s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  // A double quote is left alone: it is harmless in element content, and every
+  // attribute-value site that needs it escaped (alt, title, href) does so where
+  // it builds the attribute. Escaping it here broke '[a](u "title")' — the
+  // inline pass saw &quot; where it expected a delimiter.
+  s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return s.replace(/\x01K(\d+)\x02/g, function (m, d) { return toks[Number(d) - 1] || m; });
 }
 
@@ -334,10 +355,27 @@ function mdCell(src, tag, align, opts, startLine) {
 }
 
 // ── Inline pass ─────────────────────────────────────────────────────────
+// Is this a word character for the underscore rule? ASCII plus the broad
+// non-Latin ranges (CJK, accented Latin, Cyrillic, Greek, kana …) that Markdown
+// treats as letters, so 'foo_bar_baz' and '中_文_字' stay literal while '_em_'
+// and '__strong__' do not.
+var MD_WORD = /[0-9A-Za-z_\u00c0-\uffff]/;
+function mdIsWord(ch) { return !!ch && MD_WORD.test(ch); }
 function mdInline(s, opts) {
   opts = opts || {};
   var math = [];
   var kept = [];
+  var esc = [];
+  // A paragraph reaches this pass as several source lines joined by a newline;
+  // a soft break is a space in the output, and collapsing it here is also what
+  // lets emphasis span the break the way every other Markdown renderer allows.
+  s = String(s).replace(/\n/g, ' ');
+  // Backslash escapes come first: the document is saying "this asterisk is an
+  // asterisk", so every rule below must see a token instead of the mark.
+  s = s.replace(/\\([\\\x60*_{}\[\]()#+\-.!~=|^])/g, function (m, c) {
+    esc.push(c);
+    return '\x01E' + esc.length + '\x02';
+  });
   // Protect display ($$...$$) first, then inline ($...$) math. Tokens carry no
   // characters the markup regexes act on, and the restore is verbatim.
   s = s.replace(/\$\$([^$\n]+)\$\$/g, function (m) { math.push(m); return '\x01M' + math.length + '\x02'; });
@@ -345,23 +383,69 @@ function mdInline(s, opts) {
   // Re-protect any raw single-line <svg> that mdEscape let through, so the
   // rules below (strong/em, auto-link on xmlns URLs, …) never touch its markup.
   s = s.replace(/<svg[\s\S]*?<\/svg>/gi, function (m) { kept.push(m); return '\x01A' + kept.length + '\x02'; });
-  s = s.replace(/\x60([^\x60]+)\x60/g, function (m, c) { return '<code>' + c + '</code>'; });
+  // Code spans are shelved like links: their content is code, so emphasis,
+  // links and auto-linking must not reach inside it. One or more backticks
+  // delimit, which is what lets a span CONTAIN a backtick.
+  s = s.replace(/(\x60+)([\s\S]*?)\1/g, function (m, ticks, code) {
+    var body = code.replace(/\n/g, ' ');
+    if (body.length > 2 && body.charAt(0) === ' ' && body.charAt(body.length - 1) === ' ' && body.replace(/\s/g, '') !== '') {
+      body = body.slice(1, -1);
+    }
+    kept.push('<code>' + body + '</code>');
+    return '\x01A' + kept.length + '\x02';
+  });
   // Images and links are shelved as tokens while auto-linking runs, so a URL
-  // inside a rendered href/src cannot be wrapped in a second anchor.
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-    kept.push('<img alt="' + alt + '" src="' + mdMedia(url, opts) + '">');
+  // inside a rendered href/src cannot be wrapped in a second anchor. The
+  // optional quoted string after the target is the link TITLE.
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g, function (m, alt, url, title) {
+    kept.push('<img alt="' + htmlEscape(alt) + '" src="' + mdMedia(url, opts) + '"' +
+      (title ? ' title="' + htmlEscape(title) + '"' : '') + '>');
     return '\x01A' + kept.length + '\x02';
   });
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
-    kept.push('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g, function (m, label, url, title) {
+    kept.push('<a href="' + url + '"' + (title ? ' title="' + htmlEscape(title) + '"' : '') +
+      ' target="_blank" rel="noopener noreferrer">' + label + '</a>');
     return '\x01A' + kept.length + '\x02';
   });
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-  s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  s = s.replace(/==([^=\n]+)==/g, '<mark>$1</mark>');
-  s = s.replace(/\^([^^\n]+)\^/g, '<sup>$1</sup>');
-  s = s.replace(/~([^~\n]+)~/g, '<sub>$1</sub>');
+  // Emphasis, strongest delimiter run first so '***x***' is not eaten as '**'
+  // followed by '*'. A run whose content starts or ends with whitespace is not
+  // emphasis ('** b **' stays as written), and the single '*' pass runs after
+  // the double one so '*nested*' inside '**bold *nested* bold**' is reached.
+  s = s.replace(/\*\*\*([^\n]+?)\*\*\*/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<strong><em>' + inner + '</em></strong>';
+  });
+  s = s.replace(/\*\*([^\n]+?)\*\*/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<strong>' + inner + '</strong>';
+  });
+  s = s.replace(/\*([^*\n]+?)\*/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<em>' + inner + '</em>';
+  });
+  // Underscore emphasis: it does not open or close inside a word, so
+  // 'foo_bar_baz' and '中_文_字' stay literal while '_em_' and '__strong__' work.
+  var under = function (run, open, close) {
+    s = s.replace(new RegExp(run + '([^_\\n]+?)' + run, 'g'), function (m, inner, offset) {
+      var before = offset > 0 ? s.charAt(offset - 1) : '';
+      var after = s.charAt(offset + m.length);
+      if (mdIsWord(before) && mdIsWord(after)) return m;
+      if (/^\s|\s$/.test(inner)) return m;
+      return open + inner + close;
+    });
+  };
+  under('___', '<strong><em>', '</em></strong>');
+  under('__', '<strong>', '</strong>');
+  under('_', '<em>', '</em>');
+  s = s.replace(/~~([^~\n]+?)~~/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<del>' + inner + '</del>';
+  });
+  s = s.replace(/==([^=\n]+?)==/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<mark>' + inner + '</mark>';
+  });
+  s = s.replace(/\^([^^\n]+?)\^/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<sup>' + inner + '</sup>';
+  });
+  s = s.replace(/~([^~\n]+?)~/g, function (m, inner) {
+    return /^\s|\s$/.test(inner) ? m : '<sub>' + inner + '</sub>';
+  });
   // Bare URLs. A URL directly after ( is skipped — that shape is a Markdown
   // link target handled above. Trailing punctuation is kept outside the link.
   s = s.replace(/(^|[\s([>])((?:https?:\/\/|www\.)[^\s<>"']+)/g, function (m, pre, url) {
@@ -381,7 +465,8 @@ function mdInline(s, opts) {
   // Restoring repeatedly until nothing is left fixes every nesting depth, and the
   // bound is only there so a malformed token cannot spin.
   s = restoreTokens(s, kept, 'A');
-  return restoreTokens(s, math, 'M');
+  s = restoreTokens(s, math, 'M');
+  return restoreTokens(s, esc, 'E');
 }
 
 // Replace the \x01<t>\x02 tokens with what they stand for, repeatedly: a token's
@@ -407,7 +492,7 @@ function restoreTokens(s, list, letter) {
 // go, where it used to fall out of the list as a stray paragraph still carrying
 // its indentation.
 function mdListMarker(line) {
-  var m = /^([ \t]*)([-*+]|\d+\.)([ \t]+)([\s\S]*)$/.exec(String(line));
+  var m = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)([\s\S]*)$/.exec(String(line));
   if (!m) return null;
   var bullet = m[2].charAt(0);
   return {
@@ -510,6 +595,24 @@ function mdListBlock(lines, start, opts) {
   var listSpan = mdAnchor(opts, start + 1, i);
   if (listSpan) html[0] = html[0].slice(0, -1) + listSpan + '>';
   return { html: html.join(''), next: i };
+}
+
+// Does line i begin a block of its own? This is where a paragraph RUN ends:
+// the shapes are exactly the ones the block pass recognizes below, so a line
+// this returns false for is prose and belongs to the paragraph above it.
+function mdStartsBlock(lines, i) {
+  var l = lines[i];
+  if (/^\s*(\x60{3,}|~{3,})/.test(l)) return true;
+  if (/^\s*\$\$/.test(l)) return true;
+  if (/^\s*<svg/i.test(l)) return true;
+  var bh = /^\s*<([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(l);
+  if (bh && BLOCK_HTML_TAGS[bh[1].toLowerCase()] && !(bh[1].toLowerCase() === 'summary' && /\/\s*>$/.test(l))) return true;
+  if (/^(#{1,6})\s+/.test(l)) return true;
+  if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(l)) return true;
+  if (/^\s*>\s?/.test(l)) return true;
+  if (mdListMarker(l)) return true;
+  if (isTableRow(l) && i + 1 < lines.length && isDelimRow(lines[i + 1])) return true;
+  return false;
 }
 
 // ── Block pass ──────────────────────────────────────────────────────────
@@ -640,7 +743,12 @@ function mdToHtml(src, opts) {
         var bhStart = i + 1;
         var bh = gatherBlockHtml(line, i, lines, bhTag);
         out.push(renderBlockHtml(bh.block, bhTag, mdOpts, bhStart, bh.next));
-        i = bh.next;
+        // Markdown that shared the closing tag's line is still source — a
+        // '<details><summary>答案</summary>正文</details>' one-liner used to drop
+        // '正文' entirely. Put the tail back where the element was and let the
+        // loop render it, so the content survives as its own block.
+        if (bh.rest.replace(/\s+$/, '') !== '') { lines[bh.next - 1] = bh.rest; i = bh.next - 1; }
+        else i = bh.next;
         continue;
       }
     }
@@ -730,8 +838,19 @@ function mdToHtml(src, opts) {
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
-    out.push('<p' + mdAnchor(mdOpts, i + 1) + '>' + mdInline(mdEscape(line, mdOpts), mdOpts) + '</p>');
+    // A paragraph is a RUN of consecutive non-blank lines, not one line: prose
+    // that is hard-wrapped — or a Chinese paragraph broken across source lines —
+    // used to come out as one <p> per line, which is not what the author wrote
+    // and reads as cramped, over-spaced text. The run stops at the first line
+    // that starts a block of its own.
+    var paraStart = i + 1;
+    var para = [line];
     i += 1;
+    while (i < lines.length && lines[i].trim() !== '' && !mdStartsBlock(lines, i)) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    out.push('<p' + mdAnchor(mdOpts, paraStart, i) + '>' + mdInline(mdEscape(para.join('\n'), mdOpts), mdOpts) + '</p>');
   }
   return out.join('\n');
 }
